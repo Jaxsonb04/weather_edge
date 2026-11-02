@@ -1,6 +1,7 @@
-import { Card } from "@heroui/react/card";
-import { Icon } from "@iconify/react/offline";
-import { decisionCountProvenance, type HealthAlert, type StrategyLab } from "../../lib/strategy";
+import { Chip } from "@heroui/react/chip";
+import { Widget } from "@heroui-pro/react/widget";
+import { decisionCountProvenance, type StrategyLab } from "../../lib/strategy";
+import { InfoTip } from "../ui/InfoTip";
 import { Stat } from "../ui/Stat";
 
 const COLLECTED_LABELS: [string, string][] = [
@@ -25,7 +26,7 @@ function freshnessRows(s: StrategyLab): FreshnessRow[] {
   const c = fh.clisfo;
   if (c?.available) {
     rows.push({
-      name: "CLISFO settlement feed",
+      name: "Settlement reports (NWS CLI)",
       detail: `${(c.rows ?? 0).toLocaleString()} rows · ${c.lag_days ?? "?"}d behind (max ${c.max_lag_days ?? "?"}d)`,
       ok: (c.lag_days ?? 99) <= (c.max_lag_days ?? 0),
     });
@@ -33,8 +34,8 @@ function freshnessRows(s: StrategyLab): FreshnessRow[] {
   const n = fh.nws_ground_truth;
   if (n?.available) {
     rows.push({
-      name: "NWS ground truth",
-      detail: `latest obs ${n.latest_date ?? "—"} · ${n.lag_days ?? "?"}d lag`,
+      name: "NWS observations",
+      detail: `latest ${n.latest_date ?? "—"} · ${n.lag_days ?? "?"}d lag`,
       ok: (n.lag_days ?? 99) <= 1,
     });
   }
@@ -43,8 +44,8 @@ function freshnessRows(s: StrategyLab): FreshnessRow[] {
     const freshest = Math.min(...e.live_targets.map((t) => t.latest_age_hours));
     const models = e.live_targets[0]?.n_models;
     rows.push({
-      name: "EMOS ensemble blend",
-      detail: `${e.live_targets.length} live targets · ${models ?? "?"} members · freshest ${freshest.toFixed(1)}h old`,
+      name: "EMOS forecasts",
+      detail: `${e.live_targets.length} live targets · ${models ?? "?"} members · newest ${freshest.toFixed(1)}h old`,
       ok: freshest <= (e.max_stale_hours ?? 6),
     });
   }
@@ -60,44 +61,64 @@ function freshnessRows(s: StrategyLab): FreshnessRow[] {
   return rows;
 }
 
-function mergedAlerts(s: StrategyLab): HealthAlert[] {
-  const seen = new Set<string>();
-  const out: HealthAlert[] = [];
-  for (const a of [...(s.forecast_health?.warnings ?? []), ...(s.status?.alerts ?? [])]) {
-    const key = a.code ?? a.title;
-    if ((a.level ?? "warning") === "ok" || seen.has(key)) continue;
-    seen.add(key);
-    out.push(a);
-  }
-  return out;
-}
-
-/** What the AWS box does on its own, how much it has collected, and whether
-    every upstream feed is fresh — published warnings included. */
+/** Feed freshness and how much the runtime has collected. Alerts are shown at
+    the top of the Strategy Lab, so they are not repeated here. */
 export function OpsHealth({ s }: { s: StrategyLab }) {
   const collected = s.daily_summary?.data_collected;
   const rows = freshnessRows(s);
-  const alerts = mergedAlerts(s);
   const mvm = s.daily_summary?.model_vs_market;
   const counts = decisionCountProvenance(s);
 
   return (
-    <div className="grid gap-6 lg:grid-cols-2">
-      <Card className="h-full rounded-2xl">
-        <Card.Header>
-          <Card.Title className="text-base">Autonomous runtime</Card.Title>
-        </Card.Header>
-        <Card.Content className="space-y-4 pt-0">
-          <p className="text-sm leading-relaxed text-muted">
-            {s.status?.automation_status ??
-              "AWS timers generate the forecast, public signal, Strategy Lab JSON, paper scans, and monitor state."}{" "}
-            All figures and runtime statuses come from {(s.source_of_truth ?? "AWS runtime artifacts").toLowerCase()}; explanatory copy and archive curation are part of this frontend.
-          </p>
-          {collected && (
+    <div className="grid min-w-0 gap-4 lg:grid-cols-2">
+      <Widget className="min-w-0">
+        <Widget.Header>
+          <div className="min-w-0">
+            <div className="flex items-center gap-1">
+              <Widget.Title>Pipeline health</Widget.Title>
+              <InfoTip label="pipeline health">
+                {s.status?.automation_status ??
+                  "AWS timers generate the forecast, public signal, Strategy Lab JSON, paper scans, and monitor state."}{" "}
+                Statuses come from {(s.source_of_truth ?? "AWS runtime artifacts").toLowerCase()}.
+              </InfoTip>
+            </div>
+            <Widget.Description>Upstream feeds behind every forecast</Widget.Description>
+          </div>
+        </Widget.Header>
+        <Widget.Content>
+          {rows.length ? (
+            <ul className="flex flex-col divide-y divide-separator">
+              {rows.map((r) => (
+                <li key={r.name} className="flex items-center justify-between gap-4 py-2.5 first:pt-0 last:pb-0">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-foreground">{r.name}</p>
+                    <p className="tnum text-xs text-muted">{r.detail}</p>
+                  </div>
+                  <Chip size="sm" variant="soft" color={r.ok ? "success" : "warning"}>
+                    <Chip.Label>{r.ok ? "Fresh" : "Check"}</Chip.Label>
+                  </Chip>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-muted">Feed freshness is not published in this artifact.</p>
+          )}
+        </Widget.Content>
+      </Widget>
+
+      <Widget className="min-w-0">
+        <Widget.Header>
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <Widget.Title>Data collected</Widget.Title>
+            <Widget.Description>Snapshots the runtime has journaled</Widget.Description>
+          </div>
+        </Widget.Header>
+        <Widget.Content className="flex flex-col gap-4">
+          {collected ? (
             <>
               {counts.cached && (
                 <p role="status" className="text-xs font-medium text-warning">
-                  Historical counts as of {counts.asOf}; runtime status above is current.
+                  Historical counts as of {counts.asOf}; feed status is current.
                 </p>
               )}
               <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3">
@@ -106,6 +127,8 @@ export function OpsHealth({ s }: { s: StrategyLab }) {
                 ))}
               </div>
             </>
+          ) : (
+            <p className="text-sm text-muted">Collection counts are not published in this artifact.</p>
           )}
           {mvm?.samples != null && (
             <p className="text-xs text-muted">
@@ -116,44 +139,8 @@ export function OpsHealth({ s }: { s: StrategyLab }) {
               snapshots · mean absolute gap {Math.round((mvm.mean_abs_gap ?? 0) * 1000) / 10}pp.
             </p>
           )}
-        </Card.Content>
-      </Card>
-
-      <Card className="h-full rounded-2xl">
-        <Card.Header>
-          <Card.Title className="text-base">Pipeline health</Card.Title>
-        </Card.Header>
-        <Card.Content className="pt-0">
-          <ul className="divide-y divide-border/50">
-            {rows.map((r) => (
-              <li key={r.name} className="flex items-center justify-between gap-4 py-2">
-                <div className="min-w-0">
-                  <p className="text-sm font-medium text-foreground">{r.name}</p>
-                  <p className="text-xs text-muted">{r.detail}</p>
-                </div>
-                <span
-                  className={`flex shrink-0 items-center gap-1.5 font-mono text-[10px] font-semibold uppercase ${r.ok ? "text-success" : "text-warning"}`}
-                >
-                  <span className={`size-1.5 rounded-full ${r.ok ? "bg-success" : "bg-warning"}`} aria-hidden="true" />
-                  {r.ok ? "fresh" : "check"}
-                </span>
-              </li>
-            ))}
-          </ul>
-          {!!alerts.length && (
-            <ul className="mt-4 space-y-2">
-              {alerts.map((a) => (
-                <li key={a.code ?? a.title} className="flex gap-2 rounded-lg bg-warning-soft p-3 text-xs text-foreground">
-                  <Icon icon="solar:danger-triangle-bold" className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden="true" />
-                  <span>
-                    <span className="font-semibold">{a.title}.</span> {a.detail} {a.action}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card.Content>
-      </Card>
+        </Widget.Content>
+      </Widget>
     </div>
   );
 }

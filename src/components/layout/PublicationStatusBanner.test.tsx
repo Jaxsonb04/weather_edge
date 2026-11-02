@@ -46,9 +46,9 @@ describe("PublicationStatusBanner", () => {
     await renderBanner(manifest("2026-07-07T12:00:00Z"));
 
     expect(screen.getByRole("alert")).toHaveTextContent(
-      /current published prediction-market and open-position data is hidden until the feed catches up/i,
+      /live market and position figures are hidden until the next publication/i,
     );
-    expect(screen.getByRole("alert")).toHaveTextContent(/last operational publication/i);
+    expect(screen.getByRole("alert")).toHaveTextContent(/last published/i);
   });
 
   it("shows a quieter but explicit status when the manifest is unavailable", async () => {
@@ -60,8 +60,8 @@ describe("PublicationStatusBanner", () => {
     );
     await act(async () => vi.advanceTimersByTimeAsync(0));
 
-    expect(screen.getByRole("status")).toHaveTextContent(/current status unavailable/i);
-    expect(screen.getByRole("status")).toHaveTextContent(/isn't being shown for this deployment/i);
+    expect(screen.getByRole("status")).toHaveTextContent(/status unavailable/i);
+    expect(screen.getByRole("status")).toHaveTextContent(/aren't shown for this deployment/i);
   });
 
   it("stays out of the way while publication is fresh", async () => {

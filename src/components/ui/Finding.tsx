@@ -3,26 +3,21 @@ import type { ReactNode } from "react";
 
 interface FindingProps {
   children: ReactNode;
-  /** eyebrow label, defaults to "Finding" */
+  /** Short label above the text, defaults to "Finding". */
   label?: string;
   icon?: string;
   className?: string;
 }
 
-/** Interpretive callout placed after a chart or section: states in plain words
-    what the data shows, with the key numbers inline. `<strong>` inside is
-    promoted to foreground so the load-bearing figures pop. */
-export function Finding({ children, label = "Finding", icon = "solar:document-text-bold", className }: FindingProps) {
+/** A compact interpretive note: what the data shows, in one or two sentences,
+    with the key numbers in `<strong>`. */
+export function Finding({ children, label = "Finding", icon = "solar:lightbulb-bolt-linear", className }: FindingProps) {
   return (
-    <aside className={`flex gap-3 border-l-2 border-accent/40 py-1 pl-4 ${className ?? ""}`}>
-      <span className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-md bg-accent-soft text-accent">
-        <Icon icon={icon} className="size-3.5" aria-hidden="true" />
-      </span>
+    <aside className={`flex gap-3 rounded-2xl bg-surface-secondary px-4 py-3 ${className ?? ""}`.trim()}>
+      <Icon icon={icon} className="mt-0.5 size-4 shrink-0 text-[color:var(--accent-text)]" aria-hidden="true" />
       <div className="min-w-0">
-        <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--accent-text)]">
-          {label}
-        </p>
-        <div className="mt-1 text-sm leading-relaxed text-muted [&_strong]:font-semibold [&_strong]:text-foreground">
+        <p className="text-xs font-medium text-foreground">{label}</p>
+        <div className="mt-0.5 text-sm leading-relaxed text-muted [&_strong]:font-semibold [&_strong]:text-foreground">
           {children}
         </div>
       </div>

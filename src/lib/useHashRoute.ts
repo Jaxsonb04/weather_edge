@@ -2,9 +2,9 @@ import { useEffect, useState } from "react";
 
 export type Route = "overview" | "methodology" | "lab";
 export const ROUTES: { id: Route; label: string; icon: string }[] = [
-  { id: "overview", label: "Overview", icon: "solar:widget-5-bold" },
-  { id: "methodology", label: "Methodology", icon: "solar:graph-up-bold" },
-  { id: "lab", label: "Strategy Lab", icon: "solar:test-tube-bold" },
+  { id: "overview", label: "Overview", icon: "solar:widget-5-linear" },
+  { id: "methodology", label: "Methodology", icon: "solar:graph-up-linear" },
+  { id: "lab", label: "Strategy Lab", icon: "solar:test-tube-linear" },
 ];
 
 function parse(): { route: Route; sub: string | null } {

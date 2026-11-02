@@ -67,10 +67,10 @@ function ForecastPanel({ city, intradayLock }: { city: City; intradayLock: Intra
   const display = lead ? lockedHigh(city.slug, lead, intradayLock) : null;
 
   return (
-    <Card className="h-full min-w-0 rounded-2xl">
+    <Card className="h-full min-w-0 rounded-3xl">
       <Card.Header className="flex flex-row items-start justify-between gap-3">
         <div>
-          <Card.Title className="text-base">Calibrated forecast</Card.Title>
+          <Card.Title className="text-base">Forecast</Card.Title>
           <Card.Description className="text-sm text-muted">
             {lead ? `Next settlement · ${shortDateUTC(lead.target_date)}` : "No forecast published"}
           </Card.Description>
@@ -81,14 +81,14 @@ function ForecastPanel({ city, intradayLock }: { city: City; intradayLock: Intra
           <Chip.Label>{methodLabel(lead?.method)}</Chip.Label>
         </Chip>
       </Card.Header>
-      <Card.Content className="space-y-4 pt-0">
+      <Card.Content className="flex flex-col gap-4 pt-0">
         {lead && display ? (
           <>
             <div className="flex flex-wrap items-end gap-x-6 gap-y-2">
               <div>
-                <p className="text-[11px] uppercase tracking-wide text-muted">Predicted high</p>
+                <p className="text-xs text-muted">Predicted high</p>
                 <p
-                  className="tnum font-display text-5xl font-bold leading-none"
+                  className="tnum text-5xl font-semibold leading-none tracking-tight"
                   style={{ color: tempColor(display.highF) }}
                 >
                   {Math.round(display.highF)}°
@@ -96,22 +96,22 @@ function ForecastPanel({ city, intradayLock }: { city: City; intradayLock: Intra
               </div>
               <dl className="flex flex-wrap gap-x-6 gap-y-2 text-sm">
                 <div>
-                  <dt className="text-[11px] uppercase tracking-wide text-muted">± sigma</dt>
+                  <dt className="text-xs text-muted">± sigma</dt>
                   <dd className="tnum font-medium">{lead.sigma_f == null ? "—" : `${round1(lead.sigma_f)}°`}</dd>
                 </div>
                 <div>
-                  <dt className="text-[11px] uppercase tracking-wide text-muted">Model spread</dt>
+                  <dt className="text-xs text-muted">Model spread</dt>
                   <dd className="tnum font-medium">{lead.model_spread_f == null ? "—" : `${round1(lead.model_spread_f)}°`}</dd>
                 </div>
                 <div>
-                  <dt className="text-[11px] uppercase tracking-wide text-muted">Members</dt>
+                  <dt className="text-xs text-muted">Members</dt>
                   <dd className="tnum font-medium">{lead.n_models ?? "—"}</dd>
                 </div>
               </dl>
             </div>
 
             {display.baselineF != null && (
-              <p className="max-w-prose text-xs leading-relaxed text-muted">
+              <p className="max-w-prose rounded-2xl bg-surface-secondary px-3 py-2.5 text-xs leading-relaxed text-muted">
                 {/* Only San Francisco has a flagship market signal. The other
                     nineteen cities get their intraday fold-in from the coverage
                     artifact, so the sentence must name the right publisher. */}
@@ -131,25 +131,23 @@ function ForecastPanel({ city, intradayLock }: { city: City; intradayLock: Intra
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[22rem] text-sm">
                   <thead>
-                    <tr className="border-b border-border/60 text-left font-mono text-[10px] uppercase tracking-wider text-muted">
+                    <tr className="border-b border-separator text-left text-xs text-muted">
                       <th className="py-2 pr-3 font-medium">Target</th>
                       <th className="py-2 pr-3 text-right font-medium">High</th>
                       <th className="py-2 pr-3 text-right font-medium">±σ</th>
                       <th className="py-2 text-right font-medium">Lead</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-border/40">
+                  <tbody className="divide-y divide-separator">
                     {leads.map((f: CityForecast) => {
                       const active = f.target_date === lead.target_date;
                       const row = lockedHigh(city.slug, f, intradayLock);
                       return (
-                        <tr key={`${f.target_date}-${f.lead_days ?? ""}`} className={active ? "bg-accent-soft/50" : ""}>
+                        <tr key={`${f.target_date}-${f.lead_days ?? ""}`} className={active ? "font-medium" : ""}>
                           <td className="py-2 pr-3 text-foreground">
                             {shortDateUTC(f.target_date)}
                             {row.baselineF != null && (
-                              <span className="ml-1.5 font-mono text-[9px] uppercase tracking-wide text-muted">
-                                intraday
-                              </span>
+                              <span className="ml-1.5 text-xs text-muted">intraday</span>
                             )}
                           </td>
                           <td className="py-2 pr-3 text-right">
@@ -225,10 +223,10 @@ function BookPanel({ city, currentStateAvailable }: { city: City; currentStateAv
   ];
 
   return (
-    <Card className="h-full min-w-0 rounded-2xl">
+    <Card className="h-full min-w-0 rounded-3xl">
       <Card.Header className="flex flex-row items-start justify-between gap-3">
         <div>
-          <Card.Title className="text-base">Settlement & paper book</Card.Title>
+          <Card.Title className="text-base">Settlement and paper books</Card.Title>
           <Card.Description className="text-sm text-muted">
             {city.settlement_source ?? "Official NWS climate report"}
           </Card.Description>
@@ -238,7 +236,7 @@ function BookPanel({ city, currentStateAvailable }: { city: City; currentStateAv
           <span className="text-muted">{fresh.label}</span>
         </span>
       </Card.Header>
-      <Card.Content className="space-y-4 pt-0">
+      <Card.Content className="flex flex-col gap-4 pt-0">
         <div className="grid grid-cols-2 gap-x-6 gap-y-4">
           <Stat
             label={`Last settlement · ${shortDateUTC(settled?.local_date)}`}
@@ -250,13 +248,13 @@ function BookPanel({ city, currentStateAvailable }: { city: City; currentStateAv
         <div className="overflow-x-auto">
           <table className="w-full min-w-[20rem] text-sm">
             <thead>
-              <tr className="border-b border-border/60 text-left font-mono text-[10px] uppercase tracking-wider text-muted">
+              <tr className="border-b border-separator text-left text-xs text-muted">
                 <th className="py-2 pr-3 font-medium">Book</th>
                 <th className="py-2 pr-3 text-right font-medium">Live</th>
                 <th className="py-2 text-right font-medium">Research</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-border/40">
+            <tbody className="divide-y divide-separator">
               {rows.map((r) => (
                 <tr key={r.k}>
                   <td className="py-2 pr-3 text-muted">{r.k}</td>
@@ -272,12 +270,12 @@ function BookPanel({ city, currentStateAvailable }: { city: City; currentStateAv
           {currentStateAvailable ? (
             <>
               <span className="tnum font-medium text-foreground">{(books.decisions_24h ?? 0).toLocaleString()}</span>{" "}
-              bracket-side decision evaluations in the last 24h
+              evaluations in the last 24h
             </>
           ) : (
-            "Current decision activity is unavailable until publication recovers"
+            "Current activity unavailable until publication recovers"
           )}{" "}
-          · station <span className="font-mono text-foreground">{city.station_id ?? "—"}</span>
+          · station <span className="text-foreground">{city.station_id ?? "—"}</span>
         </p>
       </Card.Content>
     </Card>
@@ -307,9 +305,9 @@ export function CityDetail({ city, flagshipTarget, intradayLock = null }: CityDe
   const approvedCount = flagshipTarget?.decisions?.filter((decision) => decision.approved).length ?? 0;
 
   return (
-    <div className="space-y-6">
+    <div className="flex flex-col gap-4">
       <Reveal>
-        <div className="grid gap-6 lg:grid-cols-[1.02fr_0.98fr]">
+        <div className="grid gap-4 lg:grid-cols-[1.02fr_0.98fr]">
           <ForecastPanel city={city} intradayLock={intradayLock} />
           <BookPanel city={city} currentStateAvailable={currentStateAvailable} />
         </div>
@@ -317,11 +315,11 @@ export function CityDetail({ city, flagshipTarget, intradayLock = null }: CityDe
 
       {isFlagship && !currentStateAvailable ? (
         <Reveal>
-          <div role="status" className="flex items-start gap-3 rounded-2xl bg-surface-secondary px-4 py-4">
-            <Icon icon="solar:clock-circle-bold" className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden="true" />
+          <div role="status" className="flex items-start gap-3 rounded-2xl bg-surface-secondary px-4 py-3">
+            <Icon icon="solar:clock-circle-linear" className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden="true" />
             <p className="text-sm leading-relaxed text-muted">
-              Current bracket prices, gate decisions, and prediction-market microstructure are unavailable until publication recovers.
-              The calibrated forecast and settled history remain visible above.
+              Live bracket prices and gate decisions return with the next current publication. The forecast and settled
+              history above stay visible.
             </p>
           </div>
         </Reveal>
@@ -329,47 +327,33 @@ export function CityDetail({ city, flagshipTarget, intradayLock = null }: CityDe
         <Reveal>
           <DetailDisclosure
             id="flagship-market-detail"
-            icon="solar:chart-square-bold"
-            title="Flagship market detail"
-            note="Runtime inputs, pricing pipeline, bracket edge chart, market comparison, and gate traces"
+            icon="solar:chart-square-linear"
+            title="Market detail"
+            note="Pricing steps, bracket edges and gate traces for the flagship market"
           >
-            <div className="flex items-center gap-2 text-sm text-muted">
-              <Icon icon="solar:star-bold" className="size-4 shrink-0 text-accent" aria-hidden="true" />
-              <span>
-                {city.name} is the flagship, so it publishes bracket-level prediction-market microstructure
-                on top of the calibrated forecast every city carries.
-              </span>
-            </div>
-
             <PipelineStepper />
 
-            <div className="grid gap-6 lg:grid-cols-[1.02fr_0.98fr]">
+            <div className="grid gap-4 lg:grid-cols-[1.02fr_0.98fr]">
               <ForecastInputs target={flagshipTarget} />
               <DecisionCard target={flagshipTarget} approvedCount={approvedCount} />
             </div>
 
             <EdgeChart target={flagshipTarget} />
             {mc?.available && (
-              <Finding>
-                The model reads the {targetLabel(flagshipTarget.target_date).toLowerCase()} high at{" "}
-                <strong>{f1(mc.model_high_f)}</strong> while the market implies{" "}
-                <strong>{f1(mc.implied_high_f)}</strong> — a{" "}
+              <Finding label="Model versus market">
+                Model <strong>{f1(mc.model_high_f)}</strong>, market <strong>{f1(mc.implied_high_f)}</strong>: a{" "}
                 <strong>
                   {mc.model_minus_market_f > 0 ? "+" : ""}
                   {round1(mc.model_minus_market_f)}°F
                 </strong>{" "}
-                disagreement. The market's most-likely bracket is <strong>{mc.modal_bin_label}</strong> at{" "}
-                {pct(mc.modal_probability, 0)}.
+                gap for the {targetLabel(flagshipTarget.target_date).toLowerCase()} high. The market's likeliest bracket is{" "}
+                <strong>{mc.modal_bin_label}</strong> at {pct(mc.modal_probability, 0)};{" "}
+                <strong>{approvedCount}</strong> candidate{approvedCount === 1 ? " is" : "s are"} eligible.
                 {ladder && (
                   <>
-                    {" "}The book's raw ladder prices {ladder.lead}
-                    <strong>{ladder.parLabel}</strong> of par — {ladder.descriptor}, not a cost to
-                    beat: the market probabilities shown here are already normalized by that total.
+                    {" "}Raw ladder prices {ladder.lead}<strong>{ladder.parLabel}</strong> of par, {ladder.descriptor}; probabilities shown are normalized.
                   </>
-                )}{" "}
-                This report marks{" "}
-                <strong>{approvedCount}</strong> bracket-side candidate{approvedCount === 1 ? "" : "s"} eligible for this target;
-                the separate paper-account scan handles admission and placement.
+                )}
               </Finding>
             )}
 
@@ -378,10 +362,8 @@ export function CityDetail({ city, flagshipTarget, intradayLock = null }: CityDe
         </Reveal>
       ) : (
         <Reveal>
-          <p className="rounded-2xl bg-surface-secondary/70 px-4 py-4 text-sm leading-relaxed text-muted">
-            {city.name} publishes its calibrated forecast, official settlement and paper-book activity
-            here. Bracket-level market microstructure — the model-vs-market bin overlay and the full
-            gate trace — is published for the San Francisco flagship.
+          <p className="rounded-2xl bg-surface-secondary px-4 py-3 text-sm text-muted">
+            Bracket-level market detail is published for San Francisco, the flagship market.
           </p>
         </Reveal>
       )}

@@ -23,7 +23,7 @@ export function ForecastInputs({ target }: { target: Target }) {
   }
 
   return (
-    <Card className="h-full rounded-2xl">
+    <Card className="h-full rounded-3xl">
       <Card.Header>
         <Card.Title className="text-base">Forecast inputs</Card.Title>
         <Card.Description className="text-sm text-muted">
@@ -31,7 +31,7 @@ export function ForecastInputs({ target }: { target: Target }) {
         </Card.Description>
       </Card.Header>
       <Card.Content className="pt-0">
-        <dl className="divide-y divide-border/60">
+        <dl className="divide-y divide-separator">
           {rows.map((r) => (
             <div key={r.k} className="flex items-center justify-between gap-4 py-2.5">
               <dt className="text-sm text-muted">{r.k}</dt>
@@ -48,7 +48,7 @@ export function ForecastInputs({ target }: { target: Target }) {
                         aria-label={`${r.k} detail: ${r.hint}`}
                         className="grid size-6 place-items-center rounded text-muted transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-[color:var(--focus)]"
                       >
-                        <Icon icon="solar:info-circle-bold" className="size-3.5" />
+                        <Icon icon="solar:info-circle-linear" className="size-3.5" />
                       </button>
                     </HoverCard.Trigger>
                     <HoverCard.Content className="max-w-[16rem]">

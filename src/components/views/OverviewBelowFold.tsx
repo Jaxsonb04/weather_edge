@@ -7,6 +7,7 @@ import { CityGrid, flagshipIntradayLock } from "../overview/CityGrid";
 import { TargetStatusWarning } from "../overview/TargetStatusWarning";
 import { SectionHeading } from "../ui/SectionHeading";
 import { Reveal } from "../ui/Reveal";
+import { InfoTip } from "../ui/InfoTip";
 import "../../styles/pro-overview.css";
 
 const DEFAULT_CITY = "sfo";
@@ -35,7 +36,7 @@ function DeferredOverviewSlab({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <div ref={ref} className="min-h-[44rem] lg:min-h-[36rem]">
+    <div ref={ref} className="min-h-[40rem] lg:min-h-[28rem]">
       {ready ? children : <DetailSkeleton />}
     </div>
   );
@@ -43,10 +44,10 @@ function DeferredOverviewSlab({ children }: { children: ReactNode }) {
 
 function DetailSkeleton() {
   return (
-    <div role="status" aria-label="Loading city forecast detail" className="grid gap-6 lg:grid-cols-2">
-      <Skeleton className="h-[23rem] rounded-2xl" />
-      <Skeleton className="h-[23rem] rounded-2xl" />
-      <Skeleton className="h-64 rounded-2xl lg:col-span-2" />
+    <div role="status" aria-label="Loading city forecast detail" className="skeleton--shimmer relative grid gap-4 overflow-hidden lg:grid-cols-2">
+      <Skeleton animationType="none" className="h-[22rem] rounded-3xl" />
+      <Skeleton animationType="none" className="h-[22rem] rounded-3xl" />
+      <Skeleton animationType="none" className="h-16 rounded-2xl lg:col-span-2" />
     </div>
   );
 }
@@ -89,80 +90,70 @@ export function OverviewBelowFold({ data, citiesData, citiesError, selected, onS
   const intradayLock = useMemo(() => flagshipIntradayLock(currentTargets), [currentTargets]);
 
   return (
-      <div className="mx-auto w-full max-w-6xl px-5 pb-20 sm:px-8">
-        {hasPastDueTargets && (
-          <div className="pt-6">
-            <TargetStatusWarning targets={signal.targets ?? []} />
-          </div>
-        )}
+    <div className="mx-auto flex w-full max-w-6xl flex-col gap-14 px-4 pb-20 sm:px-6 lg:px-8">
+      {hasPastDueTargets && <TargetStatusWarning targets={signal.targets ?? []} />}
+      <Reveal>
         <SkillStrip forecast={forecast} signal={signal} />
+      </Reveal>
 
-        <section id="cities" className="mt-14 scroll-mt-24">
-          <SectionHeading
-            index="01"
-            eyebrow="Coverage"
-            title="Twenty city markets, one calibrated engine"
-            sub="Every market settles on its own official NWS climate report and runs the same NWP/EMOS forecast. Select any city to drill into its call — San Francisco is the flagship, with the full market microstructure."
+      <section id="cities" aria-labelledby="cities-title" className="min-w-0 scroll-mt-24">
+        <SectionHeading
+          id="cities-title"
+          title="Cities"
+          sub={cities.length ? `${cities.length} markets · choose one for its detail` : "Choose a city for its detail"}
+          info={
+            <InfoTip label="city coverage">
+              Every market settles on its own NWS Climatological Report and runs the same multi-model EMOS forecast.
+              On a settlement day the high is updated with the observed high so far; the tile then also shows the
+              original EMOS issue. San Francisco is the flagship, with full market detail.
+            </InfoTip>
+          }
+        />
+        <Reveal>
+          <CityGrid
+            data={citiesData}
+            error={citiesError}
+            selected={selected}
+            onSelect={onSelect}
+            intradayLock={intradayLock}
           />
-          <Reveal>
-            <CityGrid
-              data={citiesData}
-              error={citiesError}
-              selected={selected}
-              onSelect={onSelect}
-              intradayLock={intradayLock}
-            />
-          </Reveal>
-        </section>
+        </Reveal>
+      </section>
 
-        <section id="today" className="mt-14 scroll-mt-24">
-          <SectionHeading
-            index="02"
-            eyebrow="Selected market"
-            title={activeCity ? `${activeCity.name} — next published forecast` : "Next published forecast"}
-            sub="The selected city's next high, its official settlement, and recent paper-trading activity. San Francisco also shows bracket-level model-vs-market detail when the current data is verified."
-          />
-          {activeCity ? (
-            <DeferredOverviewSlab>
-              <Suspense fallback={<DetailSkeleton />}>
-                <CityDetail
-                  city={activeCity}
-                  flagshipTarget={flagshipTarget}
-                  intradayLock={intradayLock}
-                />
-              </Suspense>
-            </DeferredOverviewSlab>
-          ) : citiesError ? (
-            /* A failed fetch is not a pre-publication state — say which one it is. */
-            <Reveal>
-              <p
-                role="alert"
-                className="rounded-2xl border border-dashed border-danger/40 px-4 py-6 text-center text-sm text-muted"
-              >
-                Couldn't load city coverage, so per-city detail is unavailable in this session.
-                Reload the page to try again.
-              </p>
-            </Reveal>
-          ) : (
-            <Reveal>
-              <p className="rounded-2xl border border-dashed border-border/70 px-4 py-6 text-center text-sm text-muted">
-                Per-city detail will appear once the twenty-city coverage artifact is published.
-              </p>
-            </Reveal>
-          )}
-        </section>
+      <section id="today" aria-labelledby="today-title" className="min-w-0 scroll-mt-24">
+        <SectionHeading
+          id="today-title"
+          title={activeCity?.name ?? "Selected city"}
+          sub="Forecast, settlement and paper activity"
+        />
+        {activeCity ? (
+          <DeferredOverviewSlab>
+            <Suspense fallback={<DetailSkeleton />}>
+              <CityDetail
+                city={activeCity}
+                flagshipTarget={flagshipTarget}
+                intradayLock={intradayLock}
+              />
+            </Suspense>
+          </DeferredOverviewSlab>
+        ) : citiesError ? (
+          /* A failed fetch is not a pre-publication state — say which one it is. */
+          <p role="alert" className="rounded-2xl bg-danger-soft px-4 py-6 text-center text-sm text-muted">
+            Couldn't load city coverage, so city detail is unavailable. Reload the page to try again.
+          </p>
+        ) : (
+          <p className="rounded-2xl bg-surface-secondary px-4 py-6 text-center text-sm text-muted">
+            City detail appears once the coverage artifact is published.
+          </p>
+        )}
+      </section>
 
-        <section id="system" className="mt-14 scroll-mt-24">
-          <SectionHeading
-            index="03"
-            eyebrow="Engineering"
-            title="What's running behind the page"
-            sub="The pieces that produce everything above: a forecasting stack, a market pricing engine, and the production setup that keeps it running unattended."
-          />
-          <Reveal>
-            <SystemHighlights />
-          </Reveal>
-        </section>
-      </div>
+      <section id="system" aria-labelledby="system-title" className="min-w-0 scroll-mt-24">
+        <SectionHeading id="system-title" title="How it works" sub="Three steps, running unattended on AWS" />
+        <Reveal>
+          <SystemHighlights />
+        </Reveal>
+      </section>
+    </div>
   );
 }

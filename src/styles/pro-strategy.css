@@ -5,22 +5,15 @@
 @import "@heroui/styles/components/accordion.css" layer(components);
 @import "@heroui/styles/components/checkbox.css" layer(components);
 @import "@heroui/styles/components/table.css" layer(components);
-@import "@heroui-pro/react/css/components/bar-chart.css" layer(components);
+/* Lab sections are HeroUI Tabs; the list container scrolls through ScrollShadow. */
+@import "@heroui/styles/components/scroll-shadow.css" layer(components);
+@import "@heroui/styles/components/tabs.css" layer(components);
 @import "@heroui-pro/react/css/components/chart-tooltip.css" layer(components);
 @import "@heroui-pro/react/css/components/data-grid.css" layer(components);
-@import "@heroui-pro/react/css/components/item-card.css" layer(components);
-@import "@heroui-pro/react/css/components/item-card-group.css" layer(components);
-@import "@heroui-pro/react/css/components/kpi.css" layer(components);
-@import "@heroui-pro/react/css/components/kpi-group.css" layer(components);
 @import "@heroui-pro/react/css/components/line-chart.css" layer(components);
-@import "@heroui-pro/react/css/components/segment.css" layer(components);
 @import "@heroui-pro/react/css/components/widget.css" layer(components);
 
-.item-card-group--grid > [data-slot="item-card"],
-.item-card-group--grid [data-slot="item-card-content"],
-.item-card-group--grid > .item-card,
-.item-card-group--grid .item-card__content,
-.item-card-group--grid .item-card__description,
+/* Accordion panels (disclosures, phone ledger rows) never widen their column. */
 .accordion__panel,
 .accordion__body,
 .accordion__body-inner {
@@ -29,48 +22,26 @@
   max-width: 100%;
 }
 
-.item-card-group--grid .item-card__description {
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
-@media (max-width: 639px) {
-  .item-card-group--grid {
-    --item-card-group-columns: 1;
-    grid-template-columns: minmax(0, 1fr);
-    width: 100%;
-    min-width: 0;
-    max-width: 100%;
-  }
-
-}
-
 /* Closed positions: one native desktop scroller, vertical records on phones. */
 .ledger-scroll {
   max-width: 100%;
   overflow-x: auto;
   overscroll-behavior-x: contain;
-  scrollbar-width: auto;
-  scrollbar-color: var(--muted) var(--surface-secondary);
+  scrollbar-width: thin;
+  scrollbar-color: var(--muted) transparent;
 }
-.ledger-scroll::-webkit-scrollbar { height: 10px; }
-.ledger-scroll::-webkit-scrollbar-track { background: var(--surface-secondary); }
-.ledger-scroll::-webkit-scrollbar-thumb {
-  background: var(--muted);
-  border: 3px solid var(--surface-secondary);
-  border-radius: 999px;
-}
-.ledger-record { border-bottom: 1px solid var(--border); }
+.ledger-record { border-bottom: 1px solid var(--separator); }
 .ledger-record:last-child { border-bottom: 0; }
 .ledger-record-trigger {
   display: flex;
   align-items: center;
   gap: 0.75rem;
   width: 100%;
-  min-height: 104px;
+  min-height: 88px;
   padding: 1rem;
   white-space: normal;
   overflow-wrap: anywhere;
+  transition: background-color 150ms ease;
 }
 .ledger-record-trigger:focus-visible {
   outline: 2px solid var(--focus);
@@ -87,21 +58,6 @@
 }
 .ledger-record-details dt { color: var(--muted); margin-bottom: 0.25rem; }
 .ledger-record-details dd { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.city-breakdown summary { list-style: none; }
-.city-breakdown summary::-webkit-details-marker { display: none; }
-.city-breakdown-chevron { transition: transform 180ms ease-out; }
-.city-breakdown[open] .city-breakdown-chevron { transform: rotate(180deg); }
-@media (max-width: 639px) {
-  .profile-option-content {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 0.75rem;
-  }
-  .profile-option-content > :first-child { display: none; }
-  .profile-option-content > :last-child { flex-direction: column; align-items: flex-end; gap: 0.5rem; }
-  .profile-option-content > :last-child > :first-child { text-align: right; }
-}
 @media (prefers-reduced-motion: reduce) {
-  .city-breakdown-chevron { transition: none; }
+  .ledger-record-trigger { transition: none; }
 }

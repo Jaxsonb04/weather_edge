@@ -17,19 +17,19 @@ import { usePublication } from "../../lib/publication";
 
 const PROFILE_META: Record<string, { icon: string; blurb: string }> = {
   live: {
-    icon: "solar:shield-check-bold",
+    icon: "solar:shield-check-linear",
     blurb: "Live Stability — the paper readiness book, with published edge, drawdown, source, and liquidity gates kept binding.",
   },
   research: {
-    icon: "solar:test-tube-bold",
+    icon: "solar:test-tube-linear",
     blurb: "Experimental book — the loosest filters at the smallest stakes, so it records the full range of opportunities quickly.",
   },
   "research-target": {
-    icon: "solar:target-bold",
+    icon: "solar:target-linear",
     blurb: "Research ROI — a separate paper account pursuing the fixed objective published for each objective day under a higher bounded-risk policy.",
   },
   "research-motion": {
-    icon: "solar:chart-2-bold",
+    icon: "solar:chart-2-linear",
     blurb: "A separate high-activity experimental account built to collect execution evidence. It does not contribute to the daily objective or real-money readiness.",
   },
 };
@@ -137,7 +137,7 @@ function BookColumn({ s, p, currentStateAvailable }: { s: StrategyLab; p: Profil
               primary ? "bg-accent-soft text-accent ring-accent/25" : "bg-surface-secondary text-[color:var(--series-market)] ring-border/60"
             }`}
           >
-            <Icon icon={meta?.icon ?? "solar:notebook-bold"} className="size-4.5" aria-hidden="true" />
+            <Icon icon={meta?.icon ?? "solar:notebook-linear"} className="size-4.5" aria-hidden="true" />
           </span>
           <div>
             <Card.Title className="text-base">{displayLabel}</Card.Title>

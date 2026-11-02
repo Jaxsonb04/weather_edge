@@ -19,7 +19,7 @@ const chartState = vi.hoisted(() => ({
 }));
 
 vi.mock("@iconify/react/offline", () => ({ Icon: () => null }));
-vi.mock("recharts", () => ({ ReferenceLine: () => null }));
+vi.mock("recharts", () => ({ ReferenceArea: () => null, ReferenceLine: () => null }));
 vi.mock("@heroui/react/card", () => {
   const Part = ({ children }: { children?: React.ReactNode }) => <div>{children}</div>;
   const Card = Part as typeof Part & { Header: typeof Part; Content: typeof Part; Title: typeof Part };

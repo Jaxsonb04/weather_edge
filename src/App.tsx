@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import { Icon } from "@iconify/react/offline";
+import { Skeleton } from "@heroui/react/skeleton";
 import { useDashboardData } from "./lib/data";
 import { useTheme } from "./lib/theme";
 import { ROUTES, useHashRoute } from "./lib/useHashRoute";
@@ -24,9 +24,13 @@ const DISCLAIMER = "Paper-trading research only. Live orders are disabled.";
 
 function ViewLoader() {
   return (
-    <div role="status" aria-live="polite" className="flex min-h-[60vh] items-center justify-center gap-2 text-muted">
-      <Icon icon="solar:refresh-bold" className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-      <span className="text-sm">Loading…</span>
+    <div className="mx-auto w-full max-w-6xl px-4 pt-10 sm:px-6 sm:pt-14 lg:px-8">
+      <p role="status" aria-live="polite" className="sr-only">Loading…</p>
+      <div className="skeleton--shimmer relative flex flex-col gap-4 overflow-hidden" aria-hidden="true">
+        <Skeleton animationType="none" className="h-6 w-40 rounded-full" />
+        <Skeleton animationType="none" className="h-10 w-2/3 rounded-2xl" />
+        <Skeleton animationType="none" className="mt-6 h-72 w-full rounded-3xl" />
+      </div>
     </div>
   );
 }
@@ -100,7 +104,7 @@ export default function App() {
   }, []);
 
   return (
-    <div className="grain flex min-h-screen flex-col bg-background text-foreground">
+    <div className="flex min-h-screen flex-col bg-background text-foreground">
       <a
         href="#main-content"
         onClick={(event) => {
@@ -108,7 +112,7 @@ export default function App() {
           mainRef.current?.focus({ preventScroll: true });
           mainRef.current?.scrollIntoView?.();
         }}
-        className="fixed left-4 top-3 z-50 -translate-y-20 rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background no-underline shadow-lg transition-transform duration-150 focus:translate-y-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] motion-reduce:transition-none"
+        className="fixed left-4 top-3 z-50 -translate-y-20 rounded-full bg-foreground px-4 py-2 text-sm font-semibold text-background no-underline transition-transform duration-150 focus:translate-y-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] motion-reduce:transition-none"
       >
         Skip to main content
       </a>
@@ -142,8 +146,11 @@ export default function App() {
         tabIndex={-1}
         aria-label={`${ROUTES.find((item) => item.id === route)?.label ?? "WeatherEdge"} content`}
         aria-labelledby={`${route}-page-title`}
-        className="min-h-screen flex-1"
+        className="min-h-screen flex-1 focus:outline-none"
       >
+        {/* Keyed by route so each view replays one short CSS entrance; CSS (not
+            a frame callback) so a backgrounded tab still settles visible. */}
+        <div key={route} className="route-enter">
         {route === "lab" ? (
           <ErrorBoundary key={route}>
             <Suspense fallback={<ViewLoader />}>
@@ -169,6 +176,7 @@ export default function App() {
             </Suspense>
           </ErrorBoundary>
         )}
+        </div>
       </main>
 
       <Footer disclaimer={data?.signal?.disclaimer ?? DISCLAIMER} repoUrl={REPO} liveUrl={LIVE} />

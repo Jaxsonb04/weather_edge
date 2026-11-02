@@ -13,6 +13,7 @@ import {
   type StrategyLab,
 } from "../../lib/strategy";
 import { Stat } from "../ui/Stat";
+import { InfoTip } from "../ui/InfoTip";
 import { EquityCurve } from "./EquityCurve";
 
 type ArchiveStory = {
@@ -27,33 +28,29 @@ const ARCHIVE_STORIES: Record<string, ArchiveStory> = {
   "live-legacy": {
     stage: "Historical benchmark",
     title: "Prior readiness benchmark",
-    note:
-      "The earlier readiness strategy remains the long-run benchmark. Its attributed result stays separate from the shared historical account that also carried research activity.",
-    icon: "solar:shield-check-bold",
+    note: "The earlier readiness strategy. Its result is attribution inside a shared historical account, not that account's balance.",
+    icon: "solar:shield-check-linear",
     color: "default",
   },
   "research-target-v1": {
     stage: "Archived control",
     title: "Baseline control record",
-    note:
-      "This archived control is the comparison baseline retained beside later ROI policies. Its dated outcome and exact resolved count remain visible without treating the result as a forecast.",
-    icon: "solar:compass-big-bold",
+    note: "The comparison baseline kept beside later ROI policies.",
+    icon: "solar:compass-big-linear",
     color: "default",
   },
   "research-target-v3": {
     stage: "Rejected experiment",
     title: "Rejected ROI policy",
-    note:
-      "The v3 policy was rejected and frozen after evaluation. Its realized outcome remains visible as a discarded branch; the chart reports what happened, not proof of why the policy underperformed.",
-    icon: "solar:close-circle-bold",
+    note: "Rejected and frozen after evaluation. The chart shows what happened, not why.",
+    icon: "solar:close-circle-linear",
     color: "warning",
   },
   "research-target-v4": {
     stage: "Adopted revision",
     title: "Adopted ROI revision",
-    note:
-      "The v4 revision was adopted as the next policy step. Its exact small sample stays visible rather than being presented as proof of mechanism or a promised run rate.",
-    icon: "solar:check-circle-bold",
+    note: "Adopted as the next policy step. A small sample, not proof of a run rate.",
+    icon: "solar:check-circle-linear",
     color: "accent",
   },
 };
@@ -62,8 +59,8 @@ function archiveStory(profile: ProfileEntry): ArchiveStory {
   return ARCHIVE_STORIES[profile.risk_profile] ?? {
     stage: "Archived experiment",
     title: profileDisplayLabel(profile),
-    note: "This published profile retains its original result and dated evidence. A policy conclusion is not published for this era; zero trades and missing evidence remain visible.",
-    icon: "solar:archive-check-bold",
+    note: "A policy conclusion is not published for this era; zero trades and missing evidence stay visible.",
+    icon: "solar:archive-check-linear",
     color: "default",
   };
 }
@@ -190,14 +187,14 @@ function DailyEvidence({ days, title }: { days: DayRow[]; title: string }) {
   if (!days.length) return null;
   const rows = [...days].sort((a, b) => b.date.localeCompare(a.date));
   return (
-    <details className="group min-w-0 border-t border-border/60">
-      <summary className="flex min-h-12 cursor-pointer touch-manipulation list-none items-center justify-between gap-3 px-4 text-xs font-semibold text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--focus)] [&::-webkit-details-marker]:hidden">
+    <details className="group min-w-0 border-t border-separator">
+      <summary className="flex min-h-12 cursor-pointer touch-manipulation list-none items-center justify-between gap-3 px-5 text-xs font-medium text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--focus)] [&::-webkit-details-marker]:hidden">
         <span className="min-w-0">Inspect {title} daily evidence</span>
         <span className="flex shrink-0 items-center gap-2 font-normal text-muted">
           {rows.length} dated row{rows.length === 1 ? "" : "s"}
           <Icon
             icon="solar:alt-arrow-down-linear"
-            className="size-3.5 transition-transform group-open:rotate-180 motion-reduce:transition-none"
+            className="size-3.5 transition-transform duration-200 group-open:rotate-180 motion-reduce:transition-none"
             aria-hidden="true"
           />
         </span>
@@ -206,11 +203,11 @@ function DailyEvidence({ days, title }: { days: DayRow[]; title: string }) {
         role="region"
         aria-label={`${title} scrollable daily evidence table`}
         tabIndex={0}
-        className="w-full min-w-0 max-w-full overflow-x-auto overscroll-x-contain border-t border-border/60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--focus)]"
+        className="w-full min-w-0 max-w-full overflow-x-auto overscroll-x-contain border-t border-separator focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--focus)]"
       >
         <table className="w-full min-w-[34rem] border-collapse text-left text-xs">
           <caption className="sr-only">{title} daily attribution evidence</caption>
-          <thead className="bg-surface-secondary text-[10px] uppercase tracking-wide text-muted">
+          <thead className="bg-surface-secondary text-xs text-muted">
             <tr>
               <th scope="col" className="px-4 py-2 font-medium">Date</th>
               <th scope="col" className="px-3 py-2 text-right font-medium">Day P&amp;L</th>
@@ -219,7 +216,7 @@ function DailyEvidence({ days, title }: { days: DayRow[]; title: string }) {
               <th scope="col" className="px-4 py-2 text-right font-medium">W–L</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-border/50">
+          <tbody className="divide-y divide-separator">
             {rows.map((day) => {
               const daily = typeof day.realized_pnl === "number" && Number.isFinite(day.realized_pnl)
                 ? day.realized_pnl
@@ -236,7 +233,7 @@ function DailyEvidence({ days, title }: { days: DayRow[]; title: string }) {
                   : null;
               return (
                 <tr key={day.date}>
-                  <th scope="row" className="whitespace-nowrap px-4 py-2.5 font-mono font-medium text-foreground">
+                  <th scope="row" className="tnum whitespace-nowrap px-4 py-2.5 font-medium text-foreground">
                     {formattedDate(day.date)}
                   </th>
                   <td className={`tnum px-3 py-2.5 text-right font-medium ${(daily ?? 0) > 0 ? "text-success" : (daily ?? 0) < 0 ? "text-danger" : "text-muted"}`}>
@@ -298,21 +295,19 @@ function ArchiveEvidenceCard({
       aria-labelledby={`archive-tab-${profile.risk_profile}`}
       tabIndex={0}
       data-archive-profile={profile.risk_profile}
-      className="w-full min-w-0 max-w-full overflow-hidden rounded-2xl border border-border/70 bg-surface/90 shadow-sm focus-visible:ring-2 focus-visible:ring-[color:var(--focus)]"
+      className="fade-in w-full min-w-0 max-w-full overflow-hidden rounded-3xl focus-visible:ring-2 focus-visible:ring-[color:var(--focus)]"
     >
-        <Card.Header className="flex min-w-0 flex-col items-stretch gap-4 border-b border-border/55 p-4 sm:flex-row sm:items-start sm:justify-between sm:p-5">
+        <Card.Header className="flex min-w-0 flex-col items-stretch gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="flex min-w-0 items-start gap-3">
-            <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-surface-secondary text-accent ring-1 ring-border/60">
-              <Icon icon={story.icon} className="size-5" aria-hidden="true" />
-            </span>
+            <Icon icon={story.icon} className="mt-0.5 size-5 shrink-0 text-[color:var(--accent-text)]" aria-hidden="true" />
             <div className="min-w-0">
-              <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-[color:var(--accent-text)]">
+              <p className="text-xs font-medium text-[color:var(--accent-text)]">
                 {story.stage}
               </p>
-              <Card.Title className="mt-1 break-words text-balance text-lg leading-tight">
+              <Card.Title className="mt-0.5 break-words text-balance text-lg leading-tight">
                 {story.title}
               </Card.Title>
-              <p className="mt-1 break-words text-xs leading-relaxed text-muted">{profileDisplayLabel(profile)}</p>
+              <p className="mt-0.5 break-words text-xs text-muted">{profileDisplayLabel(profile)}</p>
             </div>
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
@@ -325,7 +320,7 @@ function ArchiveEvidenceCard({
           </div>
         </Card.Header>
 
-        <Card.Content className="min-w-0 space-y-5 p-4 sm:p-5">
+        <Card.Content className="flex min-w-0 flex-col gap-5">
           <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(17rem,0.65fr)] xl:items-start">
             <div className="min-w-0">
               <EquityCurve
@@ -343,15 +338,15 @@ function ArchiveEvidenceCard({
               />
             </div>
 
-            <div className="min-w-0 space-y-5">
+            <div className="flex min-w-0 flex-col gap-5">
               <div>
-                <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
+                <p className="text-xs text-muted">
                   Evidence window
                 </p>
-                <p className="mt-1 text-sm font-semibold text-foreground">
+                <p className="mt-0.5 text-sm font-semibold text-foreground">
                   {dateRange(evidenceStart, evidenceEnd)}
                 </p>
-                <p className="mt-1 text-xs leading-relaxed text-muted">{activity}</p>
+                <p className="mt-0.5 text-xs text-muted">{activity}</p>
               </div>
 
               <div className="grid grid-cols-1 gap-x-5 gap-y-4 min-[360px]:grid-cols-2">
@@ -364,6 +359,12 @@ function ArchiveEvidenceCard({
                 <Stat
                   label="Profitable exits"
                   value={summary?.hit_rate == null ? "—" : pct(summary.hit_rate, 1)}
+                  info={
+                    <InfoTip label="profitable exits">
+                      Any closed or settled position that realized a gain, mostly monitor take-profit or stop closes
+                      rather than market settlements.
+                    </InfoTip>
+                  }
                 />
                 <Stat
                   label="ROI · resolved"
@@ -376,23 +377,15 @@ function ArchiveEvidenceCard({
                 />
                 <Stat label="Open · resting" value={`${open} · ${pending}`} />
               </div>
-              {/* Same field as every other surface that renders hit_rate. */}
-              <p className="mt-3 text-[11px] leading-relaxed text-muted">
-                Profitable exits count any closed-or-settled position that realized a gain — mostly monitor
-                take-profit or stop closes, not market settlements.
-              </p>
             </div>
           </div>
 
           <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,auto)] lg:items-start">
-            <p className="text-sm leading-relaxed text-muted">
-              <strong className="font-semibold text-foreground">What changed:</strong>{" "}
-              {story.note}
-            </p>
-            <p className="flex min-w-0 items-start gap-2 rounded-xl bg-surface-secondary px-3 py-2.5 text-xs leading-relaxed text-muted ring-1 ring-border/50">
+            <p className="text-sm leading-relaxed text-muted">{story.note}</p>
+            <p className="flex min-w-0 items-start gap-2 rounded-2xl bg-surface-secondary px-3 py-2.5 text-xs leading-relaxed text-muted">
               <Icon
-                icon={account ? "solar:safe-circle-bold" : "solar:shield-warning-bold"}
-                className="mt-0.5 size-4 shrink-0 text-accent"
+                icon={account ? "solar:safe-circle-linear" : "solar:shield-warning-linear"}
+                className="mt-0.5 size-4 shrink-0 text-[color:var(--accent-text)]"
                 aria-hidden="true"
               />
               <span>
@@ -416,8 +409,8 @@ function ArchiveEvidenceCard({
           </div>
 
           {settling && (
-            <p className="flex items-start gap-2 rounded-xl border border-warning/25 bg-warning/5 px-3 py-2.5 text-xs leading-relaxed text-warning">
-              <Icon icon="solar:refresh-circle-bold" className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+            <p className="flex items-start gap-2 rounded-2xl bg-warning-soft px-3 py-2.5 text-xs leading-relaxed text-foreground">
+              <Icon icon="solar:refresh-circle-linear" className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden="true" />
               {open} preserved open position{open === 1 ? "" : "s"}
               {pending > 0 ? ` and ${pending} resting order${pending === 1 ? "" : "s"}` : ""} still
               settling; this achieved record can move.
@@ -470,26 +463,17 @@ export function ArchivedPerformance({ s }: { s: StrategyLab }) {
   };
 
   return (
-    <div className="min-w-0 space-y-4">
-      <div className="grid min-w-0 gap-3 rounded-2xl bg-surface-secondary/60 p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:p-5">
-        <div className="flex min-w-0 items-start gap-3">
-          <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-accent-soft text-accent ring-1 ring-accent/25">
-            <Icon icon="solar:archive-check-bold" className="size-5" aria-hidden="true" />
-          </span>
-          <div className="min-w-0">
-            <h3 id="archived-strategy-attribution" className="text-base font-semibold text-foreground">
-              Research decision trail
-            </h3>
-            <p className="mt-1 max-w-3xl text-xs leading-relaxed text-muted">
-              Every published prior profile is available, including zero-trade experiments. Choose a profile to inspect its dated graph, exact record, and any published policy decision.
-            </p>
-          </div>
+    <div className="flex min-w-0 flex-col gap-4">
+      <div className="flex min-w-0 flex-wrap items-end justify-between gap-3">
+        <div className="min-w-0">
+          <h3 id="archived-strategy-attribution" className="text-lg font-semibold tracking-tight text-foreground">
+            Research decision trail
+          </h3>
+          <p className="mt-0.5 text-sm text-muted">Every earlier account, including zero-trade experiments.</p>
         </div>
-        <div className="flex flex-wrap gap-2 sm:justify-end">
-          <Chip size="sm" variant="soft" color="accent">
-            <Chip.Label>{profiles.length} archived profiles</Chip.Label>
-          </Chip>
-        </div>
+        <Chip size="sm" variant="soft">
+          <Chip.Label>{profiles.length} archived profiles</Chip.Label>
+        </Chip>
       </div>
 
       <section
@@ -520,13 +504,13 @@ export function ArchivedPerformance({ s }: { s: StrategyLab }) {
                 data-archive-option={profile.risk_profile}
                 onClick={() => setSelectedKey(profile.risk_profile)}
                 onKeyDown={(event) => handleTabKeyDown(event, index)}
-                className={`group min-h-24 min-w-0 touch-manipulation rounded-xl border px-3 py-3 text-left transition-colors focus-visible:ring-2 focus-visible:ring-[color:var(--focus)] motion-reduce:transition-none ${
+                className={`group min-h-24 min-w-0 touch-manipulation rounded-2xl px-3 py-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] motion-reduce:transition-none ${
                   selectedTab
-                    ? "border-accent/45 bg-accent-soft text-foreground shadow-sm"
-                    : "border-border/60 bg-surface/65 text-muted hover:border-border hover:bg-surface-secondary"
+                    ? "bg-surface text-foreground shadow-surface ring-2 ring-accent"
+                    : "bg-surface-secondary text-muted hover:bg-surface-tertiary"
                 }`}
               >
-                <span className="flex min-w-0 items-center justify-between gap-2 text-[10px] font-semibold text-[color:var(--accent-text)]">
+                <span className="flex min-w-0 items-center justify-between gap-2 text-xs font-medium text-[color:var(--accent-text)]">
                   <span>{String(index + 1).padStart(2, "0")} · {story.stage}</span>
                   <Icon
                     icon={story.icon}
@@ -537,7 +521,7 @@ export function ArchivedPerformance({ s }: { s: StrategyLab }) {
                 <span className="mt-1.5 block break-words text-sm font-semibold leading-snug text-foreground">
                   {story.title}
                 </span>
-                <span className="tnum mt-2 flex min-w-0 items-end justify-between gap-2 text-[11px] leading-tight">
+                <span className="tnum mt-2 flex min-w-0 items-end justify-between gap-2 text-xs leading-tight">
                   <span className="min-w-0">
                     <span className={`block ${(summary?.realized_pnl ?? 0) >= 0 ? "text-success" : "text-danger"}`}>
                       {summary?.realized_pnl == null ? "P&L —" : money(summary.realized_pnl)}
@@ -562,13 +546,10 @@ export function ArchivedPerformance({ s }: { s: StrategyLab }) {
         )}
       </section>
 
-      <aside className="flex min-w-0 items-start gap-2 px-1 text-xs leading-relaxed text-muted">
-        <Icon icon="solar:filter-bold" className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden="true" />
-        <p>
-          <strong className="font-semibold text-foreground">All published histories retained.</strong>{" "}
-          Balances from separate paper accounts are never combined. Shared-account legacy curves show strategy attribution; zero-trade profiles remain selectable and missing results remain unavailable.
-        </p>
-      </aside>
+      <p className="text-xs text-muted">
+        <strong className="font-semibold text-foreground">All published histories retained.</strong> Balances from
+        separate accounts are never combined.
+      </p>
     </div>
   );
 }

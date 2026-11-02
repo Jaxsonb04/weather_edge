@@ -1,32 +1,27 @@
-import { ItemCard } from "@heroui-pro/react/item-card";
-import { ItemCardGroup } from "@heroui-pro/react/item-card-group";
-import { Icon } from "@iconify/react/offline";
 import type { StrategyLab } from "../../lib/strategy";
+import { DetailDisclosure } from "../ui/DetailDisclosure";
 
-/** Glossary the lab publishes so the numbers are read with the right caveats. */
+/** The Lab's published glossary, folded away until someone needs a definition. */
 export function ResearchNotes({ s }: { s: StrategyLab }) {
   const notes = s.research_notes ?? [];
   if (!notes.length) return null;
   return (
-    <ItemCardGroup layout="grid" columns={2}>
-      <ItemCardGroup.Header>
-        <ItemCardGroup.Title>Glossary</ItemCardGroup.Title>
-        <ItemCardGroup.Description>How to read the figures on this page</ItemCardGroup.Description>
-      </ItemCardGroup.Header>
-      {notes.map((n) => {
-        const note = n.note.replace(/repeated 15[ -]minute scans/gi, "Repeated scheduled scans");
-        return (
-        <ItemCard key={n.term} variant="secondary" className="min-w-0">
-          <ItemCard.Icon>
-            <Icon icon="solar:notebook-bold" className="size-4 text-accent" aria-hidden="true" />
-          </ItemCard.Icon>
-          <ItemCard.Content className="min-w-0">
-            <ItemCard.Title className="whitespace-normal break-words">{n.term}</ItemCard.Title>
-            <ItemCard.Description className="whitespace-normal break-words">{note}</ItemCard.Description>
-          </ItemCard.Content>
-        </ItemCard>
-        );
-      })}
-    </ItemCardGroup>
+    <DetailDisclosure
+      id="research-glossary"
+      icon="solar:notebook-linear"
+      title="Glossary"
+      note={`${notes.length} terms used on this page`}
+    >
+      <dl className="grid min-w-0 gap-x-8 gap-y-4 md:grid-cols-2">
+        {notes.map((n) => (
+          <div key={n.term} className="min-w-0">
+            <dt className="text-sm font-medium text-foreground">{n.term}</dt>
+            <dd className="mt-0.5 text-sm leading-relaxed text-muted">
+              {n.note.replace(/repeated 15[ -]minute scans/gi, "Repeated scheduled scans")}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </DetailDisclosure>
   );
 }

@@ -4,7 +4,7 @@ import { DataGrid, type DataGridColumn } from "@heroui-pro/react/data-grid";
 import { pct, qualityColor, signedPct, type Decision, type Target } from "../../lib/data";
 import { BracketSheet } from "./BracketSheet";
 
-const HEAD = "font-mono text-[11px] uppercase tracking-wider text-muted";
+const HEAD = "text-xs font-medium text-muted";
 
 export function MarketBook({ target }: { target: Target }) {
   const [active, setActive] = useState<Decision | null>(null);
@@ -25,7 +25,7 @@ export function MarketBook({ target }: { target: Target }) {
       cell: (d) => (
         <div className="flex items-center gap-2">
           <span className="font-medium text-foreground">{d.label}</span>
-          <span className="rounded bg-foreground/8 px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase text-muted">
+          <span className="rounded-full bg-default px-2 py-0.5 text-xs font-medium text-muted">
             {d.side}
           </span>
         </div>
@@ -55,7 +55,7 @@ export function MarketBook({ target }: { target: Target }) {
       headerClassName: HEAD,
       cell: (d) => (
         <div className="ml-auto flex w-24 items-center gap-2">
-          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-foreground/10">
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-default">
             <div
               className="h-full rounded-full"
               style={{ width: `${Math.min(100, Math.max(0, d.trade_quality_score))}%`, background: qualityColor(d.trade_quality_score) }}

@@ -11,7 +11,7 @@ import {
   type StrategyLab,
 } from "../../lib/strategy";
 
-const HEAD = "font-mono text-[11px] uppercase tracking-wider text-muted";
+const HEAD = "text-xs font-medium text-muted";
 
 const mobileQuery = "(max-width: 767px)";
 const subscribeMobile = (notify: () => void) => {
@@ -112,7 +112,7 @@ export function LedgerTable({ s, limit, detailed = false, rows: rowsProp, hidePr
   };
   if (!rows.length) {
     return (
-      <p className="rounded-2xl border border-dashed border-border/70 px-4 py-6 text-center text-sm text-muted">
+      <p className="px-4 py-8 text-center text-sm text-muted">
         {emptyNote ?? "No closed positions in this slice yet."}
       </p>
     );
@@ -121,7 +121,7 @@ export function LedgerTable({ s, limit, detailed = false, rows: rowsProp, hidePr
   if (mobile) {
     return (
       <div className="ledger-mobile">
-        <p className="px-4 pb-2 pt-4 text-xs text-muted">{rows.length} records · tap a position for trade details</p>
+        <p className="px-4 pb-2 pt-4 text-xs text-muted">{rows.length} trades · tap one for details</p>
         <Accordion aria-label="Closed paper positions" allowsMultipleExpanded hideSeparator>
           {rows.map((d) => {
             const city = cityForTicker(d.ticker ?? "");
@@ -132,11 +132,11 @@ export function LedgerTable({ s, limit, detailed = false, rows: rowsProp, hidePr
                   <Accordion.Trigger className="ledger-record-trigger">
                     <span className="min-w-0 flex-1 text-left">
                       <span className="mb-1 block text-xs font-normal text-muted">{city?.name ?? "Unmapped city"} · {d.target_date ?? "Target unavailable"}</span>
-                      <span className="block text-sm font-semibold text-foreground">{d.label} <span className="ml-1 font-mono text-xs text-muted">{d.side}</span></span>
+                      <span className="block text-sm font-semibold text-foreground">{d.label} <span className="ml-1 text-xs font-semibold text-muted">{d.side}</span></span>
                       {!hideProfile && <span className="mt-1 block text-xs font-normal text-muted">{d.risk_profile}</span>}
                     </span>
                     <span className="flex shrink-0 flex-col items-end gap-1.5">
-                      <span className={`tnum font-display text-base font-semibold ${d.realized_pnl > 0 ? "text-success" : d.realized_pnl < 0 ? "text-danger" : "text-muted"}`}>{money(d.realized_pnl)}</span>
+                      <span className={`tnum text-base font-semibold ${d.realized_pnl > 0 ? "text-success" : d.realized_pnl < 0 ? "text-danger" : "text-muted"}`}>{money(d.realized_pnl)}</span>
                       <Chip size="sm" variant="soft" color={outcome.color}><Chip.Label>{outcome.label}</Chip.Label></Chip>
                     </span>
                     <Accordion.Indicator aria-hidden="true" className="ml-1 shrink-0 text-muted" />
@@ -176,9 +176,9 @@ export function LedgerTable({ s, limit, detailed = false, rows: rowsProp, hidePr
       headerClassName: HEAD,
       cell: (d) => (
         <div className="min-w-0">
-          <span className="block text-[11px] text-muted">{cityForTicker(d.ticker ?? "")?.name ?? "Unmapped city"}</span>
+          <span className="block text-xs text-muted">{cityForTicker(d.ticker ?? "")?.name ?? "Unmapped city"}</span>
           <span className="font-medium text-foreground">{d.label}</span>{" "}
-          <span className="font-mono text-[11px] font-medium text-muted">{d.side}</span>
+          <span className="text-xs font-semibold text-muted">{d.side}</span>
         </div>
       ),
     },
@@ -189,7 +189,7 @@ export function LedgerTable({ s, limit, detailed = false, rows: rowsProp, hidePr
       cell: (d) => {
         const city = cityForTicker(d.ticker ?? "");
         return city ? (
-          <span title={city.name} className="font-mono text-[11px] font-medium uppercase text-muted">
+          <span title={city.name} className="text-xs font-medium uppercase text-muted">
             {city.slug}
           </span>
         ) : (
@@ -206,8 +206,8 @@ export function LedgerTable({ s, limit, detailed = false, rows: rowsProp, hidePr
             headerClassName: HEAD,
             cell: (d) => (
               <span
-                className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase ${
-                  d.risk_profile === "live" ? "bg-accent-soft text-[color:var(--accent-text)]" : "bg-foreground/8 text-muted"
+                className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                  d.risk_profile === "live" ? "bg-accent-soft text-[color:var(--accent-text)]" : "bg-default text-muted"
                 }`}
               >
                 {d.risk_profile}
@@ -331,10 +331,10 @@ export function LedgerTable({ s, limit, detailed = false, rows: rowsProp, hidePr
   return (
     <div ref={root} className="ledger-desktop w-full min-w-0 max-w-full">
       <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
-        <p className="text-xs text-muted">{rows.length} published records <span className="text-foreground/30">/</span> Paper execution</p>
+        <p className="tnum text-xs text-muted">{rows.length} trades</p>
         {detailed && <Button variant="secondary" size="sm" className="min-h-11 text-foreground" aria-pressed={showDetails} onPress={() => setShowDetails((value) => !value)}>{showDetails ? "Essential columns" : "All trade details"}</Button>}
       </div>
-      {(scrollState.left || scrollState.right) && <div className="flex items-center justify-between gap-3 border-t border-border/50 px-4 py-2">
+      {(scrollState.left || scrollState.right) && <div className="flex items-center justify-between gap-3 border-t border-separator px-4 py-2">
         <p className="text-xs text-muted">Bracket &amp; P&amp;L stay in view</p>
         <div className="flex gap-2">
           <Button variant="ghost" size="sm" className="min-h-11" isDisabled={!scrollState.left} onPress={() => scrollColumns(-1)}>← Previous columns</Button>

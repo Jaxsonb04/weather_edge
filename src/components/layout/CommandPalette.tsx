@@ -37,7 +37,7 @@ export function CommandPalette({ open, onOpenChange, onToggleTheme, onNavigate, 
           <Command.Dialog>
             <Command.InputGroup>
               <Command.InputGroup.Prefix>
-                <Icon icon="solar:magnifer-bold" className="size-4 text-muted" aria-hidden="true" />
+                <Icon icon="solar:magnifer-linear" className="size-4 text-muted" aria-hidden="true" />
               </Command.InputGroup.Prefix>
               <Command.InputGroup.Input placeholder="Go to a view, open links, toggle theme…" />
               <Command.InputGroup.ClearButton />
@@ -53,7 +53,7 @@ export function CommandPalette({ open, onOpenChange, onToggleTheme, onNavigate, 
               </Command.Group>
               <Command.Group heading="Actions">
                 <Command.Item textValue="Toggle theme" onAction={() => { onToggleTheme(); onOpenChange(false); }}>
-                  <Icon icon="solar:moon-stars-bold" className="size-4 text-muted" aria-hidden="true" />
+                  <Icon icon="solar:moon-stars-linear" className="size-4 text-muted" aria-hidden="true" />
                   <span>Toggle light / dark</span>
                 </Command.Item>
                 <Command.Item
@@ -64,17 +64,17 @@ export function CommandPalette({ open, onOpenChange, onToggleTheme, onNavigate, 
                     if (copied) onOpenChange(false);
                   }}
                 >
-                  <Icon icon="solar:copy-bold" className="size-4 text-muted" aria-hidden="true" />
+                  <Icon icon="solar:copy-linear" className="size-4 text-muted" aria-hidden="true" />
                   <span>Copy flagship ticker (SFO)</span>
                 </Command.Item>
               </Command.Group>
               <Command.Group heading="Links">
                 <Command.Item textValue="Open live dashboard" onAction={() => openUrl(liveUrl)}>
-                  <Icon icon="solar:square-top-down-bold" className="size-4 text-muted" aria-hidden="true" />
+                  <Icon icon="solar:square-top-down-linear" className="size-4 text-muted" aria-hidden="true" />
                   <span>Open live dashboard</span>
                 </Command.Item>
                 <Command.Item textValue="View source on GitHub" onAction={() => openUrl(repoUrl)}>
-                  <Icon icon="solar:code-square-bold" className="size-4 text-muted" aria-hidden="true" />
+                  <Icon icon="solar:code-square-linear" className="size-4 text-muted" aria-hidden="true" />
                   <span>View source on GitHub</span>
                 </Command.Item>
               </Command.Group>

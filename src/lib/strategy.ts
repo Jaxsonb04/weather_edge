@@ -144,6 +144,8 @@ export interface WinnerLoser {
   target_date: string;
   realized_pnl: number;
   quality_score: number;
+  /** The account the trade belongs to (newer artifacts publish it). */
+  risk_profile?: string;
 }
 
 /* ---- AWS runtime sections (the subset the lab renders) ---- */
@@ -209,6 +211,8 @@ export interface ProfileDailySummary {
     wins?: number;
     losses?: number;
     trades_closed?: number;
+    /** Positions held to settlement in the window; `trades_closed` excludes them. */
+    trades_settled?: number;
     capital_resolved?: number;
   };
   days?: DayRow[];
@@ -328,6 +332,10 @@ export interface RealMoneyReadiness extends DeferrableSection {
   evidence_boundary?: string | null;
   post_boundary_settlement_days?: number;
   source_cohort?: string | null;
+  /** Age of the deploy-time analysis behind this verdict, and the runtime's limit. */
+  analysis_age_hours?: number;
+  max_analysis_age_hours?: number;
+  analysis_generated_at?: string | null;
   pilot_loss_remaining?: number;
   live_policy?: {
     enabled?: boolean;
@@ -440,6 +448,19 @@ export interface ProfileResolvedStats {
   realized_pnl: number;
   roi: number | null;
   capital_resolved: number;
+}
+
+/** One exit route's all-time record, pooled across paper accounts. Only counts
+    and ratios are rendered from it; dollar sums would merge separate accounts. */
+export interface ExitReasonStats {
+  positions?: number;
+  resolved?: number;
+  wins?: number;
+  losses?: number;
+  hit_rate?: number | null;
+  roi?: number | null;
+  realized_pnl?: number;
+  capital_resolved?: number;
 }
 
 export interface AccountSnapshot {
@@ -586,7 +607,11 @@ export interface StrategyLab {
     pending_limit_orders?: OpenPosition[];
     recent_monitor_actions?: MonitorAction[];
     monitor?: Record<string, number>;
-    diagnostics?: { by_profile?: Record<string, ProfileResolvedStats> };
+    diagnostics?: {
+      by_profile?: Record<string, ProfileResolvedStats>;
+      /** All-time outcomes pooled by how each position ended. */
+      by_exit_reason?: Record<string, ExitReasonStats | undefined>;
+    };
   };
   daily_summary: {
     available: boolean;

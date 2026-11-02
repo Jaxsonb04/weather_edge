@@ -1,4 +1,7 @@
-import { Icon } from "@iconify/react/offline";
+import { useState } from "react";
+import { Chip } from "@heroui/react/chip";
+import { Skeleton } from "@heroui/react/skeleton";
+import { Tabs } from "@heroui/react/tabs";
 import "../../styles/pro-methodology.css";
 import {
   fixtureCoverage,
@@ -12,8 +15,8 @@ import {
 import { useDiagnostics, type Diagnostics } from "../../lib/diagnostics";
 import { PageHeader } from "../ui/PageHeader";
 import { SectionHeading } from "../ui/SectionHeading";
-import { Finding } from "../ui/Finding";
-import { Reveal } from "../ui/Reveal";
+import { InfoTip } from "../ui/InfoTip";
+import { Stat } from "../ui/Stat";
 import { ModelCompareChart } from "../charts/ModelCompareChart";
 import { FeatureImportanceChart } from "../charts/FeatureImportanceChart";
 import { HeldOutScatter } from "../charts/HeldOutScatter";
@@ -23,109 +26,14 @@ import { ClimatologyChart } from "../charts/ClimatologyChart";
 import { HistogramChart } from "../charts/HistogramChart";
 import { CalibrationChart } from "../charts/CalibrationChart";
 import { CohortChart } from "../charts/CohortChart";
-import { DetailDisclosure } from "../ui/DetailDisclosure";
 
-function ModelProofFinding({ diag }: { diag: Diagnostics }) {
-  const { models, ab } = diag;
-  const persistLift = Math.round((1 - models.lstm.mae / models.persistence.mae) * 100);
-  const pStr = ab.p_diebold_mariano < 0.001 ? "p < 0.001" : `p = ${ab.p_diebold_mariano.toFixed(3)}`;
-  const f2 = (value: number) => value.toFixed(2);
-  return (
-    <Finding>
-      This is SFO residual-model research, not the universal method. Across <strong>{ab.n_days.toLocaleString()}</strong> paired held-out days,
-      LSTM MAE was <strong>{f2(ab.mae_lstm)}°F</strong> versus XGBoost at <strong>{f2(ab.mae_xgb)}°F</strong>,
-      a <strong>{round1(ab.lift_pct)}%</strong> reduction; the LSTM won {pct(ab.win_rate, 0)} of days. A Diebold–Mariano test
-      reports <strong>{pStr}</strong>. In the separate baseline summary, LSTM MAE was {f2(models.lstm.mae)}°F versus
-      persistence at {f2(models.persistence.mae)}°F, a {persistLift}% reduction
-      {ab.significant
-        ? " — evidence supporting the LSTM as an SFO residual-calibration layer alongside the shared EMOS point forecast."
-        : " — not yet significant, so the A/B keeps running on the flagship before anyone is promoted."}
-    </Finding>
-  );
-}
-
-/** The scored ladder is fixed at six markets — four 2°F brackets spanning
+/** The scored ladder is fixed at six markets: four 2°F brackets spanning
     66–73°F plus an open-ended tail at each end. Every scored day below 60°F
-    therefore lands in the open-bottom tail by construction, so that cohort's
-    perfect top-bin score is a property of the ladder, not of the model. We name
-    it rather than let it inflate the headline silently. */
+    lands in the open-bottom tail by construction, so that cohort's perfect
+    top-bin score is a property of the ladder, not of the model. */
 const TAIL_COHORT = "cold_below_60f";
-/** The one cohort the live San Francisco risk profile refuses to trade at all —
-    a hard block on the forecast regime, not a smaller position. The block is
-    dropped for the other cities, where 80°+ is an ordinary summer day. */
+/** The one cohort the live San Francisco profile refuses to trade at all. */
 const BLOCKED_COHORT = "hot_80f_plus";
-
-function AccuracyFinding({ data, otherCityCount }: { data: DashboardData; otherCityCount: number | null }) {
-  const { forecast, signal } = data;
-  // `forecast_data.json` is a committed study fixture, not pipeline output, so
-  // every surface quoting its counts has to say so — this one and the section
-  // heading below were the two the earlier pass missed.
-  const fixtureYears = fixtureCoverage(forecast);
-  const cal = signal.calibration;
-  if (!cal) return null;
-  const cohorts = cal.cohorts ?? [];
-  const tail: Cohort | null = cohorts.find((c) => c.name === TAIL_COHORT) ?? null;
-  const blocked: Cohort | null = cohorts.find((c) => c.name === BLOCKED_COHORT) ?? null;
-  // Rank on top-bin accuracy, not ranked-probability skill: RPS skill is scored
-  // against climatology, which is easiest to beat exactly where the regime is
-  // rare, so it flatters the warm/hot cohorts the model is genuinely worst at.
-  // The open-bottom tail cohort is excluded — it is unbeatable by construction.
-  const offTail = cohorts.filter((c) => c.name !== TAIL_COHORT);
-  const ranked = [...offTail].sort((a, b) => b.top_bin_accuracy - a.top_bin_accuracy);
-  const best: Cohort | null = ranked[0] ?? null;
-  const worst: Cohort | null = ranked.length > 1 ? ranked[ranked.length - 1] ?? null : null;
-  const offTailDays = offTail.reduce((sum, c) => sum + c.count, 0);
-  const offTailAccuracy =
-    offTailDays > 0 ? offTail.reduce((sum, c) => sum + c.count * c.top_bin_accuracy, 0) / offTailDays : null;
-  const otherCities = otherCityCount != null && otherCityCount > 0 ? `the other ${otherCityCount} cities` : "the other cities";
-  return (
-    <Finding>
-      This is held-out San Francisco probability research, not a live trading track record. Across <strong>{cal.n.toLocaleString()}</strong> scored settlement days,
-      the probability engine carries a{" "}
-      <strong>{pct(cal.ranked_probability_skill, 0)} ranked-probability skill</strong> over climatology and calls the
-      settling bracket {pct(cal.top_bin_accuracy, 0)} of the time — against a fixed six-market ladder: four 2°F
-      brackets spanning 66–73°F, plus an open-ended tail below and above.
-      {tail && offTailAccuracy != null && (
-        <>
-          {" "}
-          Those open tails carry more of that number than it looks. All{" "}
-          <strong className="tnum">{tail.count.toLocaleString()}</strong> days that settled below 60°F land in the
-          open-bottom bracket by construction, and that cohort scores {pct(tail.top_bin_accuracy, 0)}; across the
-          remaining{" "}
-          <strong className="tnum">{offTailDays.toLocaleString()}</strong> days, bracket accuracy is{" "}
-          <strong>{pct(offTailAccuracy, 0)}</strong>.
-        </>
-      )}{" "}
-      The reliability curve shows where predicted probabilities match or miss observed frequencies.
-      {!!cal.warnings?.length && <> The current publication flags calibration limitations in one or more probability buckets.</>}
-      {best && worst && best.name !== worst.name && (
-        <>
-          {" "}
-          Judged on that same bracket accuracy, the regimes separate sharply: strongest in{" "}
-          <strong>{cohortLabel(best.name)}</strong> at{" "}
-          {pct(best.top_bin_accuracy, 0)} over {best.count.toLocaleString()} days, weakest in{" "}
-          <strong>{cohortLabel(worst.name)}</strong> at {pct(worst.top_bin_accuracy, 0)} over{" "}
-          {worst.count.toLocaleString()} days. Ranked-probability skill orders those cohorts differently only because
-          it is measured against climatology, which is itself weakest where the regime is rare.
-        </>
-      )}
-      {blocked && (
-        <>
-          {" "}
-          Exactly one regime is gated in production, and it is a block rather than a dial: a San Francisco target
-          forecast into <strong>{cohortLabel(blocked.name)}</strong> — a regime with only{" "}
-          {blocked.count.toLocaleString()} settled days in the whole study — is refused outright, not merely sized
-          down. That block is lifted for {otherCities}, where 80°+ is an ordinary summer day.
-        </>
-      )}{" "}
-      All of it rests on {forecast.n_days_observed?.toLocaleString() ?? "—"} observed KSFO days across{" "}
-      {forecast.n_years} years{fixtureYears ? ` (${fixtureYears})` : ""} — a {STATIC_FIXTURE_NOTE}.
-      {otherCityCount != null && otherCityCount > 0 && (
-        <> The other {otherCityCount} cities run the same EMOS post-processing against their own settlement stations, without the same SFO-specific held-out study.</>
-      )}
-    </Finding>
-  );
-}
 
 const COHORT_LABELS: Record<string, string> = {
   cold_below_60f: "cold (<60°)",
@@ -135,105 +43,204 @@ const COHORT_LABELS: Record<string, string> = {
 };
 const cohortLabel = (name: string) => COHORT_LABELS[name] ?? name.replace(/_/g, " ");
 
-export default function MethodologyView({ data }: { data: DashboardData }) {
-  const { forecast, story, signal } = data;
+function ModelProof({ diag }: { diag: Diagnostics }) {
+  const { models, ab } = diag;
+  const persistLift = Math.round((1 - models.lstm.mae / models.persistence.mae) * 100);
+  const pStr = ab.p_diebold_mariano < 0.001 ? "p < 0.001" : `p = ${ab.p_diebold_mariano.toFixed(3)}`;
+  const f2 = (value: number) => value.toFixed(2);
+  return (
+    <div className="flex min-w-0 flex-col gap-4">
+      <div className="grid grid-cols-2 gap-x-6 gap-y-4 rounded-3xl bg-surface p-5 shadow-surface sm:grid-cols-4">
+        <Stat label="LSTM error (MAE)" value={`${f2(ab.mae_lstm)}°F`} note={`XGBoost ${f2(ab.mae_xgb)}°F`} />
+        <Stat label="Error reduction" value={`${round1(ab.lift_pct)}%`} note="vs XGBoost" />
+        <Stat label="Days won" value={pct(ab.win_rate, 0)} note={`of ${ab.n_days.toLocaleString()} held-out days`} />
+        <Stat
+          label="Significance"
+          value={pStr}
+          note={ab.significant ? "Diebold–Mariano" : "not yet significant"}
+          info={
+            <InfoTip label="the model proof" title="San Francisco research">
+              This is SFO residual-model research, not the universal method. In the baseline summary the LSTM's MAE
+              is {f2(models.lstm.mae)}°F versus persistence at {f2(models.persistence.mae)}°F, a {persistLift}%
+              reduction. The other cities use the shared EMOS point forecast.
+            </InfoTip>
+          }
+        />
+      </div>
+      <div className="grid min-w-0 gap-4 lg:grid-cols-2">
+        <ModelCompareChart diag={diag} />
+        <FeatureImportanceChart diag={diag} />
+      </div>
+      <div className="grid min-w-0 gap-4 lg:grid-cols-[1.4fr_1fr] lg:items-start">
+        <HeldOutScatter diag={diag} />
+        <ABSignificance diag={diag} />
+      </div>
+    </div>
+  );
+}
+
+function Accuracy({ data, otherCityCount }: { data: DashboardData; otherCityCount: number | null }) {
+  const { forecast, signal, story } = data;
   const fixtureYears = fixtureCoverage(forecast);
+  const cal = signal.calibration;
+  const cohorts = cal?.cohorts ?? [];
+  const tail: Cohort | null = cohorts.find((c) => c.name === TAIL_COHORT) ?? null;
+  const blocked: Cohort | null = cohorts.find((c) => c.name === BLOCKED_COHORT) ?? null;
+  // Rank on top-bin accuracy (RPS skill flatters rare regimes); the open-bottom
+  // tail is excluded because it is unbeatable by construction.
+  const offTail = cohorts.filter((c) => c.name !== TAIL_COHORT);
+  const ranked = [...offTail].sort((a, b) => b.top_bin_accuracy - a.top_bin_accuracy);
+  const best: Cohort | null = ranked[0] ?? null;
+  const worst: Cohort | null = ranked.length > 1 ? ranked[ranked.length - 1] ?? null : null;
+  const offTailDays = offTail.reduce((sum, c) => sum + c.count, 0);
+  const offTailAccuracy =
+    offTailDays > 0 ? offTail.reduce((sum, c) => sum + c.count * c.top_bin_accuracy, 0) / offTailDays : null;
+  const otherCities = otherCityCount != null && otherCityCount > 0 ? `the other ${otherCityCount} cities` : "the other cities";
+
+  return (
+    <div className="flex min-w-0 flex-col gap-4">
+      {cal && (
+        <div className="grid grid-cols-2 gap-x-6 gap-y-4 rounded-3xl bg-surface p-5 shadow-surface sm:grid-cols-4">
+          <Stat label="Rank-prob. skill" value={pct(cal.ranked_probability_skill, 0)} note="vs climatology" />
+          <Stat label="Top-bin accuracy" value={pct(cal.top_bin_accuracy, 0)} note="all scored days" />
+          <Stat
+            label="Accuracy, open tail excluded"
+            value={offTailAccuracy == null ? "—" : pct(offTailAccuracy, 0)}
+            note={offTailDays ? `${offTailDays.toLocaleString()} days` : undefined}
+            info={
+              <InfoTip label="the open-tail adjustment" title="Why exclude the tail">
+                The scored ladder has four 2°F brackets spanning 66–73°F plus an open tail at each end.
+                {tail ? ` All ${tail.count.toLocaleString()} days below 60°F land in the bottom tail by construction and score ${pct(tail.top_bin_accuracy, 0)}.` : ""}
+              </InfoTip>
+            }
+          />
+          <Stat label="Scored days" value={cal.n.toLocaleString()} note={fixtureYears ? `KSFO ${fixtureYears}` : "KSFO"} />
+        </div>
+      )}
+      {cal && (best || blocked) && (
+        <p className="text-sm leading-relaxed text-muted">
+          {best && worst && best.name !== worst.name && (
+            <>
+              Strongest in <strong className="font-semibold text-foreground">{cohortLabel(best.name)}</strong> at{" "}
+              {pct(best.top_bin_accuracy, 0)}, weakest in <strong className="font-semibold text-foreground">{cohortLabel(worst.name)}</strong> at{" "}
+              {pct(worst.top_bin_accuracy, 0)}.{" "}
+            </>
+          )}
+          {blocked && (
+            <>
+              San Francisco never trades a target forecast into <strong className="font-semibold text-foreground">{cohortLabel(blocked.name)}</strong>{" "}
+              ({blocked.count.toLocaleString()} settled days in the study); the block is lifted for {otherCities}.
+            </>
+          )}
+          {!!cal.warnings?.length && " The publication flags calibration limits in one or more probability buckets."}
+        </p>
+      )}
+      <ClimatologyChart forecast={forecast} />
+      <div className="grid min-w-0 gap-4 lg:grid-cols-2">
+        <HistogramChart story={story} forecast={forecast} />
+        <CalibrationChart signal={signal} />
+      </div>
+      <CohortChart signal={signal} />
+      <p className="text-xs text-muted">
+        Based on {forecast.n_days_observed?.toLocaleString() ?? "—"} observed KSFO days across {forecast.n_years} years
+        {fixtureYears ? ` (${fixtureYears})` : ""}, a {STATIC_FIXTURE_NOTE}.
+      </p>
+    </div>
+  );
+}
+
+type EvidenceTab = "model" | "accuracy";
+
+export default function MethodologyView({ data }: { data: DashboardData }) {
   const { data: diag, error: diagError } = useDiagnostics();
   const { data: coverage } = useCitiesData();
+  const [tab, setTab] = useState<EvidenceTab>("model");
   const cities = coverage?.cities ?? [];
-  const cityCount = coverage?.city_count ?? (cities.length || 20);
+  const cityCount = coverage?.city_count ?? (cities.length || null);
   const modelSample = cities
     .map((city) => city.forecasts?.find((row) => typeof row?.n_models === "number")?.n_models)
     .find((count) => typeof count === "number");
-  const ensemblePhrase = modelSample == null ? "a multi-model NWP ensemble" : `an ${modelSample}-member NWP ensemble`;
-  const ensembleSentence = modelSample == null ? "A multi-model NWP ensemble" : `An ${modelSample}-member NWP ensemble`;
-  const otherCityCount = Math.max(cityCount - 1, 0);
+  const otherCityCount = cityCount != null ? Math.max(cityCount - 1, 0) : null;
 
   return (
     <>
       <PageHeader
         headingId="methodology-page-title"
-        icon="solar:graph-up-bold"
-        eyebrow="Methodology & diagnostics"
-        title="How the forecast is built and tested"
-        sub={`The current ${cityCount}-city coverage artifact serves ${ensemblePhrase}, EMOS-calibrated per station using rolling-origin historical fits, then settles against each city's NWS Climatological Report. San Francisco also retains residual-calibration, marine-layer and external-source research. Each published forecast identifies the method actually served.`}
+        title="How the forecast works"
+        sub={`${modelSample == null ? "A multi-model" : `An ${modelSample}-member`} NWP ensemble, calibrated per station with EMOS, then settled against each city's official NWS climate report.`}
+        meta={
+          <>
+            {cityCount != null && (
+              <Chip size="sm" variant="soft" color="accent">
+                <Chip.Label>{cityCount} cities</Chip.Label>
+              </Chip>
+            )}
+            <Chip size="sm" variant="soft">
+              <Chip.Label>San Francisco flagship</Chip.Label>
+            </Chip>
+          </>
+        }
       />
-      <div className="mx-auto w-full max-w-6xl px-5 pb-20 pt-12 sm:px-8">
-        <section className="scroll-mt-24">
+      <div className="mx-auto flex w-full max-w-6xl flex-col gap-14 px-4 pb-20 sm:px-6 lg:px-8">
+        <section aria-labelledby="pipeline-title" className="min-w-0 scroll-mt-24">
           <SectionHeading
-            index="01"
-            eyebrow="The production pipeline"
-            title="One method, running in every city"
-            sub={`${ensembleSentence} is pulled per city from each model's freshest current run and processed with EMOS into a Gaussian forecast distribution. Historical fits use earlier target dates, but the Previous Runs archive combines fixed leads for individual hours. It does not establish every input's availability at an earlier trading decision. Outcomes are checked against each city's official NWS Climatological Report.`}
+            id="pipeline-title"
+            title="The pipeline"
+            sub="One method in every city, with research layers on the flagship"
+            info={
+              <InfoTip label="live versus historical inputs" title="Live inputs and history">
+                Serving reads each model's freshest current run. Fitting uses earlier target dates from Open-Meteo's
+                Previous Runs archive, which combines fixed leads for individual hours, so it does not establish a
+                single forecast vintage available at an earlier trading decision.
+              </InfoTip>
+            }
           />
           <ForecastPipeline />
         </section>
 
-        <section className="mt-14 scroll-mt-24">
+        <section aria-labelledby="evidence-title" className="min-w-0 scroll-mt-24">
           <SectionHeading
-            index="02"
-            eyebrow="Model proof"
-            title="The flagship's LSTM, held out-of-sample"
-            sub={`Static held-out San Francisco research — not runtime health — comparing the residual LSTM with XGBoost and persistence on days none of the models trained on. The other ${otherCityCount} cities use the shared EMOS point-forecast path.`}
+            id="evidence-title"
+            title="Evidence"
+            sub="Held-out San Francisco research, not a live trading record"
           />
-          {diag ? (
-            <div className="space-y-6">
-              <ModelProofFinding diag={diag} />
-              <Reveal>
-                <DetailDisclosure
-                  id="held-out-model-evidence"
-                  icon="solar:chart-square-bold"
-                  title="Held-out model evidence"
-                  note="MAE comparison, feature importance, significance test, and observed-vs-predicted scatter"
-                >
-                  <div className="grid gap-6 lg:grid-cols-2">
-                    <ModelCompareChart diag={diag} />
-                    <FeatureImportanceChart diag={diag} />
+          <Tabs selectedKey={tab} onSelectionChange={(key) => setTab(String(key) as EvidenceTab)} className="min-w-0">
+            <Tabs.ListContainer className="self-start">
+              <Tabs.List aria-label="Evidence">
+                <Tabs.Tab id="model">
+                  Model proof
+                  <Tabs.Indicator />
+                </Tabs.Tab>
+                <Tabs.Tab id="accuracy">
+                  Accuracy
+                  <Tabs.Indicator />
+                </Tabs.Tab>
+              </Tabs.List>
+            </Tabs.ListContainer>
+            <Tabs.Panel id="model" className="pt-4">
+              <div className="fade-in">
+                {diag ? (
+                  <ModelProof diag={diag} />
+                ) : diagError ? (
+                  <p role="alert" className="rounded-2xl bg-danger-soft px-4 py-6 text-center text-sm text-muted">
+                    Couldn't load the model diagnostics: {diagError}
+                  </p>
+                ) : (
+                  <div className="skeleton--shimmer relative grid gap-4 overflow-hidden lg:grid-cols-2" aria-hidden="true">
+                    <p role="status" aria-live="polite" className="sr-only">Loading diagnostics…</p>
+                    <Skeleton animationType="none" className="h-28 rounded-3xl lg:col-span-2" />
+                    <Skeleton animationType="none" className="h-72 rounded-3xl" />
+                    <Skeleton animationType="none" className="h-72 rounded-3xl" />
                   </div>
-                  <div className="grid gap-6 lg:grid-cols-2">
-                    <ABSignificance diag={diag} />
-                    <HeldOutScatter diag={diag} />
-                  </div>
-                </DetailDisclosure>
-              </Reveal>
-            </div>
-          ) : diagError ? (
-            <div role="alert" className="flex h-48 items-center justify-center text-sm text-muted">
-              Couldn't load diagnostics — {diagError}
-            </div>
-          ) : (
-            <div role="status" aria-live="polite" className="flex h-48 items-center justify-center gap-2 text-muted">
-              <Icon icon="solar:refresh-bold" className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-              <span className="text-sm">Loading diagnostics…</span>
-            </div>
-          )}
-        </section>
-
-        <section className="mt-14 scroll-mt-24">
-          <SectionHeading
-            index="03"
-            eyebrow="Forecast accuracy"
-            title="Ten years of San Francisco observations"
-            sub={`${forecast.n_days_observed?.toLocaleString() ?? "—"} observed days across ${forecast.n_years} years anchor the SFO climatology and held-out calibration study${fixtureYears ? ` (${fixtureYears})` : ""} — a ${STATIC_FIXTURE_NOTE}. The current operational point forecast is reported separately above.`}
-          />
-          <div className="space-y-6">
-            <AccuracyFinding data={data} otherCityCount={otherCityCount} />
-            <Reveal>
-              <DetailDisclosure
-                id="accuracy-evidence"
-                icon="solar:graph-up-bold"
-                title="Held-out probability evidence"
-                note="Climatology, observed distribution, calibration curve, and performance by temperature regime"
-              >
-                <ClimatologyChart forecast={forecast} />
-                <div className="grid gap-6 lg:grid-cols-2">
-                  <HistogramChart story={story} forecast={forecast} />
-                  <CalibrationChart signal={signal} />
-                </div>
-                <CohortChart signal={signal} />
-              </DetailDisclosure>
-            </Reveal>
-          </div>
+                )}
+              </div>
+            </Tabs.Panel>
+            <Tabs.Panel id="accuracy" className="pt-4">
+              <div className="fade-in">
+                <Accuracy data={data} otherCityCount={otherCityCount} />
+              </div>
+            </Tabs.Panel>
+          </Tabs>
         </section>
       </div>
     </>

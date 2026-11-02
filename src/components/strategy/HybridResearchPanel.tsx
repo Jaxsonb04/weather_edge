@@ -18,7 +18,7 @@ interface ResearchSnapshot {
 }
 
 const REPO_DOCS = "https://github.com/Jaxsonb04/weather_edge/blob/main/docs/";
-const linkClass = "inline-flex min-h-11 items-center text-sm font-medium text-[color:var(--accent-text)] underline underline-offset-4 hover:text-foreground focus-visible:rounded focus-visible:ring-2 focus-visible:ring-[color:var(--focus)]";
+const linkClass = "inline-flex min-h-11 items-center text-sm font-medium text-[color:var(--accent-text)] underline-offset-4 hover:underline focus-visible:rounded focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)]";
 const count = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0
   ? new Intl.NumberFormat("en-US").format(value) : "Unpublished";
 
@@ -49,15 +49,15 @@ export function HybridResearchPanel({ s }: { s: StrategyLab }) {
       state: typeof candidate.state === "string" ? candidate.state : "No promotion decision published",
     })) : [];
   return (
-    <section aria-labelledby="hybrid-research-title" className="mt-6 min-w-0 rounded-2xl border border-border/70 bg-surface/80 p-4 sm:p-5">
+    <section aria-labelledby="hybrid-research-title" className="flex min-w-0 flex-col gap-4 rounded-3xl bg-surface-secondary p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-[11px] uppercase tracking-wide text-muted">V7 research workbench</p>
-          <h3 id="hybrid-research-title" className="mt-1 font-display text-lg font-semibold text-foreground">Compute follows the evidence</h3>
+          <h3 id="hybrid-research-title" className="text-sm font-semibold text-foreground">V7 research</h3>
+          <p className="mt-0.5 text-xs text-muted">Offline experiments, kept apart from the running accounts</p>
         </div>
-        <span className="rounded-full bg-warning/10 px-3 py-1.5 text-xs font-medium text-warning">Paper only · live allocation $0</span>
+        <span className="rounded-full bg-warning-soft px-3 py-1 text-xs font-medium text-foreground">Paper only · live allocation $0</span>
       </div>
-      <p className="mt-3 text-sm leading-relaxed text-muted">
+      <p className="text-sm leading-relaxed text-muted">
         {runningV7
           ? "The published research ledger reports V7. Its new evidence remains separate from earlier generations."
           : policy
@@ -65,29 +65,14 @@ export function HybridResearchPanel({ s }: { s: StrategyLab }) {
             : "The research ledger has not published a policy identity. V7 activation is unverified."}
         {" "}Real-money execution {s.live_orders_enabled === false ? "is disabled in this publication" : s.live_orders_enabled === true ? "is unexpectedly reported enabled; the paper-only policy requires investigation" : "has no published flag in this artifact"}.
       </p>
-      <dl className="mt-5 grid min-w-0 gap-3 md:grid-cols-3">
-        {[
-          ["AWS · continuous collection", "Weather collection, market quotes, paper execution, final settlement truth, and public data. Collection continues when the Mac is unavailable; original V7 vintage capture still requires guarded backend activation."],
-          ["Mac · bounded research", "A separate prospective weather shadow from free research APIs, plus audits and chronological model comparisons. One compute thread, AC power, low priority, and automatic resource stops."],
-          ["Promotion · evidence first", "After-fee filled outcomes, original forecast vintages, account reconciliation, and the existing readiness gates. No model or money is promoted by a local job."],
-        ].map(([title, text]) => (
-          <div key={title} className="min-w-0 rounded-xl bg-surface-secondary/60 p-3 ring-1 ring-border/50">
-            <dt className="text-sm font-semibold text-foreground">{title}</dt>
-            <dd className="mt-2 text-xs leading-relaxed text-muted">{text}</dd>
-          </div>
-        ))}
-      </dl>
-      {hasCollection && <p className="mt-4 text-sm leading-relaxed text-muted">
+      {hasCollection && <p className="text-sm leading-relaxed text-muted">
         <strong className="text-foreground">Dated Mac batch · {collectionDate} Pacific.</strong>{" "}
-        {count(collection?.new_issued_forecasts)} newly issued forecasts from {count(collection?.http_requests)} public weather requests; the complete research run took {collection?.elapsed_seconds?.toFixed(1)} seconds.
-        {" "}These are collected forecast versions, not independent completed weather days or profitable fills. Later Mac runs remain private until another research snapshot is published.
+        {count(collection?.new_issued_forecasts)} newly issued forecasts from {count(collection?.http_requests)} public weather requests in {collection?.elapsed_seconds?.toFixed(1)} seconds.
+        {" "}These are collected forecast versions, not independent completed weather days or profitable fills.
       </p>}
-      <p className="mt-4 text-sm leading-relaxed text-muted">
-        October 31 is an engineering and evidence review date. The current readiness policy requires 30 independent weather dates after a qualifying behavior change; an unactivated V7 cannot collect that record by the review date. Initial capital remains undetermined until a positive conservative net edge and an explicit loss budget support it.
-      </p>
-      <div className="mt-4">
-        <DetailDisclosure id="hybrid-model-evidence" icon="solar:chart-square-bold" title="Local model comparison" note={date ? `Dated research snapshot · ${date} · never a profit estimate` : "Research evidence has not loaded; no model improvement is claimed"}>
-          <p className="text-sm leading-relaxed text-muted">Gaussian calibration and shallow boosted temperature quantiles run against the existing forecast and bias correction. Reconstructed history is an exploratory diagnostic. The Mac shadow has its own identity and uses providers approved for noncommercial research; it does not extend AWS’s trading record. Only verified decision-time vintages can qualify for prospective validation; weather error improvements alone do not prove profitable fills.</p>
+      <div className="flex flex-col gap-2">
+        <DetailDisclosure id="hybrid-model-evidence" icon="solar:chart-square-linear" title="Local model comparison" note={date ? `Dated research snapshot · ${date} · never a profit estimate` : "Research evidence has not loaded; no model improvement is claimed"}>
+          <p className="text-sm leading-relaxed text-muted">Gaussian calibration and shallow boosted temperature quantiles, run against the existing forecast and bias correction. Reconstructed history is exploratory; only verified decision-time vintages can qualify for prospective validation, and weather error improvements alone do not prove profitable fills.</p>
           {snapshot?.evaluation_kind === "retrospective_diagnostic" && (
             <>
               <dl className="grid gap-3 sm:grid-cols-3">
@@ -95,15 +80,32 @@ export function HybridResearchPanel({ s }: { s: StrategyLab }) {
                   <div key={String(label)}><dt className="text-xs text-muted">{label}</dt><dd className="tnum mt-1 text-lg font-semibold text-foreground">{count(value)}</dd></div>
                 ))}
               </dl>
-              {!!candidates.length && <ul className="space-y-3">{candidates.map((candidate, index) => (
+              {!!candidates.length && <ul className="flex flex-col gap-3">{candidates.map((candidate, index) => (
                 <li key={index} className="text-sm leading-relaxed text-muted"><strong className="text-foreground">{candidate.name ?? "Unnamed candidate"}</strong>{candidate.comparison ? ` · ${candidate.comparison}` : ""}<span className="mt-1 block text-xs">{candidate.state ?? "No promotion decision published"}</span></li>
               ))}</ul>}
             </>
           )}
           <a className={linkClass} href={`${REPO_DOCS}research/2026-10-05-hybrid-ml.md`}>Read methods, results, and research sources</a>
         </DetailDisclosure>
+        <DetailDisclosure id="hybrid-compute" icon="solar:server-square-cloud-linear" title="How the research is run" note="AWS collects, the Mac experiments, evidence decides">
+          <dl className="grid min-w-0 gap-3 md:grid-cols-3">
+            {[
+              ["AWS · continuous collection", "Weather, market quotes, paper execution, settlement truth and public data. Collection continues when the Mac is offline."],
+              ["Mac · bounded research", "A separate prospective weather shadow from free research APIs, audits and chronological model comparisons, under strict resource limits."],
+              ["Promotion · evidence first", "After-fee filled outcomes, original forecast vintages, account reconciliation and the readiness gates. No local job promotes a model or money."],
+            ].map(([title, text]) => (
+              <div key={title} className="min-w-0 rounded-2xl bg-surface-secondary p-3">
+                <dt className="text-sm font-medium text-foreground">{title}</dt>
+                <dd className="mt-1 text-xs leading-relaxed text-muted">{text}</dd>
+              </div>
+            ))}
+          </dl>
+          <p className="text-sm leading-relaxed text-muted">
+            The readiness policy needs 30 independent weather dates after a qualifying behavior change. Initial capital stays undetermined until a positive conservative net edge and an explicit loss budget support it.
+          </p>
+          <a className={linkClass} href={`${REPO_DOCS}local_compute.md`}>Inspect the compute workflow and limits</a>
+        </DetailDisclosure>
       </div>
-      <a className={`${linkClass} mt-3`} href={`${REPO_DOCS}local_compute.md`}>Inspect the compute workflow and limits</a>
     </section>
   );
 }

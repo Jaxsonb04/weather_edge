@@ -1,4 +1,5 @@
 import { Cell } from "recharts";
+import { useReducedMotion } from "motion/react";
 import { BarChart } from "@heroui-pro/react/bar-chart";
 import { ChartTooltip } from "@heroui-pro/react/chart-tooltip";
 import { Widget } from "@heroui-pro/react/widget";
@@ -13,12 +14,14 @@ const BAR_COLOR: Record<string, string> = {
 /** Held-out MAE by model — the SFO residual-calibration LSTM vs the XGBoost challenger and a
     naive persistence baseline. Lower is better. */
 export function ModelCompareChart({ diag }: { diag: Diagnostics }) {
+  // Recharts grows series in on mount; reduced motion draws them in place.
+  const reduceMotion = useReducedMotion();
   const series = modelCompareSeries(diag);
   const label = `Held-out mean absolute error by model, lower is better: ${series.map((d) => `${d.model} ${d.mae} degrees`).join(", ")}.`;
   return (
     <Widget className="h-full w-full">
       <Widget.Header>
-        <div>
+        <div className="flex min-w-0 flex-col gap-0.5">
           <Widget.Title>Forecast error by model</Widget.Title>
           <Widget.Description>Held-out SFO residual-model error (°F) · lower is better</Widget.Description>
         </div>
@@ -33,7 +36,7 @@ export function ModelCompareChart({ diag }: { diag: Diagnostics }) {
           <BarChart.Grid horizontal={false} />
           <BarChart.XAxis type="number" tickFormatter={(v: number) => `${v}°`} domain={[0, "dataMax"]} />
           <BarChart.YAxis type="category" dataKey="model" width={92} tickMargin={6} />
-          <BarChart.Bar dataKey="mae" name="MAE" radius={[0, 6, 6, 0]} barSize={26}>
+          <BarChart.Bar isAnimationActive={!reduceMotion} dataKey="mae" name="MAE" radius={[0, 6, 6, 0]} barSize={26}>
             {series.map((d) => (
               <Cell key={d.model} fill={BAR_COLOR[d.model] ?? "var(--color-muted)"} />
             ))}

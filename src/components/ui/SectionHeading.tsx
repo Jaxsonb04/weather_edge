@@ -1,27 +1,34 @@
-import { Reveal } from "./Reveal";
+import type { ReactNode } from "react";
 
 interface SectionHeadingProps {
-  eyebrow: string;
   title: string;
-  sub?: string;
-  index?: string;
+  /** One line at most; explanations go in `info`. */
+  sub?: ReactNode;
+  /** An InfoTip (or other small control) placed beside the title. */
+  info?: ReactNode;
+  /** Right-aligned controls: a Segment, a Select, a link. */
+  action?: ReactNode;
+  id?: string;
+  /** Heading level; sections inside a tab panel use h3. */
+  as?: "h2" | "h3";
+  className?: string;
 }
 
-/** Editorial section header: monospace index + eyebrow, display title, sub. */
-export function SectionHeading({ eyebrow, title, sub, index }: SectionHeadingProps) {
+/** Section header: a short title, an optional single line, and controls on the
+    same row. Replaces the old numbered eyebrow + paragraph pattern. */
+export function SectionHeading({ title, sub, info, action, id, as: Tag = "h2", className }: SectionHeadingProps) {
   return (
-    <Reveal className="mb-8">
-      <div className="mb-2 flex items-center gap-2.5">
-        {index && <span className="font-mono text-xs font-medium text-[color:var(--accent-text)]">{index}</span>}
-        <span className="h-px w-6 bg-accent/50" />
-        <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-[color:var(--accent-text)]">
-          {eyebrow}
-        </span>
+    <div className={`mb-4 flex flex-wrap items-end justify-between gap-x-6 gap-y-3 ${className ?? ""}`.trim()}>
+      <div className="flex min-w-0 flex-col gap-1">
+        <div className="flex items-center gap-1">
+          <Tag id={id} className="text-lg font-semibold tracking-tight text-foreground sm:text-xl">
+            {title}
+          </Tag>
+          {info}
+        </div>
+        {sub && <p className="text-sm text-muted">{sub}</p>}
       </div>
-      <h2 className="max-w-3xl font-display text-[1.6rem] font-semibold tracking-tight text-balance sm:text-[2rem]">
-        {title}
-      </h2>
-      {sub && <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted">{sub}</p>}
-    </Reveal>
+      {action && <div className="flex shrink-0 items-center gap-2">{action}</div>}
+    </div>
   );
 }

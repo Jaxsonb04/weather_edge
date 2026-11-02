@@ -12,7 +12,10 @@ describe("named motion fallbacks", () => {
     "src/components/views/StrategyLabView.tsx",
   ])("disables named spinner/ping animation in %s", (path) => {
     const source = read(path);
-    expect(source.match(/animate-(?:spin|ping)[^"]*/g)?.every((classes) => classes.includes("motion-reduce:animate-none"))).toBe(true);
+    // Spinners were replaced by skeletons in the redesign; any that remain (or
+    // return) must still carry a reduced-motion fallback.
+    const named = source.match(/animate-(?:spin|ping)[^"]*/g) ?? [];
+    expect(named.every((classes) => classes.includes("motion-reduce:animate-none"))).toBe(true);
   });
 
   it("disables named width and hover-transform transitions", () => {

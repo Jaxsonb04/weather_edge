@@ -1,57 +1,49 @@
+import { Widget } from "@heroui-pro/react/widget";
 import { pct } from "../../lib/data";
 import { money, type SideStats, type StrategyLab } from "../../lib/strategy";
+import { EXIT_LABELS } from "../../lib/lab-format";
+import { InfoTip } from "../ui/InfoTip";
 import { Stat } from "../ui/Stat";
 
-const EXIT_LABELS: Record<string, string> = {
-  closed_take_profit: "Take-profit",
-  closed_stop_loss: "Stop-loss",
-  closed_unclassified: "Reason unavailable",
-  held_to_settlement: "Held to settlement",
-  closed_break_even: "Break-even",
-  expired_unfilled: "Expired unfilled",
-};
-
-/** How positions exited, as proportional bars. Reused per profile and combined. */
+/** How positions exited, as proportional bars (empty reasons are dropped). */
 export function ExitReasonBars({ reasons, emptyNote }: { reasons?: Record<string, number>; emptyNote?: string }) {
-  const rows = Object.entries(reasons ?? {});
+  const rows = Object.entries(reasons ?? {}).filter(([, v]) => v > 0);
   const total = rows.reduce((acc, [, v]) => acc + v, 0);
   if (!total) {
     return <p className="text-sm text-muted">{emptyNote ?? "No exits recorded in this window."}</p>;
   }
   const max = Math.max(...rows.map(([, v]) => v));
   return (
-    <ul className="space-y-2">
+    <ul className="flex flex-col gap-2.5">
       {rows
         .sort(([, a], [, b]) => b - a)
         .map(([k, v]) => (
-          <li key={k} className="flex items-center gap-3">
-            <span className="w-36 shrink-0 truncate text-xs text-muted">{EXIT_LABELS[k] ?? k.replace(/_/g, " ")}</span>
-            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-foreground/8">
-              <div className="h-full rounded-full bg-accent/80" style={{ width: `${(v / max) * 100}%` }} />
+          <li key={k} className="grid grid-cols-[minmax(0,8.5rem)_1fr_auto] items-center gap-3">
+            <span className="truncate text-xs text-foreground">{EXIT_LABELS[k] ?? k.replace(/_/g, " ")}</span>
+            <div className="h-1.5 overflow-hidden rounded-full bg-default">
+              <div className="h-full rounded-full bg-accent" style={{ width: `${(v / max) * 100}%` }} />
             </div>
-            <span className="tnum w-6 shrink-0 text-right font-mono text-[11px] text-muted">{v}</span>
+            <span className="tnum w-6 text-right text-xs text-muted">{v}</span>
           </li>
         ))}
     </ul>
   );
 }
 
-/** YES/NO performance rows. Reused per profile and combined. */
+/** YES/NO performance rows; a side with no trades is dropped. */
 export function SidePerformanceList({ side, emptyNote }: { side?: Record<string, SideStats>; emptyNote?: string }) {
-  const rows = Object.entries(side ?? {});
+  const rows = Object.entries(side ?? {}).filter(([, v]) => (v?.trades ?? 0) > 0);
   if (!rows.length) {
     return <p className="text-sm text-muted">{emptyNote ?? "No resolved trades to split by side yet."}</p>;
   }
   return (
-    <ul className="divide-y divide-border/50">
+    <ul className="flex flex-col divide-y divide-separator">
       {rows.map(([name, v]) => (
-        <li key={name} className="flex items-center justify-between gap-3 py-2">
-          <span className="rounded bg-foreground/8 px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase text-muted">
-            {name}
-          </span>
-          <span className="text-xs text-muted">
-            {v.trades} trades · {v.hit_rate == null ? "—" : pct(v.hit_rate, 0)} hit ·{" "}
-            <span className={`tnum font-medium ${v.realized_pnl >= 0 ? "text-success" : "text-danger"}`}>
+        <li key={name} className="flex items-center justify-between gap-3 py-2 first:pt-0 last:pb-0">
+          <span className="text-xs font-semibold text-foreground">{name}</span>
+          <span className="tnum text-xs text-muted">
+            {v.trades} trades · {v.hit_rate == null ? "—" : pct(v.hit_rate, 0)} profitable ·{" "}
+            <span className={`font-medium ${v.realized_pnl >= 0 ? "text-success" : "text-danger"}`}>
               {money(v.realized_pnl)}
             </span>{" "}
             on {money(v.capital, { sign: "negative-only" })}
@@ -62,43 +54,38 @@ export function SidePerformanceList({ side, emptyNote }: { side?: Record<string,
   );
 }
 
-/** The monitor's standing exit rules plus how exits actually played out (both books). */
+/** The monitor's standing exit rules, as configured on the runtime. */
 export function ExitPolicyCard({ s }: { s: StrategyLab }) {
   const m = s.paper_trading?.monitor;
+  if (!m) return null;
   return (
-    <section aria-labelledby="exit-discipline-title" className="space-y-6">
-      <div>
-        <h4 id="exit-discipline-title" className="font-display text-sm font-semibold text-foreground">
-          Exit discipline
-        </h4>
-        <p className="mt-2 text-sm text-muted">
-          A monitor re-marks every open position each cycle and closes it by rule
-        </p>
-      </div>
-      {m && (
+    <Widget className="min-w-0">
+      <Widget.Header>
+        <div className="min-w-0">
+          <div className="flex items-center gap-1">
+            <Widget.Title>Exit rules</Widget.Title>
+            <InfoTip label="exit rules">
+              A monitor re-marks every open position each cycle and closes it when a rule fires. Positions that hit
+              no rule are held to settlement.
+            </InfoTip>
+          </div>
+          <Widget.Description>Take-profit and stop-loss, as a share of entry cost</Widget.Description>
+        </div>
+      </Widget.Header>
+      <Widget.Content className="flex flex-col gap-4">
         <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
-          <Stat label="YES take-profit" value={m.yes_take_profit_pct != null ? `+${m.yes_take_profit_pct}%` : "—"} tone="pos" />
-          <Stat label="YES stop-loss" value={m.yes_stop_loss_pct != null ? `−${m.yes_stop_loss_pct}%` : "—"} tone="neg" />
-          <Stat label="NO take-profit" value={m.no_take_profit_pct != null ? `+${m.no_take_profit_pct}%` : "—"} tone="pos" />
-          <Stat label="NO stop-loss" value={m.no_stop_loss_pct != null ? `−${m.no_stop_loss_pct}%` : "—"} tone="neg" />
+          <Stat label="YES take-profit" value={m.yes_take_profit_pct != null ? `+${m.yes_take_profit_pct}%` : "—"} />
+          <Stat label="YES stop-loss" value={m.yes_stop_loss_pct != null ? `−${m.yes_stop_loss_pct}%` : "—"} />
+          <Stat label="NO take-profit" value={m.no_take_profit_pct != null ? `+${m.no_take_profit_pct}%` : "—"} />
+          <Stat label="NO stop-loss" value={m.no_stop_loss_pct != null ? `−${m.no_stop_loss_pct}%` : "—"} />
         </div>
-      )}
-      {m?.model_veto_buffer != null && (
-        <p className="text-xs leading-relaxed text-muted">
-          Model veto: if the live model moves {Math.round(m.model_veto_buffer * 100)}pp+ against a position, the monitor can
-          cut it early, capped at a {m.model_veto_max_loss_pct ?? "—"}% loss of cost.
-        </p>
-      )}
-      <div className="grid gap-6 border-t border-border/50 pt-4 md:grid-cols-2">
-        <div>
-          <p className="mb-2 text-[11px] uppercase tracking-wide text-muted">How the window's positions exited</p>
-          <ExitReasonBars reasons={s.daily_summary?.exit_reasons} />
-        </div>
-        <div>
-          <p className="mb-2 text-[11px] uppercase tracking-wide text-muted">Performance by side</p>
-          <SidePerformanceList side={s.daily_summary?.side_performance} />
-        </div>
-      </div>
-    </section>
+        {m.model_veto_buffer != null && (
+          <p className="text-xs text-muted">
+            Model veto: a move of {Math.round(m.model_veto_buffer * 100)}pp against a position can close it early,
+            capped at a {m.model_veto_max_loss_pct ?? "—"}% loss.
+          </p>
+        )}
+      </Widget.Content>
+    </Widget>
   );
 }

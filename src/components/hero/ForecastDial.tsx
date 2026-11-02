@@ -1,8 +1,7 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Card } from "@heroui/react/card";
 import { Chip } from "@heroui/react/chip";
-import { Separator } from "@heroui/react/separator";
 import { Segment } from "@heroui-pro/react/segment";
 import { TrendChip } from "@heroui-pro/react/trend-chip";
 import { Icon } from "@iconify/react/offline";
@@ -23,10 +22,41 @@ import {
 } from "../../lib/data";
 import { usePublication } from "../../lib/publication";
 import { SourceBlend } from "./SourceBlend";
-import { BorderBeam } from "../magicui/BorderBeam";
+
+const EASE = [0.165, 0.84, 0.44, 1] as const;
+
+/** The big temperature, swapped with a short rise when the day changes.
+    Transform and opacity only; reduced motion swaps it instantly. */
+function Reading({ id, value, color }: { id: string; value: number | null; color?: string }) {
+  const reduce = useReducedMotion();
+  return (
+    <AnimatePresence mode="popLayout" initial={false}>
+      <motion.p
+        key={id}
+        initial={reduce ? false : { opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={reduce ? undefined : { opacity: 0, y: -8 }}
+        transition={{ duration: 0.26, ease: EASE }}
+        className="tnum text-[5rem] font-semibold leading-none tracking-tighter sm:text-[5.5rem]"
+        style={color ? { color } : undefined}
+      >
+        {value == null ? "—" : Math.round(value)}
+        <span className="align-top text-2xl font-medium text-muted">°F</span>
+      </motion.p>
+    </AnimatePresence>
+  );
+}
+
+function Figure({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-xs text-muted">{label}</dt>
+      <dd className="tnum text-base font-semibold text-foreground">{children}</dd>
+    </div>
+  );
+}
 
 function CityForecastDial({ city }: { city: City }) {
-  const reduce = useReducedMotion();
   const forecasts = useMemo(
     () =>
       [...(city.forecasts ?? [])]
@@ -40,26 +70,20 @@ function CityForecastDial({ city }: { city: City }) {
   const initialIndex = Math.max(0, forecasts.findIndex((forecast) => forecast.target_date === lead?.target_date));
   const [idx, setIdx] = useState(initialIndex);
   // The published list shrinks at local-day rollover and this card is keyed by
-  // slug, so it is never remounted. A stale selection must fall back to the lead
-  // in the readout *and* in the control — clamping only one of them highlighted a
-  // day the card was not showing.
+  // slug, so it is never remounted. A stale selection falls back to the lead in
+  // the readout *and* in the control.
   const activeIdx = idx < forecasts.length ? idx : initialIndex;
   const forecast = forecasts[activeIdx] ?? lead ?? forecasts[0];
   const freshness = cityFreshness(city.forecasts);
   const freshnessColor = freshness.tone === "danger" ? "danger" : freshness.tone === "warning" ? "warning" : "success";
 
   return (
-    <Card className="relative overflow-hidden rounded-2xl">
-      <BorderBeam />
-      <Card.Content className="p-6">
-        <div className="mb-4 flex items-start justify-between gap-3">
+    <Card className="rounded-3xl">
+      <Card.Content className="flex flex-col gap-5 p-5 sm:p-6">
+        <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <span className="font-mono text-[11px] font-medium uppercase tracking-[0.16em] text-muted">
-              {city.name} daily high · forecast
-            </span>
-            <p className="mt-1 text-xs text-muted">
-              Station <span className="font-mono text-foreground">{city.station_id ?? "—"}</span>
-            </p>
+            <p className="text-sm font-semibold text-foreground">{city.name} daily high</p>
+            <p className="text-xs text-muted">Station {city.station_id ?? "—"}</p>
           </div>
           <Chip size="sm" variant="soft" color={freshnessColor}>
             <Chip.Label>{freshness.label}</Chip.Label>
@@ -72,7 +96,7 @@ function CityForecastDial({ city }: { city: City }) {
             size="sm"
             selectedKey={String(activeIdx)}
             onSelectionChange={(key) => setIdx(Number(key))}
-            className="mb-6"
+            className="self-start"
           >
             {forecasts.map((entry, index) => (
               <Segment.Item key={entry.target_date} id={String(index)}>
@@ -84,62 +108,23 @@ function CityForecastDial({ city }: { city: City }) {
 
         {forecast ? (
           <>
-            <AnimatePresence mode="popLayout" initial={false}>
-              <motion.div
-                key={`${city.slug}-${forecast.target_date}`}
-                initial={reduce ? false : { opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={reduce ? undefined : { opacity: 0, y: -8 }}
-                transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
-                className="flex flex-wrap items-end justify-between gap-6"
-              >
-                <div>
-                  <p className="text-xs text-muted">Predicted high · {shortDateUTC(forecast.target_date)}</p>
-                  <p
-                    className="tnum font-display text-[5.5rem] font-bold leading-[0.88]"
-                    style={{ color: tempColor(forecast.predicted_high_f) }}
-                  >
-                    {Math.round(forecast.predicted_high_f)}
-                    <span className="align-top font-sans text-2xl font-semibold text-muted">°F</span>
-                  </p>
-                </div>
-                <dl className="grid grid-cols-2 gap-x-6 gap-y-3 pb-1 text-right">
-                  <div>
-                    <dt className="text-[10px] uppercase tracking-wide text-muted">Uncertainty</dt>
-                    <dd className="tnum font-display text-lg font-semibold">
-                      {forecast.sigma_f == null ? "—" : `±${round1(forecast.sigma_f)}°`}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt className="text-[10px] uppercase tracking-wide text-muted">Models</dt>
-                    <dd className="tnum font-display text-lg font-semibold">{forecast.n_models ?? "—"}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-[10px] uppercase tracking-wide text-muted">Spread</dt>
-                    <dd className="tnum font-display text-lg font-semibold">
-                      {forecast.model_spread_f == null ? "—" : `${round1(forecast.model_spread_f)}°`}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt className="text-[10px] uppercase tracking-wide text-muted">Lead</dt>
-                    <dd className="tnum font-display text-lg font-semibold">
-                      {forecast.lead_days == null ? "—" : `${forecast.lead_days}d`}
-                    </dd>
-                  </div>
-                </dl>
-              </motion.div>
-            </AnimatePresence>
-
-            <Separator className="my-6" />
-            <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted">
-              <span>{describeMethod(forecast.method)} · station-aligned settlement</span>
-              <span>
-                Last observed high {city.latest_settlement ? `${round1(city.latest_settlement.high_f)}°F` : "—"}
-              </span>
+            <div>
+              <p className="text-xs text-muted">Predicted high · {shortDateUTC(forecast.target_date)}</p>
+              <Reading id={`${city.slug}-${forecast.target_date}`} value={forecast.predicted_high_f} color={tempColor(forecast.predicted_high_f)} />
             </div>
+            <dl className="grid grid-cols-4 gap-3 border-t border-separator pt-4">
+              <Figure label="Uncertainty">{forecast.sigma_f == null ? "—" : `±${round1(forecast.sigma_f)}°`}</Figure>
+              <Figure label="Models">{forecast.n_models ?? "—"}</Figure>
+              <Figure label="Spread">{forecast.model_spread_f == null ? "—" : `${round1(forecast.model_spread_f)}°`}</Figure>
+              <Figure label="Lead">{forecast.lead_days == null ? "—" : `${forecast.lead_days}d`}</Figure>
+            </dl>
+            <p className="text-xs text-muted">
+              {describeMethod(forecast.method)} · last observed high{" "}
+              <span className="tnum text-foreground">{city.latest_settlement ? `${round1(city.latest_settlement.high_f)}°F` : "—"}</span>
+            </p>
           </>
         ) : (
-          <div role="status" className="grid min-h-56 place-items-center text-center text-sm text-muted">
+          <div role="status" className="grid min-h-48 place-items-center text-center text-sm text-muted">
             No current forecast is published for {city.name}.
           </div>
         )}
@@ -149,7 +134,6 @@ function CityForecastDial({ city }: { city: City }) {
 }
 
 export function ForecastDial({ targets, city }: { targets: Target[]; city?: City | null }) {
-  const reduce = useReducedMotion();
   const { signal } = usePublication();
   const currentStateAvailable = signal.state === "fresh";
   const [idx, setIdx] = useState(0);
@@ -160,9 +144,9 @@ export function ForecastDial({ targets, city }: { targets: Target[]; city?: City
 
   if (!target) {
     return (
-      <Card className="rounded-2xl ring-1 ring-danger/30">
+      <Card className="rounded-3xl">
         <Card.Content className="flex items-start gap-3 p-6" role="alert">
-          <Icon icon="solar:danger-triangle-bold" className="mt-0.5 size-4 shrink-0 text-danger" aria-hidden="true" />
+          <Icon icon="solar:danger-triangle-linear" className="mt-0.5 size-4 shrink-0 text-danger" aria-hidden="true" />
           <p className="text-sm text-muted">No settlement-day or upcoming prediction-market target is published.</p>
         </Card.Content>
       </Card>
@@ -185,13 +169,13 @@ export function ForecastDial({ targets, city }: { targets: Target[]; city?: City
       : null;
 
   return (
-    <Card className="relative overflow-hidden rounded-2xl">
-      <BorderBeam />
-      <Card.Content className="p-6">
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <span className="font-mono text-[11px] font-medium uppercase tracking-[0.16em] text-muted">
-            {city?.name ?? "San Francisco"} daily high · forecast
-          </span>
+    <Card className="rounded-3xl">
+      <Card.Content className="flex flex-col gap-5 p-5 sm:p-6">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-foreground">{city?.name ?? "San Francisco"} daily high</p>
+            <p className="text-xs text-muted">Station {city?.station_id ?? "KSFO"} · flagship market</p>
+          </div>
           <Chip size="sm" variant="soft" color={currentStateAvailable && target.market_available ? "success" : "default"}>
             <Chip.Label>
               {currentStateAvailable
@@ -209,7 +193,7 @@ export function ForecastDial({ targets, city }: { targets: Target[]; city?: City
             size="sm"
             selectedKey={String(idx)}
             onSelectionChange={(k) => setIdx(Number(k))}
-            className="mb-6"
+            className="self-start"
           >
             {displayTargets.map((t, i) => (
               <Segment.Item key={i} id={String(i)}>
@@ -219,23 +203,11 @@ export function ForecastDial({ targets, city }: { targets: Target[]; city?: City
           </Segment>
         )}
 
-        <div className="flex items-end justify-between gap-4">
-          <AnimatePresence mode="popLayout" initial={false}>
-            <motion.div
-              key={idx}
-              initial={reduce ? false : { opacity: 0, y: 12, filter: "blur(4px)" }}
-              animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-              exit={reduce ? undefined : { opacity: 0, y: -12, filter: "blur(4px)" }}
-              transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
-              className="leading-none"
-            >
-              <p className="temp-text font-display text-[5.5rem] font-bold leading-[0.85] tnum">
-                {high == null ? "—" : Math.round(high)}
-                <span className="align-top font-sans text-2xl font-semibold text-muted">°F</span>
-              </p>
-            </motion.div>
-          </AnimatePresence>
-
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <p className="text-xs text-muted">Predicted high · {targetLabel(target.target_date)}</p>
+            <Reading id={`sfo-${idx}`} value={high} color={high == null ? undefined : tempColor(high)} />
+          </div>
           {currentStateAvailable && delta != null && mc && (
             <div className="mb-1 text-right">
               <TrendChip trend={delta > 0.2 ? "up" : delta < -0.2 ? "down" : "neutral"} size="sm">
@@ -250,37 +222,40 @@ export function ForecastDial({ targets, city }: { targets: Target[]; city?: City
         </div>
 
         {currentStateAvailable && intraday && !intraday.is_complete && (
-          <div className="mt-6 rounded-2xl bg-surface-secondary px-4 py-3">
-            <div className="flex items-center justify-between text-xs">
-              <span className="flex items-center gap-2 text-muted">
-                <span className="relative inline-flex size-2 text-success">
-                  <span className="pulse-dot absolute inset-0 rounded-full" />
-                  <span className="relative size-2 rounded-full bg-success" />
-                </span>
-                Live · {intraday.observation_count} obs
+          <div className="rounded-2xl bg-surface-secondary px-4 py-3">
+            <p className="flex items-center gap-2 text-xs text-muted">
+              <span className="relative inline-flex size-2 text-success">
+                <span className="live-dot absolute inset-0 rounded-full" />
+                <span className="relative size-2 rounded-full bg-success" />
               </span>
-              <span className="tnum text-muted">now {f1(intraday.latest_temp_f)}</span>
-            </div>
-            <div className="mt-2 flex items-baseline gap-2">
-              <span className="text-xs text-muted">Observed high so far</span>
-              <span className="tnum font-display text-xl font-semibold">{f1(intraday.observed_high_f)}</span>
-              <Icon icon="solar:arrow-right-up-bold" className="size-3.5 text-success" />
-            </div>
+              Live · {intraday.observation_count} obs
+            </p>
+            <dl className="mt-2 grid grid-cols-2 gap-3">
+              <div>
+                <dt className="text-xs text-muted">Now</dt>
+                <dd className="tnum text-sm font-semibold text-foreground">{f1(intraday.latest_temp_f)}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted">High so far</dt>
+                <dd className="tnum text-sm font-semibold text-foreground">{f1(intraday.observed_high_f)}</dd>
+              </div>
+            </dl>
           </div>
         )}
 
-        <Separator className="my-6" />
-        <p className="mb-3 font-mono text-[11px] font-medium uppercase tracking-[0.16em] text-muted">
-          {hasPublishedSourceBlend ? "Published source blend" : "Current published method"} · {targetLabel(target.target_date).toLowerCase()}
-        </p>
-        {hasPublishedSourceBlend ? (
-          <SourceBlend target={target} />
-        ) : (
-          <div className="rounded-xl bg-surface-secondary px-3 py-2.5 text-xs leading-relaxed text-muted">
-            <span className="font-medium text-foreground">{currentMethod}</span>
-            {modelCount != null && <> · <span className="tnum">{modelCount}</span> NWP members</>}
-          </div>
-        )}
+        <div className="border-t border-separator pt-4">
+          <p className="mb-3 text-xs text-muted">
+            {hasPublishedSourceBlend ? "Source blend" : "Method"} · {targetLabel(target.target_date).toLowerCase()}
+          </p>
+          {hasPublishedSourceBlend ? (
+            <SourceBlend target={target} />
+          ) : (
+            <p className="text-xs text-muted">
+              <span className="font-medium text-foreground">{currentMethod}</span>
+              {modelCount != null && <> · <span className="tnum">{modelCount}</span> NWP members</>}
+            </p>
+          )}
+        </div>
       </Card.Content>
     </Card>
   );

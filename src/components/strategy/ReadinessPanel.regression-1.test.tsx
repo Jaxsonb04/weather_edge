@@ -77,7 +77,7 @@ describe("ReadinessPanel progressive detail", () => {
 
     render(<ReadinessPanel s={strategy} />);
 
-    expect(screen.getByText("ANALYSIS NOT REFRESHED")).toBeInTheDocument();
+    expect(screen.getByText("Analysis not refreshed")).toBeInTheDocument();
     expect(screen.getByText(/does not mean the checks newly failed/i)).toBeInTheDocument();
   });
 });

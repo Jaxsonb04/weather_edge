@@ -1,4 +1,5 @@
 import { Cell } from "recharts";
+import { useReducedMotion } from "motion/react";
 import { BarChart } from "@heroui-pro/react/bar-chart";
 import { ChartTooltip } from "@heroui-pro/react/chart-tooltip";
 import { Widget } from "@heroui-pro/react/widget";
@@ -23,6 +24,8 @@ const edgeTick = (value: number | string) => {
 };
 
 export function HistogramChart({ story, forecast }: { story: WeatherStory; forecast: ForecastData }) {
+  // Recharts grows series in on mount; reduced motion draws them in place.
+  const reduceMotion = useReducedMotion();
   const series = histogramSeries(story);
   // The payload declares its own basis. An unmarked payload is the legacy build,
   // whose counts are raw hourly readings — ~24 per observed day — so calling
@@ -33,8 +36,8 @@ export function HistogramChart({ story, forecast }: { story: WeatherStory; forec
 
   return (
     <Widget className="h-full w-full">
-      <Widget.Header className="flex-col items-start gap-2 sm:flex-row sm:items-center">
-        <div>
+      <Widget.Header className="flex-col items-start gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex min-w-0 flex-col gap-0.5">
           <Widget.Title>
             {isDailyMax ? "Observed-high distribution" : "Observed-temperature distribution"}
           </Widget.Title>
@@ -64,7 +67,7 @@ export function HistogramChart({ story, forecast }: { story: WeatherStory; forec
           <BarChart.YAxis width={40} tickFormatter={(v: number) => (v >= 1000 ? `${v / 1000}k` : `${v}`)} />
           {/* Per-bar fill keyed to the bin's temperature, so x-position and hue
               reinforce the same variable. */}
-          <BarChart.Bar dataKey="count" name={countLabel} radius={[3, 3, 0, 0]}>
+          <BarChart.Bar isAnimationActive={!reduceMotion} dataKey="count" name={countLabel} radius={[3, 3, 0, 0]}>
             {series.map((d) => (
               <Cell key={d.lo} fill={tempColor(d.temp)} />
             ))}

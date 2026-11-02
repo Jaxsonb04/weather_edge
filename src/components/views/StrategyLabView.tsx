@@ -1,283 +1,49 @@
+import { useState, type ReactNode } from "react";
+import { Chip } from "@heroui/react/chip";
+import { Tabs } from "@heroui/react/tabs";
+import { Skeleton } from "@heroui/react/skeleton";
 import { Icon } from "@iconify/react/offline";
 import "../../styles/pro-strategy.css";
-import { Accordion } from "@heroui/react/accordion";
-import { Chip } from "@heroui/react/chip";
-import { pct } from "../../lib/data";
 import {
   activeProfiles,
   archivedProfiles,
-  decisionCountProvenance,
-  deferralReason,
-  findProfile,
-  gateCounts,
-  gateDeferred,
   money,
-  openForProfile,
-  pendingForProfile,
-  profileDisplayLabel,
   researchDailyTarget,
   useStrategyLab,
-  type ProfileEntry,
-  type ProfilePaperSummary,
   type StrategyLab,
 } from "../../lib/strategy";
+import { dayRange, incidentsInWindow, trailingNoEntryRun } from "../../lib/incidents";
 import { PageHeader } from "../ui/PageHeader";
 import { SectionHeading } from "../ui/SectionHeading";
-import { Reveal } from "../ui/Reveal";
-import { Finding } from "../ui/Finding";
-import { EquityCurve } from "../strategy/EquityCurve";
-import { ReadinessPanel } from "../strategy/ReadinessPanel";
+import { InfoTip } from "../ui/InfoTip";
 import { ProfileExplorer } from "../strategy/ProfileExplorer";
+import { ReadinessPanel } from "../strategy/ReadinessPanel";
 import { GateFunnel } from "../strategy/GateFunnel";
-import { MoversCard } from "../strategy/MoversCard";
 import { CalibrationCompare } from "../strategy/CalibrationCompare";
 import { OpsHealth } from "../strategy/OpsHealth";
 import { ExitPolicyCard } from "../strategy/ExitPolicyCard";
+import { ExitStudy } from "../strategy/ExitStudy";
 import { BacktestStats } from "../strategy/BacktestStats";
+import { MoversCard } from "../strategy/MoversCard";
 import { ResearchNotes } from "../strategy/ResearchNotes";
-import { DailyActivity } from "../strategy/DailyActivity";
 import { StrategyPublicationNotice } from "../strategy/StrategyPublicationNotice";
 import { ArchivedPerformance } from "../strategy/ArchivedPerformance";
 import { HybridResearchPanel } from "../strategy/HybridResearchPanel";
+import { mergedAlerts, policyMarker } from "../../lib/lab-format";
 
-export function TrackRecordFinding({ s }: { s: StrategyLab }) {
-  const t = s.daily_summary?.totals;
-  const side = s.daily_summary?.side_performance;
-  if (!t) return null;
-  const no = side?.NO;
-  const yes = side?.YES;
-  const hasObservedSideSplit = (no?.trades ?? 0) > 0 && (yes?.trades ?? 0) > 0;
-  // The artifact publishes its own refusal to treat this sum as a balance.
-  // Lead with that refusal rather than letting the figure read as one book's.
-  const combinedReason =
-    s.daily_summary?.equity_unavailable_reason ??
-    "Combined profile P&L spans separate paper accounts.";
-  return (
-    <Finding label="Cross-account attribution" icon="solar:layers-minimalistic-bold">
-      <span className="block font-medium text-foreground">{combinedReason}</span>
-      <span className="mt-1 block">
-        Summed across those separate books — archive-inclusive published profile attribution in the {s.daily_summary.window_days ?? "recent"}-day window — the journal recorded{" "}
-        <strong>{money(t.realized_pnl)}</strong> ({t.roi != null ? pct(t.roi, 1) : "—"} ROI on resolved capital), with{" "}
-        <strong>{pct(t.hit_rate, 0)}</strong> of its closed-or-settled positions exiting profitably.
-        {no && yes && hasObservedSideSplit && (
-          <>
-            {" "}By side, NO positions netted <strong>{money(no.realized_pnl)}</strong> across {no.trades} trades,
-            while {yes.trades} YES trade{yes.trades === 1 ? "" : "s"} returned <strong>{money(yes.realized_pnl)}</strong>.
-          </>
-        )}
-        {" "}That cross-profile total is strategy attribution, not one account&apos;s balance; each book&apos;s own
-        balance and record are published separately below.
-      </span>
-    </Finding>
-  );
-}
+type LabTab = "accounts" | "research" | "archive" | "system";
+const LAB_TABS: { id: LabTab; label: string }[] = [
+  { id: "accounts", label: "Accounts" },
+  { id: "research", label: "Research" },
+  { id: "archive", label: "Archive" },
+  { id: "system", label: "System" },
+];
 
-const SELECTIVITY_DESIGN_NOTE =
-  "Live Stability keeps those gates binding; Research ROI takes more bounded paper risk without contributing to real-money readiness.";
-
-export function SelectivityFinding({ s }: { s: StrategyLab }) {
-  const gate = s.daily_summary?.gate_behavior;
-  if (!gate) return null;
-  const { approved, total } = gateCounts(gate);
-  // The bounded public refresh publishes the gate section unpopulated. Its zeros
-  // mean "not evaluated in this artifact", not "nothing survived", so the
-  // deferral is stated in place of any survival rate.
-  if (gateDeferred(gate, s.daily_summary?.decision_analytics) || total === 0) {
-    return (
-      <Finding label="Deferred" icon="solar:hourglass-line-bold">
-        Gate evaluation counts for this window are not published in this artifact, so no approval or rejection rate
-        is claimed here. {deferralReason(gate)} {SELECTIVITY_DESIGN_NOTE}
-      </Finding>
-    );
-  }
-  const live = gate.by_profile?.find((g) => g.risk_profile === "live");
-  const liveSignals = live?.signals ?? 0;
-  const liveTop = live?.top_rejections?.[0];
-  const counts = decisionCountProvenance(s);
-  return (
-    <Finding
-      label={counts.cached ? "Cached counts" : undefined}
-      icon={counts.cached ? "solar:archive-minimalistic-bold" : undefined}
-    >
-      {counts.cached && (
-        <span className="block font-medium text-foreground">
-          These gate counts come from the last deploy-time analysis and stop at{" "}
-          <strong>{counts.asOf}</strong>; they are not current-runtime totals.
-          {/* The publisher writes the most precise sentence available about the
-              cached window; print it rather than only the synthesized date. */}
-          {counts.reason ? ` ${counts.reason}` : ""}
-        </span>
-      )}
-      Of <strong>{total.toLocaleString()}</strong> gate evaluations{" "}
-      {counts.cached ? `in the window ending ${counts.asOf}` : "this window"} only{" "}
-      <strong>{approved.toLocaleString()}</strong> ({pct(approved / total, 2)}) survived.
-      {liveSignals > 0 && (
-        <>
-          {" "}The live book approved <strong>{(live?.approved ?? 0).toLocaleString()}</strong> of{" "}
-          {liveSignals.toLocaleString()}
-          {liveTop && (
-            <>
-              {" "}
-              — its most common published rejection is <strong>{liveTop.reason}</strong> ({liveTop.count.toLocaleString()} rejections)
-            </>
-          )}
-          .
-        </>
-      )}
-      {" "}{SELECTIVITY_DESIGN_NOTE}
-    </Finding>
-  );
-}
-
-export function ReadinessFinding({ s }: { s: StrategyLab }) {
-  if (s.accounting?.available === false) return null;
-  const r = s.real_money_readiness;
-  // This finding exists only to report the check tally. When the checklist is
-  // deferred there is no tally to report, and inventing one would be the defect
-  // this page is trying to avoid — ReadinessPanel below carries the runtime's
-  // published status instead.
-  if (!r?.available) return null;
-  const total = r.checks_total ?? r.checks?.length ?? 0;
-  return (
-    <Finding>
-      In this publication, the engine reports <strong>{r.checks_passed ?? 0}/{total} checks passed</strong> —{" "}
-      {(r.verdict ?? "not ready").toLowerCase()} for real money. The checklist is recomputed from runtime evidence and
-      published as-is; this page does not override the verdict.
-    </Finding>
-  );
-}
-
-function HeroStat({ label, value, tone }: { label: string; value: string; tone?: "pos" | "neg" }) {
-  const toneClass = tone === "pos" ? "text-success" : tone === "neg" ? "text-danger" : "text-foreground";
-  return (
-    <div className="flex flex-col gap-0.5">
-      <dt className="text-[11px] uppercase tracking-wide text-muted">{label}</dt>
-      <dd className={`tnum font-display text-lg font-semibold ${toneClass}`}>{value}</dd>
-    </div>
-  );
-}
-
-/** One book's current entry state: paused (daily-loss breaker) vs scanning, plus
-    its live open/resting counts — read straight from the published feed. */
-function BookState({ s, rp, label }: { s: StrategyLab; rp: string; label: string }) {
-  const p = findProfile(s, rp);
-  const reason = p?.status?.entry_scanner_reason ?? "";
-  const paused = /pause/i.test(reason);
-  const sum = p?.paper_trading?.summary;
-  const open = sum?.open_positions ?? openForProfile(s, rp).length;
-  const pending = sum?.pending_limit_orders ?? pendingForProfile(s, rp).length;
-  return (
-    <div className="min-w-0">
-      <dt className="flex items-center gap-1.5">
-        <span
-          className={`size-1.5 shrink-0 rounded-full ${paused ? "bg-warning" : "bg-success"}`}
-          aria-hidden="true"
-        />
-        <span className="min-w-0 truncate text-xs font-semibold text-foreground" title={label}>
-          {label}
-        </span>
-        <span className={`shrink-0 text-[11px] ${paused ? "text-warning" : "text-muted"}`}>
-          {paused ? "Entry paused" : "Scanning"}
-        </span>
-      </dt>
-      <dd className="tnum mt-1 text-[11px] text-muted">
-        {open} open · {pending} resting
-      </dd>
-      {paused && reason && <dd className="mt-1 text-[11px] leading-relaxed text-warning/90">{reason}</dd>}
-    </div>
-  );
-}
-
-export function AnalysisFreshness({ s }: { s: StrategyLab }) {
-  if (!s.publication_mode) return null;
-  const stamp = s.analysis_generated_at
-    ? `${s.analysis_generated_at.slice(0, 16).replace("T", " ")} UTC`
-    : null;
-  const analysisStatus =
-    s.publication_mode === "full_research"
-      ? `Historical rescore completed ${stamp ?? "on this refresh"}.`
-      : stamp
-        ? `Historical rescore cached from ${stamp}.`
-        : "Historical rescore deferred until the deploy-time analysis job completes.";
-
-  return (
-    <p className="mt-4 text-[11px] leading-relaxed text-muted">
-      {analysisStatus} Current paper state is refreshed on every publication; readiness evidence is refreshed only by the deploy-time analysis job.
-    </p>
-  );
-}
-
-/** Live trading-status strip: a real-time snapshot of the running engine — the
-    heartbeat, each book's entry state and current book, and the paper-only
-    disclaimer folded in as a muted note (replaces the old warning band). */
-export function LiveStatusStrip({ s }: { s: StrategyLab }) {
-  const fresh = s.generated_at ? `${s.generated_at.slice(0, 16).replace("T", " ")} UTC` : null;
-  const disclaimer = s.live_orders_enabled === false
-    ? "Paper-trading research only — no real-money orders are placed. Forecasts use per-city NWP/EMOS; SFO publishes its served method and can add optional residual-calibration inputs."
-    : s.disclaimer ?? "Paper-trading research only — execution state is not published.";
-  const publicationUnavailable = !s.available;
-  if (publicationUnavailable || s.accounting?.available === false) {
-    const title = publicationUnavailable
-      ? "Strategy publication unavailable"
-      : "Paper account state unavailable";
-    return (
-      <div
-        role="alert"
-        aria-label={title}
-        className="rounded-xl border border-warning/25 bg-warning/5 px-4 py-3"
-      >
-        <div className="grid gap-x-4 gap-y-1 sm:grid-cols-[1fr_auto] sm:items-baseline">
-          <span className="flex items-center gap-2 text-xs font-semibold text-warning">
-            <Icon icon="solar:shield-warning-bold" className="size-4 shrink-0" aria-hidden="true" />
-            {title}
-          </span>
-          {fresh && (
-            <span className="tnum font-mono text-[11px] text-muted sm:justify-self-end">
-              checked {fresh}
-            </span>
-          )}
-        </div>
-        <p className="mt-2 text-xs leading-relaxed text-muted">
-          {publicationUnavailable
-            ? s.reason ?? "The Strategy publication did not report an available artifact."
-            : s.accounting?.reason ?? "Fresh active paper ledgers did not pass accounting validation."} Active
-          profiles and readiness are suppressed until a valid reconciled publication is available.
-        </p>
-        <p className="mt-3 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
-          <Icon icon="solar:shield-keyhole-bold" className="mt-px size-3.5 shrink-0" aria-hidden="true" />
-          {disclaimer}
-        </p>
-      </div>
-    );
-  }
-  const profiles = activeProfiles(s);
-  return (
-    <div
-      role="status"
-      aria-label="Paper trading runtime snapshot"
-      className="rounded-xl bg-surface-secondary px-4 py-3"
-    >
-      <div className="grid gap-x-4 gap-y-1 sm:grid-cols-[1fr_auto] sm:items-baseline">
-        <span className="flex items-center gap-2">
-          <span className="size-2 shrink-0 rounded-full bg-success" aria-hidden="true" />
-          <span className="text-xs font-semibold text-foreground">Paper runtime snapshot</span>
-        </span>
-        {fresh && (
-          <span className="tnum font-mono text-[11px] text-muted sm:justify-self-end">updated {fresh}</span>
-        )}
-      </div>
-      <dl className="mt-4 grid grid-cols-[repeat(auto-fit,minmax(11.5rem,1fr))] gap-x-6 gap-y-4">
-        {profiles.map((profile) => (
-          <BookState key={profile.risk_profile} s={s} rp={profile.risk_profile} label={profileDisplayLabel(profile, researchDailyTarget(s, profile)?.policy_version)} />
-        ))}
-      </dl>
-      <AnalysisFreshness s={s} />
-      <p className="mt-4 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
-        <Icon icon="solar:shield-keyhole-bold" className="mt-px size-3.5 shrink-0" aria-hidden="true" />
-        {disclaimer}
-      </p>
-    </div>
-  );
+/** `#/lab/research` opens that tab; anything else opens Accounts. */
+function initialTab(): LabTab {
+  if (typeof window === "undefined") return "accounts";
+  const sub = window.location.hash.replace(/^#\/?/, "").split(/[?#]/)[0].split("/")[1];
+  return LAB_TABS.some((tab) => tab.id === sub) ? (sub as LabTab) : "accounts";
 }
 
 const timestampFormatter = new Intl.DateTimeFormat("en-US", {
@@ -297,385 +63,254 @@ function publishedAt(value?: string | null) {
   return Number.isNaN(date.getTime()) ? value : timestampFormatter.format(date);
 }
 
-function policyName(value?: string | null) {
-  if (!value) return "Version unavailable";
-  const roi = value.match(/roi-v(\d+)$/i);
-  if (roi) return `ROI v${roi[1]}`;
-  const version = value.match(/v(\d+)$/i);
-  return version ? `Research v${version[1]}` : value;
+const dateFormatter = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+
+/** Whole days between the deploy-time analysis and this publication. */
+function analysisAgeDays(s: StrategyLab): number | null {
+  const hours = s.real_money_readiness?.analysis_age_hours;
+  if (typeof hours === "number" && Number.isFinite(hours)) return Math.floor(hours / 24);
+  const analysis = Date.parse(s.analysis_generated_at ?? "");
+  const published = Date.parse(s.generated_at ?? "");
+  if (Number.isNaN(analysis) || Number.isNaN(published)) return null;
+  return Math.floor((published - analysis) / 86_400_000);
 }
 
-function DossierStat({
-  label,
-  value,
-  note,
-  tone,
-}: {
-  label: string;
-  value: string;
-  note: string;
-  tone?: "pos" | "neg";
+function analysisIsStale(s: StrategyLab): boolean {
+  const r = s.real_money_readiness;
+  if (r?.status === "ANALYSIS_STALE") return true;
+  const hours = r?.analysis_age_hours;
+  const max = r?.max_analysis_age_hours ?? 36;
+  return typeof hours === "number" && hours > max;
+}
+
+/** One reading of "is real money involved": the runtime's explicit flag wins;
+    an older artifact without it falls back to its paper mode string. */
+function executionState(s: StrategyLab): "paper" | "live" | "unverified" {
+  if (s.live_orders_enabled === true) return "live";
+  if (s.live_orders_enabled === false || (s.live_orders_enabled == null && /paper/i.test(s.mode ?? ""))) return "paper";
+  return "unverified";
+}
+
+/** Status chips under the Lab title: paper-only state, publication time, and
+    the date of the deploy-time analysis behind readiness and gate counts. */
+export function LabStatusChips({ s }: { s: StrategyLab }) {
+  const execution = executionState(s);
+  const analysisDate = s.analysis_generated_at ? dateFormatter.format(new Date(s.analysis_generated_at)) : null;
+  const stale = analysisIsStale(s);
+  const age = analysisAgeDays(s);
+  return (
+    <>
+      <Chip size="sm" variant="soft" color={execution === "live" ? "danger" : execution === "paper" ? "success" : "warning"}>
+        <Chip.Label>
+          {execution === "live" ? "Live orders enabled" : execution === "paper" ? "Paper only · $0 real money" : "Execution state unverified"}
+        </Chip.Label>
+      </Chip>
+      <Chip size="sm" variant="soft">
+        <Chip.Label>Updated {publishedAt(s.generated_at)}</Chip.Label>
+      </Chip>
+      {analysisDate && (
+        <span className="inline-flex items-center gap-0.5">
+          <Chip size="sm" variant="soft" color={stale ? "warning" : "default"}>
+            <Chip.Label>
+              Analysis {analysisDate}
+              {stale && age != null ? ` · ${age} days old` : ""}
+            </Chip.Label>
+          </Chip>
+          <InfoTip label="the analysis date" title="Two clocks">
+            Balances, positions and trades refresh with every publication. Readiness, gate counts and the research
+            rescore come from the deploy-time analysis, last run {analysisDate}.
+          </InfoTip>
+        </span>
+      )}
+    </>
+  );
+}
+
+/** Kept for the System tab: says which numbers are current and which come from
+    the older deploy-time analysis, without inventing freshness. */
+export function AnalysisFreshness({ s }: { s: StrategyLab }) {
+  if (!s.publication_mode) return null;
+  const stamp = s.analysis_generated_at
+    ? `${s.analysis_generated_at.slice(0, 16).replace("T", " ")} UTC`
+    : null;
+  const analysisStatus =
+    s.publication_mode === "full_research"
+      ? `Historical rescore completed ${stamp ?? "on this refresh"}.`
+      : stamp
+        ? `Historical rescore cached from ${stamp}.`
+        : "Historical rescore deferred until the deploy-time analysis job completes.";
+
+  return (
+    <p className="text-xs leading-relaxed text-muted">
+      {analysisStatus} Paper balances and positions refresh with every publication; readiness evidence refreshes only
+      with the deploy-time analysis.
+    </p>
+  );
+}
+
+function Notice({ tone, icon, title, children, info }: {
+  tone: "danger" | "warning" | "neutral";
+  icon: string;
+  title: string;
+  children: ReactNode;
+  info?: ReactNode;
 }) {
-  const toneClass = tone === "pos" ? "text-success" : tone === "neg" ? "text-danger" : "text-foreground";
+  const surface = tone === "danger" ? "bg-danger-soft" : tone === "warning" ? "bg-warning-soft" : "bg-surface-secondary";
+  const iconTone = tone === "danger" ? "text-danger" : tone === "warning" ? "text-warning" : "text-muted";
   return (
-    <div className="min-w-0 border-l border-border/70 pl-3 sm:pl-4">
-      <dt className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">{label}</dt>
-      <dd className={`tnum mt-1 break-words font-display text-xl font-semibold leading-tight ${toneClass}`}>{value}</dd>
-      <dd className="mt-1 break-words text-[11px] leading-relaxed text-muted">{note}</dd>
+    <div role={tone === "danger" ? "alert" : "status"} className={`flex min-w-0 items-start gap-3 rounded-2xl px-4 py-3 ${surface}`}>
+      <Icon icon={icon} className={`mt-0.5 size-4 shrink-0 ${iconTone}`} aria-hidden="true" />
+      <div className="min-w-0 flex-1 text-sm">
+        <span className="font-semibold text-foreground">{title}</span> <span className="text-muted">{children}</span>
+      </div>
+      {info}
     </div>
   );
 }
 
-/** Recruiter-facing evidence cover sheet. Every value comes from the active
-    public Strategy artifact; version and balance fields disappear rather than
-    being inferred when an older artifact omits them. */
-export function EvidenceDossier({ s }: { s: StrategyLab }) {
-  const publicationUnavailable = !s.available;
-  if (publicationUnavailable || s.accounting?.available === false) {
-    return (
-      <section
-        role="alert"
-        aria-labelledby="strategy-evidence-dossier"
-        className="relative min-w-0 overflow-hidden rounded-3xl border border-warning/30 bg-warning/5 p-5 shadow-lg sm:p-7"
-      >
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-warning/80 to-transparent" aria-hidden="true" />
-        <div className="flex min-w-0 items-start gap-4">
-          <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-warning/10 text-warning ring-1 ring-warning/25">
-            <Icon icon="solar:shield-warning-bold" className="size-5" aria-hidden="true" />
-          </span>
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <Chip size="sm" variant="soft" color="warning">
-                <Chip.Label>Evidence withheld</Chip.Label>
-              </Chip>
-              <span className="tnum font-mono text-[10px] uppercase tracking-[0.12em] text-muted">
-                {publishedAt(s.generated_at)}
-              </span>
-            </div>
-            <h2 id="strategy-evidence-dossier" className="mt-4 text-balance font-display text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
-              Strategy evidence unavailable
-            </h2>
-            <p className="mt-3 max-w-3xl text-sm leading-relaxed text-muted">
-              {publicationUnavailable
-                ? s.reason ?? "The Strategy publication did not report an available artifact."
-                : s.accounting?.reason ?? "Fresh active paper ledgers did not pass accounting validation."}
-            </p>
-            <p className="mt-2 max-w-3xl text-xs leading-relaxed text-muted">
-              Active balances, policy claims, and readiness evidence are suppressed until a valid reconciled publication is available.
-            </p>
-          </div>
-        </div>
-      </section>
-    );
-  }
-
-  const currentProfiles = activeProfiles(s);
-  const live = currentProfiles.find((profile) => profile.risk_profile === "live");
-  const research = currentProfiles.find(
-    (profile) => profile.risk_profile === "research-target" || profile.risk_profile === "research",
-  );
-  const hasLedgerPair = Boolean(live && research);
-  const target = research ? researchDailyTarget(s, research) : undefined;
-  const liveSummary = live?.paper_trading?.summary;
-  const researchSummary = research?.paper_trading?.summary;
-  const liveBalance = live?.daily_summary?.current_equity;
-  const researchBalance = research?.daily_summary?.current_equity;
-  const policy = policyName(target?.policy_version);
-  const policyMarker = target?.policy_version?.match(/(?:^|-)v(\d+)(?:$|-)/i)?.[1];
-  const checks = s.real_money_readiness;
-  // A deferred checklist still publishes the runtime's own status; that answer
-  // is more informative than degrading the whole field to "Not published".
-  const publishedStatus = (checks?.status ?? checks?.verdict ?? "").replace(/_/g, " ").trim();
-  const readiness = checks?.available
-    ? `${checks.checks_passed ?? 0}/${checks.checks_total ?? checks.checks?.length ?? 0} checks`
-    : publishedStatus || "Not published";
-  const explicitLiveOrders = s.live_orders_enabled;
-  const paperOnly = explicitLiveOrders === false
-    || (explicitLiveOrders == null && /paper/i.test(s.mode));
-  const executionState = explicitLiveOrders === true
-    ? "Live enabled"
-    : paperOnly
-      ? "Paper only"
-      : "Unverified";
-  const executionNote = explicitLiveOrders === true
-    ? `${readiness} · runtime reports live orders enabled`
-    : paperOnly
-      ? `${readiness} · live orders disabled`
-      : `${readiness} · execution flag unavailable`;
-  const archiveByKey = new Map(
-    archivedProfiles(s).map((profile) => [profile.risk_profile, profile] as const),
-  );
-  const lineageRows: Array<[string, string]> = [
-    ["research-target-v1", "Archived control"],
-    ["research-target-v3", "Rejected policy"],
-    ["research-target-v4", "Adopted revision"],
-    ["research-target-v5", "Superseded scale probe"],
-  ].flatMap(([riskProfile, note]) => {
-    const profile = archiveByKey.get(riskProfile);
-    if (!profile) return [];
-    const version = riskProfile.match(/v\d+$/i)?.[0] ?? riskProfile;
-    const resolved = profile.paper_trading?.summary?.closed_positions;
-    const sample = riskProfile === "research-target-v5" && resolved != null
-      ? ` · n=${resolved.toLocaleString()}`
-      : "";
-    return [[version, `${note}${sample}`] as [string, string]];
-  });
-  if (target?.policy_version) {
-    lineageRows.push([
-      policyMarker ? `v${policyMarker}` : "Now",
-      "Active research policy",
-    ]);
-  }
+/** Operational notices worth reading before any number: runtime alerts (for
+    example positions stuck past settlement) and dated outages that explain a
+    gap in the activity. Silent when there is nothing to say. */
+export function LabNotices({ s }: { s: StrategyLab }) {
+  const alerts = mergedAlerts(s);
+  const backlog = s.paper_trading?.summary as { unresolved_past_targets?: Array<{ open_orders?: number; target_date?: string }> } | undefined;
+  const past = backlog?.unresolved_past_targets?.filter((row) => row?.target_date) ?? [];
+  const books = activeProfiles(s);
+  const windowStart = books.map((book) => book.daily_summary?.window_start).filter(Boolean).sort()[0];
+  const windowEnd = books.map((book) => book.daily_summary?.window_end).filter(Boolean).sort().at(-1);
+  const incidents = incidentsInWindow(windowStart, windowEnd);
+  // The no-entry run must hold for every active account to be shown as one.
+  const runs = books.map((book) => trailingNoEntryRun(book.daily_summary?.days));
+  const sharedRun = runs.length && runs.every(Boolean)
+    ? runs.reduce((acc, run) => (acc && run && run.start > acc.start ? run : acc))
+    : null;
+  if (!alerts.length && !incidents.length) return null;
 
   return (
-    <section
-      aria-labelledby="strategy-evidence-dossier"
-      className="relative min-w-0 overflow-hidden rounded-3xl border border-border/70 bg-surface p-5 shadow-lg sm:p-7"
-    >
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/80 to-transparent" aria-hidden="true" />
-      <div className="min-w-0">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <Chip size="sm" variant="soft" color="accent">
-              <Chip.Label>Published evidence</Chip.Label>
-            </Chip>
-            <span className="tnum font-mono text-[10px] uppercase tracking-[0.12em] text-muted">
-              {publishedAt(s.generated_at)}
-            </span>
-          </div>
-          <h2 id="strategy-evidence-dossier" className="mt-4 max-w-3xl text-balance font-display text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
-            {hasLedgerPair
-              ? "Two paper ledgers. One public evidence trail."
-              : "Published strategy evidence"}
-          </h2>
-          <p className="mt-3 max-w-3xl text-pretty text-sm leading-relaxed text-muted">
-            {hasLedgerPair
-              ? <>Live Stability is the only readiness cohort. {policy} is the active bounded research policy. Their account balances, positions, and P&amp;L remain separate; cross-profile attribution is labeled explicitly.</>
-              : "This publication does not expose both canonical active paper ledgers. Available fields remain visible without substituting archived profiles or inferring missing balances."}
-          </p>
-
-          <dl className="mt-6 grid min-w-0 grid-cols-2 gap-x-4 gap-y-6 lg:grid-cols-4">
-            <DossierStat
-              label="Active policy"
-              value={policy}
-              note={target?.policy_version ?? "No policy version in this artifact"}
-            />
-            <DossierStat
-              label="Readiness paper balance"
-              value={liveBalance == null ? "—" : money(liveBalance, { sign: "negative-only" })}
-              note={liveSummary ? `${money(liveSummary.realized_pnl)} P&L · ${liveSummary.closed_positions} closed or settled` : "Readiness record unavailable"}
-              tone={(liveSummary?.realized_pnl ?? 0) > 0 ? "pos" : (liveSummary?.realized_pnl ?? 0) < 0 ? "neg" : undefined}
-            />
-            <DossierStat
-              label="Research paper balance"
-              value={researchBalance == null ? "—" : money(researchBalance, { sign: "negative-only" })}
-              note={researchSummary ? `${money(researchSummary.realized_pnl)} P&L · ${researchSummary.closed_positions} closed or settled` : "Research record unavailable"}
-              tone={(researchSummary?.realized_pnl ?? 0) > 0 ? "pos" : (researchSummary?.realized_pnl ?? 0) < 0 ? "neg" : undefined}
-            />
-            <DossierStat
-              label="Real-money state"
-              value={executionState}
-              note={executionNote}
-              tone={explicitLiveOrders === true ? "neg" : undefined}
-            />
-          </dl>
-        </div>
-
-        <div className="mt-6 min-w-0 border-t border-border/60 pt-4">
-          <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-            <p className="text-xs font-semibold text-foreground">Policy decision trail</p>
-            <p className="text-[11px] leading-relaxed text-muted">
-              Archived eras stay entry-frozen; preserved positions settle normally.
-            </p>
-          </div>
-          {lineageRows.length ? (
-          <ol className="mt-3 grid min-w-0 grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-5">
-            {lineageRows.map(([version, note], index, rows) => (
-              <li
-                key={`${version}-${note}`}
-                className={`relative flex min-w-0 items-center gap-2 ${index === rows.length - 1 ? "col-span-2 sm:col-span-1" : ""}`}
-              >
-                <span className={`grid size-7 shrink-0 place-items-center rounded-full border font-mono text-[10px] font-semibold ${
-                  index === rows.length - 1
-                    ? "border-accent/40 bg-accent-soft text-[color:var(--accent-text)]"
-                    : "border-border bg-background text-foreground"
-                }`}>
-                  {version}
-                </span>
-                <span className="min-w-0 text-[11px] leading-snug text-muted">{note}</span>
-                {index < rows.length - 1 && (
-                  <Icon
-                    icon="solar:arrow-right-linear"
-                    className="ml-auto hidden size-3.5 shrink-0 text-muted/60 sm:block"
-                    aria-hidden="true"
-                  />
-                )}
-              </li>
-            ))}
-          </ol>
-          ) : (
-            <p className="mt-3 text-xs leading-relaxed text-muted">
-              No versioned policy lineage was published in this artifact.
-            </p>
-          )}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-/** The paper readiness candidate's own performance, surfaced as the section headline so the
-    real-money book is judged on its own record — not the blended, research-dragged
-    combined figure that leads the KPI strip. */
-function LiveHero({ p, sum }: { p: ProfileEntry; sum: ProfilePaperSummary }) {
-  const pnl = sum.realized_pnl ?? 0;
-  const up = pnl >= 0;
-  const win = p.daily_summary?.window_days ?? 7;
-  return (
-    <div>
-      <div className="flex flex-wrap items-end justify-between gap-x-8 gap-y-4">
-        <div className="min-w-0">
-          <p className="flex items-center gap-1.5 font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--accent-text)]">
-            <Icon icon="solar:shield-check-bold" className="size-3.5 shrink-0" aria-hidden="true" />
-            Live Stability · paper readiness profile
-          </p>
-          <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
-            <span className={`font-display text-4xl font-bold tracking-tight ${up ? "text-success" : "text-danger"}`}>
-              {money(pnl)}
-            </span>
-            <span className="text-xs text-muted">attributed realized P&amp;L · {win}-day window</span>
-          </div>
-        </div>
-        <dl className="flex flex-wrap gap-x-6 gap-y-4">
-          <HeroStat
-            label="Realized paper balance"
-            value={
-              p.daily_summary?.current_equity == null
-                ? "—"
-                : money(p.daily_summary.current_equity, { sign: "negative-only" })
+    <div className="flex flex-col gap-2">
+      {alerts.map((alert) => {
+        const isBacklog = alert.code === "settlement-backlog" && past.length > 0;
+        const count = past.reduce((sum, row) => sum + (row.open_orders ?? 0), 0);
+        const dates = past.map((row) => dayRange(row.target_date!, row.target_date!)).join(", ");
+        return (
+          <Notice
+            key={alert.code ?? alert.title}
+            tone={alert.level === "critical" || alert.level === "danger" ? "danger" : "warning"}
+            icon="solar:danger-triangle-linear"
+            title={alert.title}
+            info={
+              (alert.detail || alert.action) && (
+                <InfoTip label={alert.title} title={alert.title} placement="bottom">
+                  {alert.detail} {alert.action}
+                </InfoTip>
+              )
             }
-          />
-          <HeroStat label="ROI · resolved" value={sum.roi == null ? "—" : pct(sum.roi, 1)} tone={(sum.roi ?? 0) > 0 ? "pos" : (sum.roi ?? 0) < 0 ? "neg" : undefined} />
-          <HeroStat label="Profitable exits" value={sum.hit_rate == null ? "—" : pct(sum.hit_rate, 1)} />
-          <HeroStat label="Closed or settled" value={`${sum.closed_positions ?? 0} · ${sum.win_count ?? 0}–${sum.loss_count ?? 0}`} />
-        </dl>
-      </div>
+          >
+            {isBacklog
+              ? `${count} open position${count === 1 ? "" : "s"} from ${dates} ${count === 1 ? "has" : "have"} not settled. Their marks are stale.`
+              : alert.detail}
+          </Notice>
+        );
+      })}
+      {incidents.map((incident) => (
+        <Notice
+          key={incident.id}
+          tone="warning"
+          icon="solar:clock-circle-linear"
+          title={incident.title}
+          info={
+            <InfoTip label={incident.title} title={incident.title} placement="bottom">
+              {incident.detail} The flat stretch in each account's chart is this outage, not a quiet market.
+            </InfoTip>
+          }
+        >
+          {sharedRun ? `No new entries ${dayRange(sharedRun.start, sharedRun.end)}. ` : ""}
+          Scans were down {dayRange(incident.start, incident.end)}; fixed {dayRange(incident.end, incident.end)}.
+        </Notice>
+      ))}
     </div>
   );
 }
 
-/** Shown in place of the readiness equity curve when the per-book series is missing
-    and a research book is present in the artifact: the combined (all-account)
-    series would plot research activity under the "Live candidate" label, so
-    this reports the gap honestly instead of showing a mislabeled number. */
-function LiveCurveUnavailable() {
+const LINEAGE: Array<[string, string]> = [
+  ["research-target-v1", "Archived control"],
+  ["research-target-v3", "Rejected"],
+  ["research-target-v4", "Adopted"],
+  ["research-target-v5", "Superseded scale probe"],
+];
+
+/** The research policy's version history, oldest first, ending at the policy
+    the research account runs now. */
+export function PolicyLineage({ s }: { s: StrategyLab }) {
+  const archive = new Map(archivedProfiles(s).map((profile) => [profile.risk_profile, profile] as const));
+  const research = activeProfiles(s).find((profile) => profile.risk_profile === "research-target");
+  const current = policyMarker(research ? researchDailyTarget(s, research)?.policy_version : undefined);
+  const rows = LINEAGE.flatMap(([key, note]) => {
+    const profile = archive.get(key);
+    if (!profile) return [];
+    const resolved = profile.paper_trading?.summary?.closed_positions;
+    const sample = key === "research-target-v5" && resolved != null ? ` · n=${resolved.toLocaleString()}` : "";
+    return [{ version: key.match(/v\d+$/i)?.[0] ?? key, note: `${note}${sample}`, current: false }];
+  });
+  if (current) rows.push({ version: current, note: "Active research policy", current: true });
+  if (!rows.length) return null;
   return (
-    <div
-      role="status"
-      className="flex h-[288px] flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border/70 bg-surface-secondary/60 px-4 text-center"
-    >
-      <Icon icon="solar:clock-circle-bold" className="size-5 text-warning" aria-hidden="true" />
-      <p className="text-sm font-medium text-foreground">Readiness equity curve unavailable.</p>
-      <p className="max-w-sm text-xs text-muted">
-        Per-book accounting isn't published for this artifact, and a research book is present, so the combined total
-        isn't shown under the readiness label.
-      </p>
-    </div>
-  );
-}
-
-/** Overview equity block: LIVE leads (hero stats + its own curve), RESEARCH follows on
-    a separate, visually secondary curve. The two books' P&L never share a line. */
-export function OverviewEquity({ s }: { s: StrategyLab }) {
-  const profiles = activeProfiles(s);
-  const live = profiles.find((profile) => profile.risk_profile === "live");
-  const liveDays = live?.daily_summary?.days;
-  const liveSum = live?.paper_trading?.summary;
-  // The combined (all-account) series only stands in for the live book when no
-  // research book is published — otherwise it would plot research activity
-  // under the "Live candidate" label.
-  const hasResearchBook = (s.profiles ?? []).some(
-    (profile) => profile.risk_profile !== "live" && profile.risk_profile !== "live-legacy",
-  );
-
-  // Fall back to the combined curve only if the per-book series is missing AND
-  // no research book exists to contaminate it. Otherwise show an explicit
-  // unavailable state rather than mislabeled all-account numbers.
-  const liveCurve =
-    live && liveDays?.length ? (
-      <EquityCurve
-        s={s}
-        days={liveDays}
-        startingBankroll={0}
-        contributionMode
-        windowDays={live.daily_summary?.window_days}
-        emphasis="headline"
-        eyebrow="Live Stability · paper readiness profile"
-        title="Live Stability — cumulative P&L"
-        description={`Daily and cumulative realized P&L with the account balance on hover · ${live.daily_summary?.window_days ?? liveDays.length}-day view`}
-      />
-    ) : hasResearchBook ? (
-      <LiveCurveUnavailable />
-    ) : (
-      <EquityCurve s={s} emphasis="headline" eyebrow="Live Stability · paper readiness profile" title="Live Stability — cumulative P&L" />
-    );
-
-  return (
-    <div className="space-y-4">
-      {liveCurve}
-      {live && liveSum && <LiveHero p={live} sum={liveSum} />}
-    </div>
-  );
-}
-
-function DisclosureHeading({ icon, title, note }: { icon: string; title: string; note: string }) {
-  return (
-    <Accordion.Heading>
-      <Accordion.Trigger className="group flex min-h-16 w-full touch-manipulation items-center gap-3 px-4 py-3 text-left focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--focus)]">
-        <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-surface-secondary text-accent">
-          <Icon icon={icon} className="size-4.5" aria-hidden="true" />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block font-display text-sm font-semibold text-foreground">{title}</span>
-          <span className="mt-0.5 block text-xs text-muted">{note}</span>
-        </span>
-        <Accordion.Indicator aria-hidden="true" />
-      </Accordion.Trigger>
-    </Accordion.Heading>
+    <ol className="flex min-w-0 flex-wrap items-center gap-2" aria-label="Research policy versions">
+      {rows.map((row, index) => (
+        <li key={`${row.version}-${row.note}`} className="flex items-center gap-2">
+          <span
+            className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs ${
+              row.current ? "bg-accent-soft text-[color:var(--accent-text)]" : "bg-surface-secondary text-muted"
+            }`}
+          >
+            <span className="font-semibold text-foreground">{row.version}</span>
+            {row.note}
+          </span>
+          {index < rows.length - 1 && <Icon icon="solar:alt-arrow-right-linear" className="size-3.5 text-muted" aria-hidden="true" />}
+        </li>
+      ))}
+    </ol>
   );
 }
 
 export function ReleaseFindings({ s }: { s: StrategyLab }) {
   const release = s.release;
   const findings = release?.findings?.filter((finding) => finding?.title || finding?.impact) ?? [];
+  const linkClass =
+    "inline-flex min-h-11 items-center gap-1.5 text-sm font-medium text-[color:var(--accent-text)] underline-offset-4 hover:underline focus-visible:rounded focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)]";
   if (!release || !findings.length) return (
-    <section aria-label="Dated V7 research audit" className="mt-6 min-w-0 rounded-2xl border border-border/70 bg-surface/80 p-4 sm:p-5">
-      <h3 className="text-base font-semibold text-foreground">V7 audit and preserved results</h3>
-      <p className="mt-2 text-sm leading-relaxed text-muted">
-        October 5, 2026 baseline: separate paper-ledger histories, losses, data limitations,
-        and validation of the V7 corrections. The active runtime version is reported above.
-      </p>
-      <a href="https://github.com/Jaxsonb04/weather_edge/blob/main/docs/research/2026-10-05-v7-audit.md" className="mt-3 inline-flex min-h-11 items-center text-sm font-medium text-[color:var(--accent-text)] underline underline-offset-4 hover:text-foreground focus-visible:rounded focus-visible:ring-2 focus-visible:ring-[color:var(--focus)]">Read the dated audit and complete preserved results</a>
+    <section aria-label="Dated V7 research audit" className="flex min-w-0 flex-col gap-1 rounded-3xl bg-surface-secondary p-5">
+      <h3 className="text-sm font-semibold text-foreground">V7 audit and preserved results</h3>
+      <p className="text-sm text-muted">The October 5, 2026 baseline: account histories, losses and data limits.</p>
+      <a href="https://github.com/Jaxsonb04/weather_edge/blob/main/docs/research/2026-10-05-v7-audit.md" className={linkClass}>
+        Read the dated audit <Icon icon="solar:arrow-right-up-linear" className="size-4" aria-hidden="true" />
+      </a>
     </section>
   );
   const reportUrl = release.baseline_report_url?.startsWith("https://github.com/Jaxsonb04/weather_edge/")
     ? release.baseline_report_url : undefined;
   return (
-    <section aria-labelledby="release-findings-title" className="mt-6 min-w-0 rounded-2xl border border-border/70 bg-surface/80 p-4 sm:p-5">
-      <h3 id="release-findings-title" className="text-base font-semibold text-foreground">
-        {release.version ? `${release.version.toUpperCase()} research audit` : "Published research audit"}
-      </h3>
-      {release.comparison_note && <p className="mt-2 text-sm leading-relaxed text-muted">{release.comparison_note}</p>}
-      {release.evidence_snapshot_at && (
-        <p className="mt-2 text-xs leading-relaxed text-muted">
-          Findings describe the baseline captured {release.evidence_snapshot_at.slice(0, 16).replace("T", " ")} UTC.
-          Current runtime and readiness are reported separately above.
-        </p>
-      )}
-      <p className="mt-2 text-xs leading-relaxed text-muted">Each finding distinguishes measured history, tested corrections, and remaining validation. A code fix does not establish future profit.</p>
-      <ul className="mt-4 grid min-w-0 gap-3 sm:grid-cols-2">
+    <section aria-labelledby="release-findings-title" className="flex min-w-0 flex-col gap-4 rounded-3xl bg-surface-secondary p-5">
+      <div>
+        <div className="flex items-center gap-1">
+          <h3 id="release-findings-title" className="text-sm font-semibold text-foreground">
+            {release.version ? `${release.version.toUpperCase()} research audit` : "Published research audit"}
+          </h3>
+          <InfoTip label="the research audit">
+            Each finding separates measured history, tested corrections and remaining validation. A code fix does not
+            establish future profit.
+          </InfoTip>
+        </div>
+        {release.comparison_note && <p className="mt-1 text-sm text-muted">{release.comparison_note}</p>}
+        {release.evidence_snapshot_at && (
+          <p className="mt-1 text-xs text-muted">
+            Baseline captured {release.evidence_snapshot_at.slice(0, 16).replace("T", " ")} UTC; the current runtime is reported separately.
+          </p>
+        )}
+      </div>
+      <ul className="grid min-w-0 gap-3 sm:grid-cols-2">
         {findings.map((finding, index) => (
-          <li key={finding.code ?? index} className="min-w-0 rounded-xl bg-surface-secondary/60 p-3 ring-1 ring-border/50">
+          <li key={finding.code ?? index} className="min-w-0 rounded-2xl bg-surface p-4 shadow-surface">
             <h4 className="break-words text-sm font-semibold text-foreground">{finding.title ?? "Research finding"}</h4>
             {finding.evidence && <p className="mt-1 text-xs text-muted">Evidence: {finding.evidence}</p>}
             {finding.impact && <p className="mt-2 break-words text-xs leading-relaxed text-muted">{finding.impact}</p>}
@@ -683,143 +318,154 @@ export function ReleaseFindings({ s }: { s: StrategyLab }) {
           </li>
         ))}
       </ul>
-      {reportUrl && <a href={reportUrl} className="mt-4 inline-flex min-h-11 items-center text-sm font-medium text-[color:var(--accent-text)] underline underline-offset-4 hover:text-foreground focus-visible:rounded focus-visible:ring-2 focus-visible:ring-[color:var(--focus)]">Read the dated baseline and validation report</a>}
+      {reportUrl && (
+        <a href={reportUrl} className={linkClass}>
+          Read the dated baseline and validation report <Icon icon="solar:arrow-right-up-linear" className="size-4" aria-hidden="true" />
+        </a>
+      )}
     </section>
   );
 }
 
+function LabSkeleton() {
+  return (
+    <div className="skeleton--shimmer relative flex flex-col gap-6 overflow-hidden" aria-hidden="true">
+      <Skeleton animationType="none" className="h-10 w-80 max-w-full rounded-full" />
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Skeleton animationType="none" className="h-44 rounded-2xl" />
+        <Skeleton animationType="none" className="h-44 rounded-2xl" />
+      </div>
+      <Skeleton animationType="none" className="h-72 rounded-3xl" />
+    </div>
+  );
+}
+
+/** Starting capital shared by both active accounts, when they share one. */
+function sharedStart(s: StrategyLab): number | null {
+  const starts = activeProfiles(s).map((profile) => profile.daily_summary?.starting_bankroll);
+  if (starts.length < 2 || starts.some((value) => typeof value !== "number")) return null;
+  return starts.every((value) => value === starts[0]) ? (starts[0] as number) : null;
+}
+
 export default function StrategyLabView() {
   const { data: s, error } = useStrategyLab();
-  const canonicalTargetPublished = !!s && activeProfiles(s).some((profile) => profile.risk_profile === "research-target");
+  const [tab, setTab] = useState<LabTab>(initialTab);
   const publicationUnavailable = !!s && !s.available;
+  const start = s ? sharedStart(s) : null;
+  const pair = !!s && activeProfiles(s).length >= 2;
+
+  const selectTab = (key: LabTab) => {
+    setTab(key);
+    // replaceState keeps the tab linkable without a hashchange (which would
+    // scroll the page to the top on every switch).
+    try {
+      window.history.replaceState(null, "", `#/lab/${key}`);
+    } catch {
+      // Sandboxed frames can refuse history writes; the tab still switches.
+    }
+  };
 
   return (
     <>
       <PageHeader
         headingId="lab-page-title"
-        icon="solar:test-tube-bold"
-        eyebrow="Strategy Lab"
-        title="Strategy research, in public"
-        sub={publicationUnavailable
-          ? "Strategy evidence is withheld when the runtime publication is unavailable; stale local balances and profiles are never substituted."
-          : canonicalTargetPublished
-            ? "Two independent paper ledgers, one readiness profile, and a versioned ROI research book. Open and closed positions, dated evidence, and rejected experiments remain inspectable."
-            : "The paper readiness cohort and published legacy research evidence remain separate. No missing account or balance is inferred; every number comes from the AWS runtime."}
+        title="Strategy Lab"
+        sub={
+          publicationUnavailable
+            ? "Strategy evidence is withheld while the runtime publication is unavailable."
+            : pair
+              ? `Two separate ${start != null ? `${money(start, { digits: 0, sign: "negative-only" })} ` : ""}paper accounts trade the forecasts. They are never added together.`
+              : "Paper accounts trade the forecasts. Every figure comes from the AWS runtime."
+        }
+        meta={s?.available ? <LabStatusChips s={s} /> : undefined}
       />
-      <div className="mx-auto w-full max-w-6xl px-5 pb-20 pt-12 sm:px-8">
+      <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 pb-20 sm:px-6 lg:px-8">
         <StrategyPublicationNotice generatedAt={s?.generated_at} />
-        {error && <div role="alert" className="grid h-48 place-items-center text-sm text-muted">Couldn't load the Strategy Lab — {error}</div>}
-        {!error && !s && (
-          <div role="status" aria-live="polite" className="flex h-48 items-center justify-center gap-2 text-muted">
-            <Icon icon="solar:refresh-bold" className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-            <span className="text-sm">Loading paper-trading research…</span>
+        {error && (
+          <div role="alert" className="flex items-start gap-3 rounded-2xl bg-danger-soft px-4 py-4 text-sm">
+            <Icon icon="solar:cloud-cross-linear" className="mt-0.5 size-4 shrink-0 text-danger" aria-hidden="true" />
+            <p className="text-muted">
+              <span className="font-semibold text-foreground">Couldn't load the Strategy Lab.</span> {error}{" "}
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="font-medium text-[color:var(--accent-text)] underline-offset-4 hover:underline focus-visible:rounded focus-visible:outline-2 focus-visible:outline-[color:var(--focus)]"
+              >
+                Retry
+              </button>
+            </p>
           </div>
         )}
+        {!error && !s && (
+          <>
+            <p role="status" aria-live="polite" className="sr-only">Loading paper-trading research…</p>
+            <LabSkeleton />
+          </>
+        )}
         {publicationUnavailable && s && (
-          <div role="alert" aria-label="Strategy publication unavailable" className="rounded-2xl border border-warning/30 bg-warning/5 p-5 text-sm leading-relaxed text-muted">
-            <strong className="block font-semibold text-warning">Strategy publication unavailable</strong>
-            <span className="mt-2 block">{s.reason ?? "The runtime did not publish an available Strategy artifact."}</span>
+          <div role="alert" aria-label="Strategy publication unavailable" className="rounded-2xl bg-warning-soft px-4 py-4 text-sm">
+            <strong className="block font-semibold text-foreground">Strategy publication unavailable</strong>
+            <span className="mt-1 block text-muted">{s.reason ?? "The runtime did not publish an available Strategy artifact."}</span>
           </div>
         )}
         {s?.available && (
-          <>
-            <Reveal immediate className="mb-6">
-              <EvidenceDossier s={s} />
-            </Reveal>
-            <Reveal immediate className="mb-10">
-              <LiveStatusStrip s={s} />
-            </Reveal>
+          <div className="fade-in flex min-w-0 flex-col gap-6">
+            <LabNotices s={s} />
+            <Tabs selectedKey={tab} onSelectionChange={(key) => selectTab(String(key) as LabTab)} className="min-w-0">
+              <Tabs.ListContainer className="self-start">
+                <Tabs.List aria-label="Strategy Lab sections">
+                  {LAB_TABS.map((item) => (
+                    <Tabs.Tab key={item.id} id={item.id}>
+                      {item.label}
+                      <Tabs.Indicator />
+                    </Tabs.Tab>
+                  ))}
+                </Tabs.List>
+              </Tabs.ListContainer>
 
-            {/* ---- One profile at a time, including its open and closed book. ---- */}
-            <section id="active-books" className="scroll-mt-24">
-              <SectionHeading
-                index="01"
-                eyebrow="Active books"
-                title="Inspect the running ledgers"
-                sub="Choose Live Stability or Research ROI. Each view keeps its balance, dated curve, gates, open positions, pending limits, and closed-position evidence in one account-scoped workbench."
-              />
-              <Reveal>
-                <ProfileExplorer s={s} />
-              </Reveal>
-            </section>
+              <Tabs.Panel id="accounts" className="pt-4">
+                <div className="fade-in">
+                  <ProfileExplorer s={s} />
+                </div>
+              </Tabs.Panel>
 
-            <section id="research-lineage" className="mt-14 scroll-mt-24">
-              <SectionHeading
-                index="02"
-                eyebrow="Research lineage"
-                title="Every prior paper profile"
-                sub="Select any published prior profile, including zero-trade experiments and superseded policies. Its dated attribution, resolved record, and separate account balance stay inspectable."
-              />
-              <ArchivedPerformance s={s} />
-              <ReleaseFindings s={s} />
-              <HybridResearchPanel s={s} />
-            </section>
+              <Tabs.Panel id="research" className="pt-4">
+                <div className="fade-in flex min-w-0 flex-col gap-4">
+                  <ExitStudy s={s} />
+                  <GateFunnel s={s} />
+                  <CalibrationCompare s={s} />
+                  <MoversCard s={s} />
+                  <BacktestStats s={s} />
+                </div>
+              </Tabs.Panel>
 
-            {/* ---- System-wide results and conclusions after profile inspection. ---- */}
-            <section id="validation-controls" className="mt-14 scroll-mt-24">
-              <SectionHeading
-                index="03"
-                eyebrow="Validation & controls"
-                title="What the evidence permits"
-                sub="The cross-profile conclusions, readiness verdict, and supporting evidence. High-value outcomes stay visible; deeper trading, model, and operations diagnostics unfold on demand."
-              />
-              <div className="space-y-6">
-                <TrackRecordFinding s={s} />
-                <SelectivityFinding s={s} />
-                <ReadinessFinding s={s} />
-              </div>
-              <Reveal className="mt-6">
-                <ReadinessPanel s={s} />
-              </Reveal>
-              <Reveal className="mt-6 space-y-6">
-                <CalibrationCompare s={s} />
-                <GateFunnel s={s} />
-                <OpsHealth s={s} />
-              </Reveal>
-              <Reveal className="mt-6">
-                <Accordion variant="surface" hideSeparator className="overflow-hidden rounded-2xl">
-                  <Accordion.Item id="model-evidence">
-                    <DisclosureHeading
-                      icon="solar:chart-square-bold"
-                      title="Supporting model detail"
-                      note="Secondary movers and backtest coverage"
+              <Tabs.Panel id="archive" className="pt-4">
+                <div className="fade-in flex min-w-0 flex-col gap-6">
+                  <div>
+                    <SectionHeading
+                      as="h2"
+                      title="Policy history"
+                      sub="Each research policy ran on its own account; frozen versions keep their records."
                     />
-                    <Accordion.Panel>
-                      <Accordion.Body className="space-y-6 px-4 pb-4 pt-3">
-                        <MoversCard s={s} />
-                        <BacktestStats s={s} />
-                      </Accordion.Body>
-                    </Accordion.Panel>
-                  </Accordion.Item>
-                  <Accordion.Item id="runtime-controls">
-                    <DisclosureHeading
-                      icon="solar:settings-minimalistic-bold"
-                      title="Execution policy detail"
-                      note="Exit rules and daily activity history"
-                    />
-                    <Accordion.Panel>
-                      <Accordion.Body className="space-y-6 px-4 pb-4 pt-3">
-                        <ExitPolicyCard s={s} />
-                        <DailyActivity s={s} />
-                      </Accordion.Body>
-                    </Accordion.Panel>
-                  </Accordion.Item>
-                  <Accordion.Item id="glossary">
-                    <DisclosureHeading
-                      icon="solar:notebook-bold"
-                      title="Research glossary"
-                      note="Definitions and caveats for interpreting the published numbers"
-                    />
-                    <Accordion.Panel>
-                      <Accordion.Body className="px-4 pb-4 pt-3">
-                        <ResearchNotes s={s} />
-                      </Accordion.Body>
-                    </Accordion.Panel>
-                  </Accordion.Item>
-                </Accordion>
-              </Reveal>
-            </section>
-          </>
+                    <PolicyLineage s={s} />
+                  </div>
+                  <ArchivedPerformance s={s} />
+                  <ReleaseFindings s={s} />
+                  <HybridResearchPanel s={s} />
+                </div>
+              </Tabs.Panel>
+
+              <Tabs.Panel id="system" className="pt-4">
+                <div className="fade-in flex min-w-0 flex-col gap-4">
+                  <ReadinessPanel s={s} />
+                  <AnalysisFreshness s={s} />
+                  <OpsHealth s={s} />
+                  <ExitPolicyCard s={s} />
+                  <ResearchNotes s={s} />
+                </div>
+              </Tabs.Panel>
+            </Tabs>
+          </div>
         )}
       </div>
     </>

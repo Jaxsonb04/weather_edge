@@ -1,4 +1,5 @@
 import { CartesianGrid, ReferenceLine, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from "recharts";
+import { useReducedMotion } from "motion/react";
 import { ChartTooltip } from "@heroui-pro/react/chart-tooltip";
 import { Widget } from "@heroui-pro/react/widget";
 import { round1 } from "../../lib/data";
@@ -30,13 +31,15 @@ function scatterLabel(points: { actual: number; lstm: number }[]): string {
 /** Held-out predicted (LSTM) vs actual high — vertical distance from the dashed
     y=x line is that day's residual. */
 export function HeldOutScatter({ diag }: { diag: Diagnostics }) {
+  // Recharts grows series in on mount; reduced motion draws them in place.
+  const reduceMotion = useReducedMotion();
   const data = heldOutSeries(diag);
   const lo = 35;
   const hi = 100;
   return (
     <Widget className="h-full w-full">
-      <Widget.Header className="flex-col items-start gap-2 sm:flex-row sm:items-center">
-        <div>
+      <Widget.Header className="flex-col items-start gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex min-w-0 flex-col gap-0.5">
           <Widget.Title>Predicted vs actual</Widget.Title>
           <Widget.Description>{data.length} held-out days · LSTM prediction against the settled high</Widget.Description>
         </div>
@@ -103,7 +106,7 @@ export function HeldOutScatter({ diag }: { diag: Diagnostics }) {
                   );
                 }}
               />
-              <Scatter data={data} fill="var(--accent)" fillOpacity={0.45} shape="circle" />
+              <Scatter isAnimationActive={!reduceMotion} data={data} fill="var(--accent)" fillOpacity={0.45} shape="circle" />
             </ScatterChart>
           </ResponsiveContainer>
         </div>

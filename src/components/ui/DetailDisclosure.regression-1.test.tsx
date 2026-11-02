@@ -9,7 +9,7 @@ describe("detail disclosure", () => {
     render(
       <DetailDisclosure
         id="test-evidence"
-        icon="solar:chart-square-bold"
+        icon="solar:chart-square-linear"
         title="Signal evidence"
         note="Detailed profile diagnostics"
       >

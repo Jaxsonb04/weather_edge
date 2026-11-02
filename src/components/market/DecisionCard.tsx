@@ -12,7 +12,7 @@ export function DecisionCard({ target, approvedCount }: { target: Target; approv
   const topReason = d.reasons?.[0]?.replace(/\.$/, "");
   const decisionLabel = noTrade ? "No signal" : "Eligible";
   return (
-    <Card className="h-full rounded-2xl">
+    <Card className="h-full rounded-3xl">
       <Card.Header className="flex items-start justify-between gap-3">
         <div>
           <Card.Title className="text-base">Best published signal</Card.Title>
@@ -31,7 +31,7 @@ export function DecisionCard({ target, approvedCount }: { target: Target; approv
 
         <div className="mt-4 flex items-center gap-2 text-xs text-muted">
           <span className="shrink-0">Quality</span>
-          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-foreground/10">
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-default">
             <div
               className="h-full rounded-full transition-[width] duration-700 ease-out motion-reduce:transition-none"
               style={{ width: `${Math.min(100, Math.max(0, d.trade_quality_score))}%`, background: qualityColor(d.trade_quality_score) }}
@@ -41,10 +41,10 @@ export function DecisionCard({ target, approvedCount }: { target: Target; approv
         </div>
 
         {d.reasons?.length > 0 && (
-          <ul className="mt-4 space-y-1.5">
+          <ul className="mt-4 flex flex-col gap-1.5">
             {d.reasons.slice(0, 3).map((r, i) => (
               <li key={i} className="flex gap-2 text-xs text-muted">
-                <Icon icon="solar:shield-warning-bold" className="mt-0.5 size-3.5 shrink-0 text-warning" />
+                <Icon icon="solar:shield-warning-linear" className="mt-0.5 size-3.5 shrink-0 text-warning" />
                 <span>{r}</span>
               </li>
             ))}

@@ -115,7 +115,8 @@ describe("CityGrid publication truthfulness", () => {
     );
     await act(async () => vi.advanceTimersByTimeAsync(0));
 
-    expect(screen.getByText("Jul 9 · 8-model EMOS + intraday")).toBeInTheDocument();
-    expect(screen.getByText("Intraday-updated · EMOS issue 80.7° ±2.9°")).toBeInTheDocument();
+    expect(screen.getByText("Jul 9 · intraday")).toBeInTheDocument();
+    expect(screen.getByText("EMOS issue 80.7° ±2.9°")).toBeInTheDocument();
+    expect(screen.queryByText(/8-model EMOS/)).not.toBeInTheDocument();
   });
 });

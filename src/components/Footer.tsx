@@ -1,32 +1,33 @@
-import { Icon } from "@iconify/react/offline";
-import { LinkButton } from "./ui/LinkButton";
-
 interface FooterProps {
   disclaimer: string;
   repoUrl: string;
   liveUrl: string;
 }
 
-export function Footer({ disclaimer, repoUrl, liveUrl }: FooterProps) {
+/** One quiet line: what this is, the paper-only disclaimer, and the source link. */
+export function Footer({ disclaimer, repoUrl }: FooterProps) {
   return (
-    <footer className="relative border-t border-border/60">
-      <div className="grid-lines pointer-events-none absolute inset-0 opacity-30" />
-      <div className="relative mx-auto flex w-full max-w-6xl flex-col gap-6 px-5 py-10 sm:flex-row sm:items-end sm:justify-between sm:px-8">
-        <div className="max-w-xl">
-          <p className="font-display text-base font-semibold">
-            Weather<span className="temp-text">Edge</span>
+    <footer className="border-t border-separator">
+      <div className="mx-auto flex w-full max-w-6xl flex-col gap-3 px-4 py-8 text-sm sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8">
+        <div className="flex min-w-0 items-start gap-3">
+          <img
+            src={`${import.meta.env.BASE_URL}favicon.svg`}
+            alt=""
+            aria-hidden="true"
+            className="mt-0.5 size-5 shrink-0 rounded-md"
+          />
+          <p className="max-w-2xl text-xs leading-relaxed text-muted">
+            <span className="font-medium text-foreground">WeatherEdge</span> · {disclaimer}
           </p>
-          <p className="mt-1 text-sm text-muted">Station-aligned NWP/EMOS forecasting across 20 US cities + paper prediction-market research.</p>
-          <p className="mt-4 text-xs leading-relaxed text-muted">{disclaimer}</p>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <LinkButton href={liveUrl} variant="ghost" size="sm" className="gap-1.5">
-            <Icon icon="solar:square-top-down-bold" className="size-4" /> Live dashboard
-          </LinkButton>
-          <LinkButton href={repoUrl} variant="outline" size="sm" className="gap-1.5">
-            <Icon icon="solar:code-square-bold" className="size-4" /> GitHub
-          </LinkButton>
-        </div>
+        <a
+          href={repoUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="shrink-0 text-xs font-medium text-muted underline-offset-4 transition-colors hover:text-foreground hover:underline focus-visible:rounded focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)]"
+        >
+          Source on GitHub
+        </a>
       </div>
     </footer>
   );
