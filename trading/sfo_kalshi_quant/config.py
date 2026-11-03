@@ -256,10 +256,14 @@ class StrategyConfig:
     posterior_mean_kelly_prior_strength: float = 20.0
     posterior_mean_kelly_floor: float = 0.2
     posterior_mean_kelly_min_cohort_n: int = 8
-    # Phase 2c -- joint Kelly. When True, the portfolio re-sizes its directional
-    # legs with the growth-optimal allocation across the mutually exclusive bin
-    # ladder (cross-bin hedging) instead of stacking independent per-bin Kelly
-    # bets, bounded by liquidity and the worst-case-loss cap. Off by default.
+    # Phase 2c -- joint Kelly. When True, the portfolio TRIMS a directional leg
+    # whose risk other legs on the same mutually exclusive bin ladder partly
+    # duplicate: each leg keeps the share of its per-leg Kelly size that a
+    # full-Kelly solve across the ladder gives it relative to its stand-alone
+    # stake (portfolio._joint_resize_directional). It only ever lowers a leg
+    # and never adds capital. Letting it raise legs bypassed fractional Kelly,
+    # the LCB sizing weight and the trust multiplier (audit 2026-11-01). Off by
+    # default.
     joint_kelly_enabled: bool = False
     # Smoothing bandwidth (F) applied to the empirical residual histogram so a
     # ~35-sample window stops emitting spurious 0.0 tail bins. 0 disables it
@@ -445,8 +449,12 @@ LIVE_PROFILE_OVERRIDES = {
     # lower it to stand down harder on unproven regimes.
     "posterior_mean_kelly_enabled": True,
     "posterior_mean_kelly_floor": 0.4,
-    # Joint Kelly ON: deploy more capital across hedged bins per event, sized for
-    # growth rather than as independent per-bin bets (Phase 2c).
+    # Joint Kelly ON (Phase 2c): trims a leg whose risk the event's other legs
+    # partly duplicate, down to its joint share of its per-leg Kelly size. It
+    # never raises a leg or deploys more capital (audit 2026-11-01). On today's
+    # NO-only live book it leaves legs as sized in practice: NO legs on
+    # different bins lose in different scenarios, so they diversify rather
+    # than duplicate each other.
     "joint_kelly_enabled": True,
     # Size off a less-pessimistic blend of the point estimate and its lower
     # bound rather than the pure LCB. kelly_lcb_weight=1.0 sized off the LCB

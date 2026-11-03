@@ -6,8 +6,20 @@ from dataclasses import dataclass, field, replace
 
 from .arbitrage import ArbitrageOpportunity
 from .config import normalize_risk_profile_name
-from .joint_kelly import build_joint_positions, joint_kelly_fractions
+from .joint_kelly import build_joint_positions, joint_kelly_optimum
 from .models import MarketBin, TradeDecision
+
+# Bound on the FULL-Kelly solve behind _joint_resize_directional: no leverage,
+# so the whole book may stake at most the bankroll. A book whose optimum would
+# stake more is left at its per-leg sizes, because a split forced by a bound
+# reflects the bound, not how the legs overlap. The bound is deliberately not
+# the day's directional budget. That budget limits the fractional per-leg
+# stakes, which the greedy pass enforces, and it shrinks as earlier cities'
+# scans spend it, so using it here made a leg's trim depend on scan order. It
+# is also far too small for full Kelly: one favorite's full-Kelly stake (27.6%
+# of bankroll for a NO at 0.83 that the model gives 0.877) is well past the
+# live 8%, so a cap that small binds on almost every solve.
+_JOINT_KELLY_MAX_TOTAL_FRACTION = 1.0
 
 
 @dataclass(frozen=True)
@@ -197,17 +209,19 @@ def allocate_portfolio(
         elif sleeve == "research_explore":
             explore_spend += spend
 
-    # Phase 2c: re-size the directional legs jointly across the bin ladder, so a
-    # basket of hedged bins is grown-optimal rather than a stack of independent
-    # per-bin Kelly bets. Opt-in; a strict no-op when disabled or without a ladder.
+    # Phase 2c: trim the directional legs by a joint solve across the event's
+    # bin ladder. The legs of one ladder are not independent bets, so a leg
+    # whose risk the other legs partly duplicate keeps only its joint share of
+    # its per-leg Kelly size. Trim only (audit 2026-11-01): the joint step
+    # never raises a leg above its per-leg size, so it can never add capital.
+    # Opt-in; a strict no-op when disabled, without a ladder, or with fewer
+    # than two directional legs.
     if joint_kelly_enabled and bin_yes_probs:
-        # Trim only (audit 2026-11-01): the resize may lower a leg to its hedged
-        # full-Kelly share but never raises it above its per-leg size.
         selected = _joint_resize_directional(
             selected,
             bin_yes_probs,
             bankroll=limits.bankroll,
-            max_daily_loss=max(0.0, limits.max_daily_loss - existing_directional_spend),
+            remaining_budget=max(0.0, limits.max_daily_loss - existing_directional_spend),
             yes_sleeve=limits.yes_sleeve,
             explore_sleeve=limits.explore_sleeve,
         )
@@ -252,22 +266,41 @@ def _joint_resize_directional(
     bin_yes_probs: dict[str, float],
     *,
     bankroll: float,
-    max_daily_loss: float,
+    remaining_budget: float,
     yes_sleeve: float,
     explore_sleeve: float,
 ) -> list[PortfolioLeg]:
-    """Re-size the non-arbitrage legs with the growth-optimal joint allocation.
+    """Trim each directional leg by its joint ratio; never grow one.
 
-    Reuses the greedy selection but replaces each directional leg's per-bin Kelly
-    contract count with its share of the joint (cross-bin-hedged) allocation,
-    bounded by the leg's own liquidity and the portfolio worst-case-loss cap.
-    Arbitrage legs are untouched. Fails safe: on any ladder/leg mismatch, or if the
-    re-size would breach the worst-case cap, the original legs are returned.
+    Solves full Kelly on the event's bin ladder (``joint_kelly_optimum``) for
+    all the directional legs together, and for each leg alone. A leg's joint
+    ratio is its stake in the joint solve over its stake alone: below 1 when
+    the other legs partly duplicate its risk, above 1 when they diversify it.
+    Fractional Kelly is a fraction of the full-Kelly solution, so the leg's
+    fractional joint size is that ratio times its per-leg Kelly budget, which
+    already carries the per-leg sizer's fractional Kelly, LCB-weighted sizing
+    probability and posterior trust multiplier (risk.py). The leg is cut to
+    that many whole contracts (at least one) only when that is fewer than it
+    would place now. A leg is never raised above its per-leg size, and an
+    untrimmed leg keeps its decision untouched. A trimmed leg is stamped
+    ``binding_constraint="joint_kelly"``. (Before the 2026-11-01 audit this
+    step replaced each leg with its raw full-Kelly share, which skipped every
+    per-leg control and took a zero-edge_lcb live NO from 6 contracts to 93.)
+
+    The solve never sees the day's remaining budget, so which legs it trims
+    does not depend on how many cities were scanned first; that budget only
+    backs the fail-safe checks. Arbitrage legs are untouched. A no-op with
+    fewer than two directional legs, since one leg has nothing to share risk
+    with. Fails safe, returning the original legs, on any ladder/leg mismatch;
+    when the full-Kelly book would stake more than the bankroll or has no
+    unique optimum, since its split then does not measure how the legs
+    overlap; and if the trimmed book would breach the day's remaining
+    worst-case-loss, directional or sleeve budgets.
     """
 
     directional = [leg for leg in legs if leg.sleeve != "arbitrage"]
     others = [leg for leg in legs if leg.sleeve == "arbitrage"]
-    if not directional or bankroll <= 0:
+    if len(directional) < 2 or bankroll <= 0:
         return legs
 
     bin_keys = sorted(bin_yes_probs)
@@ -280,49 +313,72 @@ def _joint_resize_directional(
         specs.append((key, decision.ticker, decision.side, decision.cost_per_contract))
 
     positions, scenario_probs = build_joint_positions(bin_keys, bin_yes_probs, specs)
-    cap = max_daily_loss / bankroll if bankroll > 0 else 0.0
-    fractions = joint_kelly_fractions(positions, scenario_probs, total_fraction_cap=cap)
+    joint = joint_kelly_optimum(
+        positions, scenario_probs, max_total_fraction=_JOINT_KELLY_MAX_TOTAL_FRACTION
+    )
+    if joint is None:
+        return legs  # leveraged or not unique: the split does not measure overlap
 
     resized: list[PortfolioLeg] = []
-    for key, leg in zip(leg_keys, directional):
+    for key, position, leg in zip(leg_keys, positions, directional):
         decision = leg.decision
-        joint_spend = fractions.get(key, 0.0) * bankroll
-        # No displayed-ask cap here: it was a taker-era assumption. Where an
-        # order actually TAKES (market entry or a crossing limit), the paper
-        # trader clamps contracts to the displayed ask at the execution gate
-        # (paper._clamp_to_displayed_ask); a resting maker quote's fill is
-        # gated by future traded volume, not the ask displayed at entry. The
-        # per-leg ceiling just below, the worst-case-loss cap and the
-        # shared-account per-position cap at placement remain the binding
-        # risk ceilings.
-        #
-        # Trim only, never grow (audit 2026-11-01). The solver is FULL Kelly on
-        # the raw point probabilities, capped only by the day's remaining
-        # directional budget across every city. None of the per-leg sizer's
-        # controls reach it (fractional Kelly, the LCB-weighted sizing
-        # probability, the posterior trust multiplier, the uncertainty clamp,
-        # the position-risk cap; risk.py), so letting it raise a leg turned a
-        # zero-edge_lcb live NO sized at 6 contracts into 93 (placed at 34, the
-        # $30 account clamp) and made a leg's size depend on how much budget
-        # the cities scanned before it had left. The per-leg size already
-        # carries all of that scaling, so it is the ceiling: the joint step
-        # only trims a leg whose hedged full-Kelly share is smaller still.
-        if joint_spend >= leg.spend - 1e-9:
+        # The denominator is the same solve for this leg alone on the same
+        # ladder, not kelly_fraction_spent(decision.probability, cost). The
+        # ladder is normalized over the event's bins, so its probability need
+        # not equal the decision's own; dividing like by like means only the
+        # other legs move the ratio.
+        alone = joint_kelly_optimum(
+            [position], scenario_probs, max_total_fraction=_JOINT_KELLY_MAX_TOTAL_FRACTION
+        )
+        alone_fraction = alone[key] if alone else 0.0
+        if alone_fraction <= 0.0:
+            # The ladder sees no stand-alone edge at this cost, so there is no
+            # Kelly stake for a joint ratio to scale.
             resized.append(leg)
             continue
-        new_decision = _scale_decision(decision, joint_spend)
-        if new_decision is None:
-            resized.append(leg)  # keep the original rather than drop a selected leg
+        joint_ratio = joint[key] / alone_fraction
+        # The per-leg target is the leg's Kelly budget (the evaluator's
+        # kelly_fraction already includes fractional Kelly, the LCB-weighted
+        # sizing probability and the trust multiplier), or its per-leg spend
+        # when that is larger: the comfort boost scales the spend and not
+        # kelly_fraction, and whole-contract rounding can round up. Using the
+        # larger of the two means the ratio, not the base, decides a trim. A
+        # cap that holds the leg below its Kelly budget (the position-risk or
+        # event cap, the live YES shrink) stays a ceiling rather than being
+        # scaled.
+        target_spend = joint_ratio * max(decision.kelly_fraction * bankroll, leg.spend)
+        # Round like the live per-leg sizer (round_contracts), and never below
+        # one contract: the resize never drops a leg the greedy pass selected.
+        contracts = max(1, round(target_spend / decision.cost_per_contract))
+        # Compare whole contracts: placement truncates a fractional count (an
+        # event-cap scale leaves one), so cutting 5.3 to 5 would change only
+        # the journal, not the order.
+        if contracts >= math.floor(decision.recommended_contracts + 1e-9):
+            resized.append(leg)
             continue
         # Journal the lever that set the size: the joint solve, not the per-leg
         # Kelly budget or cap the decision was stamped with.
-        new_decision = replace(new_decision, binding_constraint="joint_kelly")
-        resized.append(_portfolio_leg(new_decision, sleeve=leg.sleeve, growth_score=leg.growth_score))
+        trimmed = replace(
+            decision,
+            recommended_contracts=float(contracts),
+            expected_profit=decision.edge * float(contracts),
+            binding_constraint="joint_kelly",
+        )
+        resized.append(_portfolio_leg(trimmed, sleeve=leg.sleeve, growth_score=leg.growth_score))
 
+    if all(new is old for new, old in zip(resized, directional)):
+        return legs
+    # No displayed-ask cap here: it was a taker-era assumption. Where an order
+    # actually TAKES (market entry or a crossing limit), the paper trader
+    # clamps contracts to the displayed ask at the execution gate
+    # (paper._clamp_to_displayed_ask); a resting maker quote's fill is gated by
+    # future traded volume, not the ask displayed at entry. The per-leg
+    # ceiling above, the checks below and the shared-account per-position cap
+    # at placement remain the binding risk ceilings.
     candidate = [*others, *resized]
-    if _worst_case_loss(candidate) > max_daily_loss + 1e-9:
+    if _worst_case_loss(candidate) > remaining_budget + 1e-9:
         return legs  # fail safe: keep the disciplined greedy sizing
-    if sum(leg.spend for leg in resized) > max_daily_loss + 1e-9:
+    if sum(leg.spend for leg in resized) > remaining_budget + 1e-9:
         return legs
     if sum(leg.spend for leg in resized if leg.sleeve == "yes_convex") > yes_sleeve + 1e-9:
         return legs
