@@ -34,10 +34,16 @@ EXPECTED_ACTIVE_CAPITAL = {
     M1_POLICY.account_id: M1_POLICY.reference_equity,
 }
 EXPECTED_ACTIVE_ACCOUNTS = set(EXPECTED_ACTIVE_CAPITAL)
+REQUIRED_ACTIVE_ACCOUNTS = EXPECTED_ACTIVE_ACCOUNTS - {M1_POLICY.account_id}
 
 
 def validate_account_cutover(db_path: Path) -> None:
-    """Run migrations and fail unless exactly the fixed-capital ledgers are active."""
+    """Run migrations and fail unless Live and V7 (and M1 if active) are valid.
+
+    A rollback past M1 archives its ledger and the roll-forward leaves it
+    archived on purpose. Failing the deploy here would leave the host quiesced,
+    so an archived M1 only warns: its admission already fails closed.
+    """
 
     store = PaperStore(db_path)
     with store.connect() as conn:
@@ -50,9 +56,15 @@ def validate_account_cutover(db_path: Path) -> None:
         for row in rows
         if str(row[1]) == "ACTIVE"
     }
-    if set(active) != EXPECTED_ACTIVE_ACCOUNTS:
+    if not REQUIRED_ACTIVE_ACCOUNTS <= set(active) <= EXPECTED_ACTIVE_ACCOUNTS:
         raise RuntimeError(
             "active paper account set does not match the restart policy"
+        )
+    if M1_POLICY.account_id not in active:
+        print(
+            f"WARNING: M1 trial ledger {M1_POLICY.account_id} is not active; "
+            "M1 admission stays blocked",
+            file=sys.stderr,
         )
     for account_id, row in active.items():
         capital = EXPECTED_ACTIVE_CAPITAL[account_id]
@@ -79,7 +91,7 @@ def validate_account_cutover(db_path: Path) -> None:
     # permanent false drawdown even though this command correctly aborts.
     states = [
         store._account_state(account_id, persist_high_water=False)
-        for account_id in sorted(EXPECTED_ACTIVE_ACCOUNTS)
+        for account_id in sorted(active)
     ]
     if any(state is None for state in states):
         raise RuntimeError("active paper account state is unavailable")
@@ -102,8 +114,8 @@ def main() -> int:
     args = parser.parse_args()
     validate_account_cutover(args.db)
     print(
-        "OK: exactly the fixed-capital paper ledgers are active "
-        "(Live Stability, Research V7, M1 trial)"
+        "OK: the fixed-capital paper ledgers are active "
+        "(Live Stability, Research V7, M1 trial unless archived)"
     )
     return 0
 

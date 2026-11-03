@@ -437,7 +437,7 @@ def _run_validator(db_path: Path) -> subprocess.CompletedProcess:
     )
 
 
-def test_deploy_validator_requires_exactly_live_v7_and_m1_at_their_capital(tmp_path) -> None:
+def test_deploy_validator_requires_live_v7_and_an_active_m1_at_their_capital(tmp_path) -> None:
     db_path = tmp_path / "paper.db"
     store = PaperStore(db_path)
     healthy = _run_validator(db_path)
@@ -453,9 +453,20 @@ def test_deploy_validator_requires_exactly_live_v7_and_m1_at_their_capital(tmp_p
     with store.connect() as conn:
         conn.execute("UPDATE paper_accounts SET opening_cash=10000 WHERE account_id=?", (M1,))
         conn.execute("UPDATE paper_accounts SET status='ARCHIVED' WHERE account_id=?", (M1,))
+    # A rollback past M1 archives it; the roll-forward must not fail the deploy
+    # (and leave the host quiesced) over it.
     archived = _run_validator(db_path)
-    assert archived.returncode != 0
-    assert "active paper account set does not match the restart policy" in archived.stderr
+    assert archived.returncode == 0, archived.stderr
+    assert f"WARNING: M1 trial ledger {M1} is not active" in archived.stderr
+
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE paper_accounts SET status='ARCHIVED' WHERE account_id=?",
+            (LIVE_STABILITY_ACCOUNT_ID,),
+        )
+    no_live = _run_validator(db_path)
+    assert no_live.returncode != 0
+    assert "active paper account set does not match the restart policy" in no_live.stderr
 
 
 def test_deploy_validator_fails_when_the_m1_ledger_does_not_reconcile(tmp_path) -> None:

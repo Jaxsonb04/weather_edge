@@ -676,6 +676,13 @@ ignores (they may show as unverified). Fingerprints return to v2 (live SFO
 research `92934c133d00d85deb078b3c`), which resets the live readiness clock a
 second time.
 
+6.6a Rolling back to a SHA before the M1 trial archives the M1 paper account
+on the old code's first store start, and the old monitor then exits open M1
+lots by its own rules, so those lots lose hold-to-settlement. A later M1
+roll-forward leaves the account archived on purpose: `validate_account_cutover.py`
+only warns, and M1 admission stays blocked. Reactivating the trial is a new
+owner decision.
+
 6.7 Restore the paper database from the deploy's S3 snapshot under
 `database-snapshots/` only for proven ledger corruption: it loses every write
 since the deploy. Restore to a new path with paper services stopped and run

@@ -223,6 +223,12 @@ that production prunes after about a day:
   gap alone removes about 2 to 9% of entries).
 - Initial capital is $10,000 rather than the decision's $1,000, by owner decision,
   so the percentage caps do not throttle the trial.
+- The daily fidelity check (section 7.1) replays M1's own recorded evaluations,
+  not the research decision journal the decision named, because production
+  prunes that journal after about a day. It catches admission errors (wrong
+  leg, hour or price, listing hour, spread, lead, re-entry) but cannot catch
+  drift between the journal and M1's sample. To keep the two on one clock, M1
+  rows carry the time the scan read its quotes, not the time M1 ran.
 
 ## 11. Implementation record
 
@@ -246,4 +252,8 @@ sections 1 to 10 and changes none of them.
   timer; `paper-m1-reconcile` and `paper-m1-status` (`--final-read` for the
   10,000-resample read) run the same steps by hand.
 - Halts are zero-amount `M1_HALT` events in the account ledger, one per rule.
+- The stop rules, the premise check included, also run while placement is off,
+  so a halt recorded in shadow mode keeps placement from ever entering. A leg
+  whose first crossing was recorded in shadow mode is never entered later
+  (`ALREADY_CROSSED`).
 - Published as `accounting.accounts.research_m1` in `strategy_research.json`.
