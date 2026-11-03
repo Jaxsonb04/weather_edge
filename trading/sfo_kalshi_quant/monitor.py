@@ -42,7 +42,7 @@ from .maker_fills import (
     normalize_public_trade,
 )
 from .models import MarketBin
-from .probability import ResidualCalibrator
+from .probability import ResidualCalibrator, post_peak_cap_engaged
 from .research_policy import ALL_RESEARCH_POLICIES, ResearchSleeve
 from .settlement_day import settlement_clock
 
@@ -322,6 +322,27 @@ def _refresh_same_day_model_reads(
             ):
                 raise ForecastDataError(
                     "same-day heartbeat observed high is missing, stale, or mismatched"
+                )
+            # Audit F1 keeps the newest reading fresh all evening, but below a
+            # 2F drop the read is still the forecast-centred model, which on a
+            # day the forecast ran warm prices bins above the maximum as likely
+            # and so sells the winning NO and holds the losing one. Once the
+            # maximum is older than the freshness window, journal a read only
+            # if the post-peak cap is engaged; otherwise the position holds
+            # without a read, as it did before F1.
+            if (
+                not intraday.is_complete
+                and not _heartbeat_timestamp_is_fresh(
+                    intraday.observed_high_at or intraday.latest_observed_at
+                )
+                and not post_peak_cap_engaged(
+                    intraday, standard_timezone=intraday_timezone_for_city(city)
+                )
+            ):
+                raise ForecastDataError(
+                    "same-day heartbeat maximum is over "
+                    f"{SAME_DAY_HEARTBEAT_OBSERVATION_MAX_AGE_MINUTES:.0f} minutes old and "
+                    "the post-peak cap has not engaged; holding without a model read"
                 )
             if not has_forecaster_observed_high_adjustment(forecast):
                 forecast = adapter.apply_intraday_update(forecast, intraday)

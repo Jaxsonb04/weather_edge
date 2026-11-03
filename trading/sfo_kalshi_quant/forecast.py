@@ -345,10 +345,13 @@ class SfoForecasterAdapter:
                     last_observed_column = (
                         "last_observed_at" if "last_observed_at" in official_columns else "NULL"
                     )
+                    high_observed_column = (
+                        "high_observed_at" if "high_observed_at" in official_columns else "NULL"
+                    )
                     official_row = conn.execute(
                         f"""
                         SELECT high_f, {last_observed_column}, observation_count,
-                               is_complete, source
+                               is_complete, source, {high_observed_column}
                         FROM nws_daily_high_ground_truth
                         WHERE station_id = ? AND local_date = ? AND high_f IS NOT NULL
                         """,
@@ -361,6 +364,14 @@ class SfoForecasterAdapter:
                     WHERE station_id = ? AND local_date = ? AND temp_f IS NOT NULL
                     """,
                     (self.station_id, target.isoformat()),
+                ).fetchone()
+                high_at_row = conn.execute(
+                    """
+                    SELECT MIN(observed_at)
+                    FROM nws_station_observations
+                    WHERE station_id = ? AND local_date = ? AND temp_f = ?
+                    """,
+                    (self.station_id, target.isoformat(), high_row[0] if high_row else None),
                 ).fetchone()
                 latest_row = conn.execute(
                     """
@@ -405,6 +416,7 @@ class SfoForecasterAdapter:
             raise ForecastDataError(f"Could not read intraday data from {self.weather_db}: {exc}") from exc
 
         observed_high_f = _maybe_float(high_row[0]) if high_row else None
+        observed_high_at = high_at_row[0] if high_at_row else None
         observation_count = int(high_row[1] or 0) if high_row else 0
         observed_high_source = "nws_station_observations" if observed_high_f is not None else None
         is_complete = False
@@ -412,6 +424,7 @@ class SfoForecasterAdapter:
             official_high = _maybe_float(official_row[0])
             if official_high is not None:
                 observed_high_f = official_high
+                observed_high_at = official_row[5] or observed_high_at
                 # The latest observation is the newest reading behind either
                 # source. high_observed_at only records when the maximum was
                 # first reached; it stops advancing after the peak or along a
@@ -438,6 +451,7 @@ class SfoForecasterAdapter:
             forecast_fetched_at=forecast_fetched_at,
             observation_count=observation_count,
             observed_high_source=observed_high_source,
+            observed_high_at=observed_high_at,
             is_complete=is_complete,
         )
 

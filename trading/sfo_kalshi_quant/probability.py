@@ -570,6 +570,25 @@ def _is_past_peak_and_cooling(
     return standard_hour is not None and standard_hour >= _post_peak_earliest_standard_hour()
 
 
+def post_peak_cap_engaged(
+    intraday: IntradaySnapshot | None,
+    *,
+    standard_timezone: tzinfo,
+) -> bool:
+    """True when _intraday_probability_model would apply the post-peak cap.
+
+    The same-day heartbeat uses this to decide whether an evening read is the
+    capped, converging model or the forecast-centred one.
+    """
+
+    if intraday is None or intraday.observed_high_f is None or intraday.is_complete:
+        return False
+    observed_high_f = intraday.observed_high_f
+    if intraday.latest_temp_f is not None:
+        observed_high_f = max(observed_high_f, intraday.latest_temp_f)
+    return _is_past_peak_and_cooling(intraday, observed_high_f, standard_timezone)
+
+
 def _intraday_probability_model(
     markets: list[MarketBin],
     predicted_high_f: float,

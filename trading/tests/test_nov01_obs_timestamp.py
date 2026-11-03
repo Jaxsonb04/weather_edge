@@ -38,9 +38,13 @@ from sfo_kalshi_quant.forecast import SfoForecasterAdapter, _intraday_weight  # 
 from sfo_kalshi_quant.models import (  # noqa: E402
     EventSnapshot,
     ForecastSnapshot,
+    IntradaySnapshot,
     format_event_date_token,
 )
-from sfo_kalshi_quant.probability import _local_decimal_hour  # noqa: E402
+from sfo_kalshi_quant.probability import (  # noqa: E402
+    _local_decimal_hour,
+    post_peak_cap_engaged,
+)
 from sfo_kalshi_quant.standard_bins import fallback_bins  # noqa: E402
 
 BOSTON = get_city("bos")
@@ -249,14 +253,19 @@ def _write_live_emos(db_path: Path, station_id: str, target: date, fetched_at: d
         )
 
 
-def test_heartbeat_keeps_journaling_reads_hours_after_the_daily_maximum(tmp_path):
-    # The freshness gate and the EMOS age check read the real clock, so the
-    # day is built around now: the maximum is two hours old (past the 90-minute
-    # gate) while the newest reading and the EMOS row are ten minutes old.
+def _heartbeat_day(tmp_path: Path, *, peak_age_minutes: int, cooling_f_per_hour: float):
+    """A same-day position built around the real clock.
+
+    The freshness gate and the EMOS age check read the real clock, so readings
+    run every ten minutes up to ten minutes ago, with the 57F maximum
+    ``peak_age_minutes`` before the newest reading and a steady cooling after
+    it. Returns the heartbeat's inputs and the newest reading's time.
+    """
+
     now = datetime.now(UTC).replace(second=0, microsecond=0)
     city = _city_furthest_into_its_day(now)
     newest = now - timedelta(minutes=10)
-    peak = newest - timedelta(minutes=120)
+    peak = newest - timedelta(minutes=peak_age_minutes)
     target = newest.astimezone(city.fixed_standard_timezone()).date()
     local_midnight = datetime.combine(
         target, time(0, 0), tzinfo=city.fixed_standard_timezone()
@@ -270,7 +279,7 @@ def test_heartbeat_keeps_journaling_reads_hours_after_the_daily_maximum(tmp_path
         elif hours_from_peak < 0:
             temp_f = 56.5 + hours_from_peak
         else:
-            temp_f = 56.5 - 1.5 * hours_from_peak
+            temp_f = 56.5 - cooling_f_per_hour * hours_from_peak
         readings.append((observed_at, temp_f))
         observed_at -= timedelta(minutes=10)
     assert peak in [at for at, _temp_f in readings]
@@ -282,7 +291,6 @@ def test_heartbeat_keeps_journaling_reads_hours_after_the_daily_maximum(tmp_path
 
     event_ticker = f"{city.series_ticker}-{format_event_date_token(target)}"
     markets = fallback_bins(event_ticker, 58.0)
-    held = markets[2]
     store = PaperStore(tmp_path / "paper.db")
     store.record_market(
         EventSnapshot(
@@ -297,9 +305,11 @@ def test_heartbeat_keeps_journaling_reads_hours_after_the_daily_maximum(tmp_path
             },
         )
     )
-    logs: list[str] = []
+    return root, store, city, target, markets, newest
 
-    written = monitor._refresh_same_day_model_reads(
+
+def _run_heartbeat(store, root, target, held, logs) -> int:
+    return monitor._refresh_same_day_model_reads(
         store,
         [{"market_ticker": held.ticker, "target_date": target.isoformat(), "risk_profile": "live"}],
         forecaster_root=root,
@@ -309,6 +319,22 @@ def test_heartbeat_keeps_journaling_reads_hours_after_the_daily_maximum(tmp_path
         ),
         adapter_factory=SfoForecasterAdapter,
     )
+
+
+def test_heartbeat_keeps_journaling_reads_hours_after_the_daily_maximum(tmp_path, monkeypatch):
+    # The maximum is two hours old (past the 90-minute window) while the newest
+    # reading and the EMOS row are ten minutes old, and the day has cooled
+    # 3.5F. Whether the post-peak cap engages depends on the real clock's local
+    # hour (it needs 14:00 standard), so it is pinned open here; the gate's own
+    # hour logic is tested directly below.
+    monkeypatch.setattr(monitor, "post_peak_cap_engaged", lambda *_args, **_kwargs: True)
+    root, store, city, target, markets, newest = _heartbeat_day(
+        tmp_path, peak_age_minutes=120, cooling_f_per_hour=1.5
+    )
+    held = markets[2]
+    logs: list[str] = []
+
+    written = _run_heartbeat(store, root, target, held, logs)
 
     assert logs == []
     assert written == len(markets)
@@ -330,4 +356,130 @@ def test_heartbeat_keeps_journaling_reads_hours_after_the_daily_maximum(tmp_path
     assert update.raw["intraday_update"]["latest_observed_at"] == _utc_iso(newest)
     assert update.raw["intraday_update"]["intraday_weight"] == _intraday_weight(
         _utc_iso(newest), tz
+    )
+
+
+def test_heartbeat_holds_without_a_read_when_the_maximum_is_old_and_the_cap_is_off(
+    tmp_path, monkeypatch
+):
+    # Integration review of the Nov 1 fixes: with F1 the newest reading stays
+    # fresh all evening, but below the post-peak cap the read is the
+    # forecast-centred model. Once the maximum is past the 90-minute window,
+    # the heartbeat journals nothing, so open positions hold as before F1.
+    monkeypatch.setattr(monitor, "post_peak_cap_engaged", lambda *_args, **_kwargs: False)
+    root, store, _city, target, markets, _newest = _heartbeat_day(
+        tmp_path, peak_age_minutes=120, cooling_f_per_hour=1.5
+    )
+    held = markets[2]
+    logs: list[str] = []
+
+    written = _run_heartbeat(store, root, target, held, logs)
+
+    assert written == 0
+    assert store.latest_model_probability_read(target.isoformat(), held.ticker) is None
+    assert len(logs) == 1
+    assert "post-peak cap has not engaged" in logs[0]
+
+
+def test_heartbeat_holds_through_a_sub_2f_evening_plateau(tmp_path):
+    # Two hours past a 57F maximum the newest reading is 56.0F, only 1F lower:
+    # the cap cannot engage at any hour, so the heartbeat writes no
+    # forecast-centred read for the stop or the veto to act on.
+    root, store, _city, target, markets, _newest = _heartbeat_day(
+        tmp_path, peak_age_minutes=120, cooling_f_per_hour=0.25
+    )
+    held = markets[2]
+    logs: list[str] = []
+
+    written = _run_heartbeat(store, root, target, held, logs)
+
+    assert written == 0
+    assert store.latest_model_probability_read(target.isoformat(), held.ticker) is None
+    assert "post-peak cap has not engaged" in logs[0]
+
+
+def test_heartbeat_reads_while_the_maximum_is_recent(tmp_path):
+    # Within 90 minutes of the maximum the heartbeat reads exactly as it did
+    # before F1, whatever the post-peak cap says.
+    root, store, _city, target, markets, _newest = _heartbeat_day(
+        tmp_path, peak_age_minutes=30, cooling_f_per_hour=0.5
+    )
+    held = markets[2]
+    logs: list[str] = []
+
+    written = _run_heartbeat(store, root, target, held, logs)
+
+    assert logs == []
+    assert written == len(markets)
+    assert store.latest_model_probability_read(target.isoformat(), held.ticker) is not None
+
+
+def test_snapshot_keeps_the_time_of_the_maximum_beside_the_newest_reading(tmp_path):
+    _write_station_day(tmp_path / "weather.db", "KBOS", NOV_1, COOLING_EVENING)
+
+    intraday = SfoForecasterAdapter(tmp_path, city=BOSTON).intraday_snapshot(NOV_1)
+
+    assert intraday is not None
+    assert intraday.observed_high_at == _utc_iso(_est(15, 50))
+    assert intraday.latest_observed_at == _utc_iso(_est(21, 20))
+
+
+def test_station_only_day_reports_when_the_maximum_was_first_reached(tmp_path):
+    # No daily-high row yet, so the snapshot reads the station rows alone. The
+    # 61F maximum is first reached at 12:54 and held until 16:54.
+    readings = (
+        [(_est(9, 54), 56.0)]
+        + [(_est(hour, 54), 61.0) for hour in range(12, 17)]
+        + [(_est(18, 54), 58.0)]
+    )
+    with sqlite3.connect(tmp_path / "weather.db") as conn:
+        nws_ground_truth.init_db(conn)
+        nws_ground_truth.archive_observations(
+            conn, [_feature(at, temp_f) for at, temp_f in readings], "KBOS"
+        )
+
+    intraday = SfoForecasterAdapter(tmp_path, city=BOSTON).intraday_snapshot(NOV_1)
+
+    assert intraday is not None
+    assert intraday.observed_high_source == "nws_station_observations"
+    assert intraday.observed_high_f == pytest.approx(61.0)
+    assert intraday.observed_high_at == _utc_iso(_est(12, 54))
+    assert intraday.latest_observed_at == _utc_iso(_est(18, 54))
+
+
+def _snapshot(latest_at: datetime, latest_temp_f: float, *, complete: bool = False):
+    return IntradaySnapshot(
+        target_date=NOV_1,
+        observed_high_f=57.0,
+        latest_temp_f=latest_temp_f,
+        latest_observed_at=_utc_iso(latest_at),
+        remaining_forecast_high_f=None,
+        forecast_fetched_at=None,
+        is_complete=complete,
+        observed_high_at=_utc_iso(_est(15, 50)),
+    )
+
+
+@pytest.mark.parametrize(
+    ("latest_at", "latest_temp_f", "engaged"),
+    [
+        (_est(21, 20), 55.4, False),  # 1.6F under the maximum: forecast-centred
+        (_est(18, 54), 54.9, True),  # 2.1F drop after 14:00 standard: capped
+        (_est(13, 30), 54.0, False),  # 3F drop, but before the 14:00 gate hour
+    ],
+)
+def test_post_peak_cap_engages_only_after_a_2f_drop_past_the_gate_hour(
+    latest_at, latest_temp_f, engaged, monkeypatch
+):
+    monkeypatch.delenv("PAPER_SAME_DAY_ENTRY_CUTOFF_HOUR", raising=False)
+
+    assert post_peak_cap_engaged(
+        _snapshot(latest_at, latest_temp_f), standard_timezone=EST
+    ) is engaged
+
+
+def test_post_peak_cap_is_never_engaged_on_a_complete_day():
+    assert (
+        post_peak_cap_engaged(_snapshot(_est(18, 54), 50.0, complete=True), standard_timezone=EST)
+        is False
     )

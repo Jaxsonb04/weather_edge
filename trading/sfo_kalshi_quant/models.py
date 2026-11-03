@@ -144,6 +144,9 @@ class IntradaySnapshot:
     observation_count: int = 0
     observed_high_source: str | None = None
     is_complete: bool = False
+    # When the day's maximum was first reached. latest_observed_at keeps moving
+    # with every reading; this one stops at the peak.
+    observed_high_at: str | None = None
 
     @property
     def has_observed_high(self) -> bool:
