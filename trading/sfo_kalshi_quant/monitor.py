@@ -235,6 +235,17 @@ def _same_day_no_basket_veto_reason(
     )
 
 
+class _PostPeakHold(ForecastDataError):
+    """The heartbeat deliberately holds a same-day group without a read."""
+
+
+def _same_day_read_held(row, held: set[tuple[str, str]]) -> bool:
+    if not held:
+        return False
+    city = city_for_market_ticker(str(row["market_ticker"]))
+    return city is not None and (city.slug, str(row["target_date"])) in held
+
+
 def _refresh_same_day_model_reads(
     store: PaperStore,
     rows,
@@ -243,6 +254,7 @@ def _refresh_same_day_model_reads(
     log=print,
     clock=settlement_clock,
     adapter_factory=SfoForecasterAdapter,
+    held: set[tuple[str, str]] | None = None,
 ) -> int:
     """Journal fresh model reads for open same-day positions, never entries.
 
@@ -251,6 +263,10 @@ def _refresh_same_day_model_reads(
     keeps only the probability journal alive for positions that are already
     open, using the latest EMOS distribution and station high-so-far.  No trade
     evaluator or PaperTrader is constructed on this path.
+
+    ``held`` collects the (city slug, target date) groups this pass holds
+    without a read, so the exit loop can also ignore reads already journaled
+    for them (for example capped reads from before an evening re-warm).
     """
 
     groups: dict[tuple[str, str, str, str], tuple[CityConfig, date]] = {}
@@ -339,7 +355,7 @@ def _refresh_same_day_model_reads(
                     intraday, standard_timezone=intraday_timezone_for_city(city)
                 )
             ):
-                raise ForecastDataError(
+                raise _PostPeakHold(
                     "same-day heartbeat maximum is over "
                     f"{SAME_DAY_HEARTBEAT_OBSERVATION_MAX_AGE_MINUTES:.0f} minutes old and "
                     "the post-peak cap has not engaged; holding without a model read"
@@ -358,6 +374,8 @@ def _refresh_same_day_model_reads(
             store.record_probabilities(target_iso, probabilities.values())
             written += len(probabilities)
         except (ForecastDataError, ValueError, OSError) as exc:
+            if held is not None and isinstance(exc, _PostPeakHold):
+                held.add((city.slug, target_iso))
             log(
                 f"same-day model heartbeat skipped {city.slug} {target_iso}: "
                 f"{type(exc).__name__}: {exc}"
@@ -415,12 +433,14 @@ def run_paper_monitor(
         if not filled:
             print(color.yellow("no open paper positions"))
         return 0
+    held_same_day: set[tuple[str, str]] = set()
     if _env_enabled("PAPER_SAME_DAY_MODEL_HEARTBEAT_ENABLED"):
         refresh_model_reads(
             store,
             rows,
             forecaster_root=args.forecaster_root,
             log=lambda message: print(color.yellow(message), file=sys.stderr),
+            held=held_same_day,
         )
     quote_rows = [row for row in rows if not _is_guaranteed_payoff_group_row(row)]
     quote_observed_at: dict[str, str] = {}
@@ -602,10 +622,17 @@ def run_paper_monitor(
         # %-of-cost target is the reachable-for-cheap-positions fallback. The
         # stop-loss is the reachable downside price floor with the NO-side model
         # veto preserved (do not sell intraday noise the model still expects to win).
-        model_read = store.latest_model_probability_read(
-            str(row["target_date"]),
-            str(row["market_ticker"]),
-            risk_profile=str(row["risk_profile"] or "live"),
+        # A group the heartbeat held this pass gets no read at all, so a read
+        # journaled before the hold (a capped read from before an evening
+        # re-warm, or an earlier scan's forecast-centred read) cannot drive it.
+        model_read = (
+            None
+            if _same_day_read_held(row, held_same_day)
+            else store.latest_model_probability_read(
+                str(row["target_date"]),
+                str(row["market_ticker"]),
+                risk_profile=str(row["risk_profile"] or "live"),
+            )
         )
         model_yes_p = None if model_read is None else model_read[1]
         model_side_p = (

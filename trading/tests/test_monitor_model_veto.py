@@ -830,6 +830,43 @@ def test_same_day_model_heartbeat_stale_observed_high_retains_no_model_read_hold
         assert action == "HOLD_NO_MODEL_READ"
 
 
+def test_same_day_heartbeat_hold_ignores_reads_journaled_before_the_hold():
+    """ChatGPT review of PR #162: once the heartbeat holds a group (maximum
+    older than the freshness window, post-peak cap off), a read journaled
+    before the hold, such as a capped read from before an evening re-warm,
+    is still inside the 90-minute read window. The exit loop must ignore it,
+    so the NO lot takes the no-read hold instead of acting on that read."""
+
+    target = settlement_clock(city=get_city("sfo")).date()
+    with TemporaryDirectory() as tmp:
+        db_path, store, order_id, held_market = _heartbeat_monitor_fixture(tmp, target)
+        # On its own this fresh read confirms the NO is dead, so the stop
+        # would fire at the floor.
+        store.record_probabilities(target.isoformat(), [_probability(held_market.ticker, 0.95)])
+        adapter = _heartbeat_adapter(target, observed_at=datetime.now(UTC).isoformat())
+        # The maximum is three hours old and the newest reading is only 1F
+        # below it, so the post-peak cap cannot engage.
+        adapter.intraday_snapshot.return_value = replace(
+            adapter.intraday_snapshot.return_value,
+            observed_high_at=(datetime.now(UTC) - timedelta(hours=3)).isoformat(),
+        )
+
+        _run_enabled_heartbeat_monitor(db_path, target, adapter)
+
+        with store.connect() as conn:
+            action = conn.execute(
+                "SELECT action FROM paper_monitor_snapshots WHERE order_id=? ORDER BY id DESC LIMIT 1",
+                (order_id,),
+            ).fetchone()[0]
+            rows = conn.execute(
+                "SELECT COUNT(*) FROM probability_snapshots WHERE market_ticker=?",
+                (held_market.ticker,),
+            ).fetchone()[0]
+        assert rows == 1  # only the pre-hold read; the heartbeat wrote none
+        assert action == "HOLD_NO_MODEL_READ"
+        assert store.paper_orders(1)[0]["status"] == "PAPER_FILLED"
+
+
 def test_same_day_model_heartbeat_refreshes_open_position_without_new_entry():
     city = get_city("sfo")
     target = settlement_clock(city=city).date()

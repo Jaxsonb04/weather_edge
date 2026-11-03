@@ -142,6 +142,7 @@ def _refresh_same_day_model_reads(
     *,
     forecaster_root: Path,
     log=print,
+    held: set[tuple[str, str]] | None = None,
 ) -> int:
     return _monitor._refresh_same_day_model_reads(
         store,
@@ -150,6 +151,7 @@ def _refresh_same_day_model_reads(
         log=log,
         clock=settlement_clock,
         adapter_factory=SfoForecasterAdapter,
+        held=held,
     )
 
 
