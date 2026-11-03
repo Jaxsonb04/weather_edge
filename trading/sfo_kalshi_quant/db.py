@@ -84,6 +84,7 @@ from .research_policy import (
     ResearchSleevePolicy,
     canonical_research_lead_bucket,
 )
+from .research_m1 import M1_ACCOUNT_ID
 from .research_goals import DailyGoalState, daily_goal_state, summarize_daily_goals
 from .research_entry_risk import (
     TARGET_ENTRY_FULL_LOSS_CAP,
@@ -2577,10 +2578,11 @@ class PaperStore:
         profile = normalize_risk_profile_name(risk_profile)
         with self.connect() as conn:
             row = conn.execute(
-                """
+                f"""
                 SELECT COALESCE(SUM(contracts * cost_per_contract), 0.0)
                 FROM paper_orders
                 WHERE target_date = ? AND risk_profile = ?
+                  AND {_NOT_M1}
                   AND parent_order_id IS NULL
                   AND group_id IS NULL
                   AND status NOT IN ('PAPER_EXPIRED', 'PAPER_CANCELLED')
@@ -4506,7 +4508,7 @@ class PaperStore:
                 WHERE s.target_date = ?
                   AND s.sampled = 1
                   AND p.status != 'REJECTED'
-                  {profile_filter.replace('COALESCE(risk_profile,', 'COALESCE(p.risk_profile,')}
+                  {profile_filter.replace('COALESCE(', 'COALESCE(p.')}
                 """,
                 (target_date, *profile_params),
             ).fetchone()
@@ -4520,13 +4522,14 @@ class PaperStore:
     ) -> bool:
         with self.connect() as conn:
             row = conn.execute(
-                """
+                f"""
                 SELECT 1
                 FROM paper_orders
                 WHERE target_date = ?
                   AND market_ticker = ?
                   AND UPPER(COALESCE(side, 'YES')) = ?
                   AND COALESCE(risk_profile, 'live') = 'research'
+                  AND {_NOT_M1}
                   AND status = 'PAPER_CLOSED'
                   AND settled_at IS NULL
                   AND closed_at IS NOT NULL
@@ -4638,7 +4641,7 @@ class PaperStore:
         cap per city-day, not across every city sharing one date).
         """
 
-        profile_filter, profile_params = _paper_profile_filter(risk_profile)
+        profile_filter, profile_params = _paper_profile_filter(risk_profile, account_id)
         account_filter, account_params = _paper_account_filter(account_id)
         series_filter = ""
         series_params: tuple = ()
@@ -4723,7 +4726,7 @@ class PaperStore:
         filled/closed/settled entries still count forever.
         """
 
-        profile_filter, profile_params = _paper_profile_filter(risk_profile)
+        profile_filter, profile_params = _paper_profile_filter(risk_profile, account_id)
         account_filter, account_params = _paper_account_filter(account_id)
         with self.connect() as conn:
             row = conn.execute(
@@ -4771,6 +4774,8 @@ class PaperStore:
         if risk_profile is not None:
             filters.append("COALESCE(risk_profile, 'live') = ?")
             params.append(normalize_risk_profile_name(risk_profile))
+            if account_id != M1_ACCOUNT_ID:
+                filters.append(_NOT_M1)
         if account_id is not None:
             filters.append("COALESCE(account_id, 'paper-shared') = ?")
             params.append(account_id)
@@ -4806,6 +4811,8 @@ class PaperStore:
         if risk_profile is not None:
             filters.append("COALESCE(risk_profile, 'live') = ?")
             params.append(normalize_risk_profile_name(risk_profile))
+            if account_id != M1_ACCOUNT_ID:
+                filters.append(_NOT_M1)
         if account_id is not None:
             filters.append("COALESCE(account_id, 'paper-shared') = ?")
             params.append(account_id)
@@ -4842,6 +4849,8 @@ class PaperStore:
         if risk_profile is not None:
             filters.append("COALESCE(risk_profile, 'live') = ?")
             params.append(normalize_risk_profile_name(risk_profile))
+            if account_id != M1_ACCOUNT_ID:
+                filters.append(_NOT_M1)
         if account_id is not None:
             filters.append("COALESCE(account_id, 'paper-shared') = ?")
             params.append(account_id)
@@ -6947,6 +6956,8 @@ class PaperStore:
         if risk_profile is not None:
             filters.append("COALESCE(risk_profile, 'live') = ?")
             params.append(normalize_risk_profile_name(risk_profile))
+            if account_id != M1_ACCOUNT_ID:
+                filters.append(_NOT_M1)
         if account_id is not None:
             filters.append("COALESCE(account_id, 'paper-shared') = ?")
             params.append(account_id)
@@ -7372,7 +7383,7 @@ class PaperStore:
         out so the value is deterministic for a given settled history).
         """
 
-        profile_filter, profile_params = _paper_profile_filter(risk_profile)
+        profile_filter, profile_params = _paper_profile_filter(risk_profile, account_id)
         account_filter, account_params = _paper_account_filter(account_id)
         with self.connect() as conn:
             row = conn.execute(
@@ -7436,8 +7447,8 @@ class PaperStore:
             .isoformat()
         )
 
-        resolved_account_filter = ""
-        daily_account_filter = ""
+        daily_account_filter = "" if account_id == M1_ACCOUNT_ID else f"AND {_NOT_M1}"
+        resolved_account_filter = daily_account_filter.replace("COALESCE(", "COALESCE(root.")
         account_params: tuple[str, ...] = ()
         if account_id is not None:
             resolved_account_filter = (
@@ -7598,11 +7609,19 @@ def _pending_cancel_request(raw: object) -> dict[str, object] | None:
     return request if isinstance(request, dict) else None
 
 
-def _paper_profile_filter(risk_profile: str | None) -> tuple[str, tuple[str, ...]]:
+# M1 writes risk_profile='research' but is its own book: a profile-wide query
+# never pools it, unless the caller asks for M1's own account.
+_NOT_M1 = f"COALESCE(account_id, '') != '{M1_ACCOUNT_ID}'"
+
+
+def _paper_profile_filter(
+    risk_profile: str | None, account_id: str | None = None
+) -> tuple[str, tuple[str, ...]]:
     if risk_profile is None:
         return "", ()
+    not_m1 = "" if account_id == M1_ACCOUNT_ID else f" AND {_NOT_M1}"
     return (
-        "AND COALESCE(risk_profile, 'live') = ?",
+        f"AND COALESCE(risk_profile, 'live') = ?{not_m1}",
         (normalize_risk_profile_name(risk_profile),),
     )
 

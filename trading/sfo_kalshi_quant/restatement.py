@@ -71,6 +71,7 @@ from .maker_fills import (
     uses_current_maker_semantics,
 )
 from .paper_pnl import closed_position_pnl, settled_position_pnl
+from .research_m1 import M1_ACCOUNT_ID
 from .settlement_truth import integer_settlement_high_f, row_resolves_yes
 
 # The taker-entry displayed-ask sizing cap landed 2026-07-10; taker entries
@@ -1795,8 +1796,12 @@ def restate(db_path: Path) -> dict[str, Any]:
     """Build the immutable-evidence restatement report for one database."""
 
     with _connect_readonly(Path(db_path)) as conn:
+        # M1 writes 'research' but is its own book (own trial reconciliation);
+        # it never joins the research per-profile totals or trade-id checks.
         orders = conn.execute(
-            "SELECT * FROM paper_orders WHERE status != 'REJECTED' ORDER BY created_at, id"
+            "SELECT * FROM paper_orders WHERE status != 'REJECTED' "
+            "AND COALESCE(account_id, '') != ? ORDER BY created_at, id",
+            (M1_ACCOUNT_ID,),
         ).fetchall()
         all_order_identity_rows = conn.execute(
             "SELECT id, market_ticker, target_date, account_id FROM paper_orders"

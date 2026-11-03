@@ -49,6 +49,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from .cities import city_for_market_ticker
+from .research_m1 import M1_ACCOUNT_ID
 from .settlement_truth import (
     bin_resolves_yes as _resolves_yes,
     load_cli_settlement_truth,
@@ -1748,8 +1749,10 @@ def build_features(
             for tick, target, side, profile, order_id, pnl in pconn.execute(
                 "SELECT market_ticker, target_date, side, COALESCE(risk_profile,''), "
                 "MIN(id), SUM(realized_pnl) FROM paper_orders "
-                "WHERE target_date >= ? GROUP BY market_ticker, target_date, side, risk_profile",
-                (min(targets),),
+                # M1 writes 'research' but is its own book; never pool its P&L.
+                "WHERE target_date >= ? AND COALESCE(account_id, '') != ? "
+                "GROUP BY market_ticker, target_date, side, risk_profile",
+                (min(targets), M1_ACCOUNT_ID),
             ):
                 orders[(str(target), str(tick), str(side), str(profile))] = (order_id, pnl)
         finally:
