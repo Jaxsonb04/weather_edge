@@ -525,8 +525,13 @@ _DEFAULT_SAME_DAY_ENTRY_CUTOFF_HOUR = 14
 # maximum are priced too low meanwhile. exits.decide_exit vetoes a NO stop on
 # this model probability alone (audit F3), so during such a dip the stop on a
 # NO above the maximum can be held as HOLD_MODEL_VETO toward the catastrophic
-# floor. Deploy this only together with, or after, F3's model-vs-market limit
-# on that veto.
+# floor. That tail stays bounded: the veto still lapses at the catastrophic
+# floor (model_veto_max_loss_roi, and model_veto_max_loss_dollars on research),
+# and the gate closes again as soon as a newer reading is back within 2F of the
+# maximum. The veto itself is intentional and unchanged (audit F3 was refuted).
+# This cap only acts together with audit F1 (forecast.py keeps the newest
+# observation as the latest-observation time), which keeps the heartbeat's
+# model reads flowing after the peak; the two ship together.
 POST_PEAK_MIN_DROP_F = 2.0
 
 
@@ -635,12 +640,11 @@ def _intraday_probability_model(
     # 0.45F/0.30F, so with the mean at the maximum (forecast at or below it) the
     # 0.20 branch fires once the maximum is within about 0.77F of its bin's
     # continuous top edge, not 0.58F/0.38F. The wider spread is the
-    # observation-error model moving some mass from the reached bin to the one
-    # above; the boost, lifting the intraday weight from 0.65 to 0.80, pulls part
-    # of it back, as the intraday leg is tighter around the maximum than the
-    # conditioned EMOS leg. test_nov01_post_peak_cooling pins a case: 21:10 EST,
-    # max 57.8F, EMOS 57.0F moves 57-58 from 0.894 to 0.843 and 59-60 from 0.096
-    # to 0.151 (0.170 without the boost).
+    # observation-error model moving some mass from the reached bin to the
+    # neighbouring bin the maximum sits closer to, which can be the bin below;
+    # the boost, lifting the intraday weight from 0.65 to 0.80, pulls part of it
+    # back, as the intraday leg is tighter around the maximum than the
+    # conditioned EMOS leg. test_nov01_post_peak_cooling pins the numbers.
     blend_weight = _intraday_blend_weight(local_hour, config)
     if (
         remaining_heat_risk is not None

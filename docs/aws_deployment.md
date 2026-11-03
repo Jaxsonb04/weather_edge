@@ -243,9 +243,12 @@ The full sync creates the root-owned
 `/run/weatheredge-deploy-maintenance` marker after timer-state capture and
 before quiescence. Scheduler repair skips while the marker exists. After the
 captured timer policy and post-analysis publication are restored, the deploy
-removes the marker and runs the scheduler-health service once. A failed deploy
-can intentionally leave the marker in place; investigate and complete or roll
-back that deployment before removing it.
+removes the marker and runs the scheduler-health service once. That run
+includes the per-profile paper-scan success check: the freshly restored scan
+timer gets its start-up grace, but a profile with no successful scan for a full
+window after the restore fails the deploy's closing check, as intended. A
+failed deploy can intentionally leave the marker in place; investigate and
+complete or roll back that deployment before removing it.
 
 ## Archive, Finality, And Health
 

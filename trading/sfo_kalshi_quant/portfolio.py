@@ -277,8 +277,9 @@ def _joint_resize_directional(
     ratio is its stake in the joint solve over its stake alone: below 1 when
     the other legs partly duplicate its risk, above 1 when they diversify it.
     Fractional Kelly is a fraction of the full-Kelly solution, so the leg's
-    fractional joint size is that ratio times its per-leg Kelly budget, which
-    already carries the per-leg sizer's fractional Kelly, LCB-weighted sizing
+    fractional joint size is that ratio times its per-leg Kelly budget or its
+    per-leg spend, whichever is larger. The budget already carries the per-leg
+    sizer's fractional Kelly, LCB-weighted sizing
     probability and posterior trust multiplier (risk.py). The leg is cut to
     that many whole contracts (at least one) only when that is fewer than it
     would place now. A leg is never raised above its per-leg size, and an
@@ -376,8 +377,11 @@ def _joint_resize_directional(
     # ceiling above, the checks below and the shared-account per-position cap
     # at placement remain the binding risk ceilings.
     candidate = [*others, *resized]
+    # Defensive only: a trim-only resize never spends more than the greedy
+    # book, so these checks cannot fire today. If one ever does, return the
+    # greedy book unchanged rather than a partly trimmed one.
     if _worst_case_loss(candidate) > remaining_budget + 1e-9:
-        return legs  # fail safe: keep the disciplined greedy sizing
+        return legs
     if sum(leg.spend for leg in resized) > remaining_budget + 1e-9:
         return legs
     if sum(leg.spend for leg in resized if leg.sleeve == "yes_convex") > yes_sleeve + 1e-9:

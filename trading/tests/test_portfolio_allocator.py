@@ -250,10 +250,11 @@ def test_portfolio_worst_case_includes_settlements_outside_selected_yes_bins() -
     assert plan.worst_case_loss == 80.0
 
 
-def test_joint_kelly_resizes_directional_legs_within_cap() -> None:
-    # Two NO-favorites on different bins; with the ladder provided and joint
-    # Kelly on, the portfolio re-sizes them as a hedged basket and stays under
-    # the worst-case-loss cap.
+def test_joint_kelly_leaves_diversifying_legs_within_cap() -> None:
+    # Two NO-favorites on different bins lose in different scenarios, so they
+    # diversify rather than duplicate each other: with the ladder provided and
+    # joint Kelly on, the trim-only resize leaves both legs as the greedy sizer
+    # placed them and the book stays under the worst-case-loss cap.
     m1 = _market("70° to 71°", ticker="KXHIGHTSFO-TEST-B70.5", floor=70, cap=71, no_ask=0.75)
     m2 = _market("72° to 73°", ticker="KXHIGHTSFO-TEST-B72.5", floor=72, cap=73, no_ask=0.75)
     d1 = _decision(m1, side="NO", spend=50, probability=0.10, edge=0.10, edge_lcb=0.05)

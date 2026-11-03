@@ -59,6 +59,10 @@ ACCOUNTING_POLICY_VERSION = "acct-v4-account-scoped-2026-07-14"
 # clock -- untouched. This constant is reserved for live-economics changes.
 # v7 changes forecast input validity and monitor quote/depth semantics.
 # Rotate live/research cohorts instead of relabeling older evidence as v7.
+# The 2026-11-01 audit fixes (joint-Kelly trim-only sizing, the post-peak cap
+# and the newest-observation heartbeat time) ship in the same first production
+# deploy of behavior-v4, so they share its cohort: no behavior-v4 order predates
+# them (production last ran behavior-v2).
 STRATEGY_BEHAVIOR_VERSION = "behavior-v4-v7-correctness-2026-10-05"
 WEEKLY_RETURN_TARGET = 0.05
 WEEKLY_GOAL_TZ = ZoneInfo("America/Los_Angeles")

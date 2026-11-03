@@ -524,8 +524,8 @@ not_succeeding = []
 not_journaling = []
 for profile in expected:
     finished = finished_at[profile]
-    # Both directions: a stamp dated in the future (the clock stepped back
-    # after it was written) must not count as fresh until the clock catches up.
+    # Both directions: a stamp more than one window in the future (the clock
+    # stepped back after it was written) does not count as fresh.
     if finished is None or abs(now - finished) > window:
         last = (
             "no valid success stamp"
