@@ -244,11 +244,15 @@ The full sync creates the root-owned
 before quiescence. Scheduler repair skips while the marker exists. After the
 captured timer policy and post-analysis publication are restored, the deploy
 removes the marker and runs the scheduler-health service once. That run
-includes the per-profile paper-scan success check: the freshly restored scan
-timer gets its start-up grace, but a profile with no successful scan for a full
-window after the restore fails the deploy's closing check, as intended. A
-failed deploy can intentionally leave the marker in place; investigate and
-complete or roll back that deployment before removing it.
+includes the per-profile paper-scan success check, but it normally runs well
+inside the restored scan timer's start-up grace, so it defers that verdict.
+The first real verdict comes from the timer-driven scheduler-health run (or a
+failing scan's own OnFailure alert) about one window after the restore. Before
+declaring a deploy healthy, wait until every
+`.paper-scan-state/last-success-<profile>` stamp is newer than the restore, then
+run `sfo-scheduler-health.service` once more. A failed deploy can intentionally
+leave the marker in place; investigate and complete or roll back that
+deployment before removing it.
 
 ## Archive, Finality, And Health
 

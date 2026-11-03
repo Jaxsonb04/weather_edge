@@ -841,8 +841,9 @@ def _settle_completed_paper_targets(
         # (series, date) pairs settled now: one interval spanning this tick's
         # earliest and latest dates also re-verified lots settled between them
         # on earlier ticks, against a truth map holding only this tick's dates,
-        # and rewrote their MATCH rows to MISSING_FINAL. Later corrections are
-        # _recheck_booked_settlements' job.
+        # and rewrote their MATCH rows to MISSING_FINAL. Later changes to a final
+        # are _recheck_booked_settlements' job; it escalates them but does not
+        # repair MISSING_FINAL rows the older interval verify already wrote.
         verification = {"checked": [], "mismatches": 0, "missing_truth": 0}
         for (series, target_date), high in verification_truth.items():
             result = store.verify_paper_settlements(

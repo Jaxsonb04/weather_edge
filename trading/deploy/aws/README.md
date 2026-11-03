@@ -197,9 +197,10 @@ flags.
 before quiescence. Scheduler checks skip while that root-owned marker exists;
 the deploy restores its captured timer policy, removes the marker, and runs one
 explicit scheduler-health check last. That check includes the per-profile paper
-scan success stamps; the restored scan timer gets its start-up grace, so it
-fails only when a profile has had no successful scan for a full window after
-the restore. A deployment that fails before any source is
+scan success stamps, but it runs inside the restored scan timer's start-up
+grace and so normally defers them; confirm every stamp is newer than the
+restore and rerun the check before calling the deploy healthy. A deployment
+that fails before any source is
 transferred restores every timer it captured, retired ones included because the
 old release is still running, and releases the marker itself; one that fails
 after the transfer starts leaves the marker intentionally present so
