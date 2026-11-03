@@ -117,7 +117,16 @@ def _profile_view(
             if archived
             else ["live_readiness"]
             if name == "research-target"
+            else ["live_goal", "live_readiness", "real_money"]
+            if name == "research-m1"
             else []
+        ),
+        # The M1 trial's pre-registration and stop-rule status live in
+        # accounting.accounts.research_m1.trial.
+        **(
+            {"paper_only": True, "account_key": "research_m1"}
+            if name == "research-m1"
+            else {}
         ),
     }
 
@@ -634,6 +643,8 @@ def _profile_label(name: str) -> str:
         return "Research ROI v6 (archived pre-v7 record)"
     if name == "research-motion":
         return "Research motion (archived execution learning)"
+    if name == "research-m1":
+        return "M1 market-recalibration trial (paper only)"
     return name
 
 
