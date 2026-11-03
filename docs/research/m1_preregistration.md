@@ -223,3 +223,27 @@ that production prunes after about a day:
   gap alone removes about 2 to 9% of entries).
 - Initial capital is $10,000 rather than the decision's $1,000, by owner decision,
   so the percentage caps do not throttle the trial.
+
+## 11. Implementation record
+
+Added after the implementation was written; it records how the code realizes
+sections 1 to 10 and changes none of them.
+
+- Policy fingerprint `458ecd9f808b595c74356529` (pinned in
+  `trading/tests/test_research_m1_math.py`). It hashes only the constants above,
+  so release-wide version changes (execution model, strategy behavior) never
+  rotate the trial's identity; M1 lots record the release's execution model
+  version like every other order.
+- Code: `trading/sfo_kalshi_quant/research_m1.py` (frozen policy, rule, replay,
+  statistics), `trading/sfo_kalshi_quant/research_m1_store.py` (scan engine,
+  admission, reconciliation, stop rules, published payload),
+  `trading/sfo_kalshi_quant/store/m1_trial.py` (tables and account bootstrap).
+- Sampling: the `m1_evaluations` table's unique key (target date, market,
+  side, UTC hour) admits exactly one sampled evaluation per leg per hour, the
+  first research-profile scan to evaluate it.
+- Placement switch `PAPER_PLACE_RESEARCH_M1` (`--place-research-m1`), default
+  off. Daily upkeep runs inside `paper-auto-settle` on the existing settle
+  timer; `paper-m1-reconcile` and `paper-m1-status` (`--final-read` for the
+  10,000-resample read) run the same steps by hand.
+- Halts are zero-amount `M1_HALT` events in the account ledger, one per rule.
+- Published as `accounting.accounts.research_m1` in `strategy_research.json`.
