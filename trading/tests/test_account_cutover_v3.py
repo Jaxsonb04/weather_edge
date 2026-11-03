@@ -13,6 +13,7 @@ from sfo_kalshi_quant.account import (
     account_for_research_sleeve,
 )
 from sfo_kalshi_quant.db import PaperStore
+from sfo_kalshi_quant.research_m1 import M1_ACCOUNT_ID
 from sfo_kalshi_quant.research_policy import (
     ALL_RESEARCH_POLICIES,
     MOTION_POLICY,
@@ -204,9 +205,12 @@ def test_reinitialization_archives_every_unknown_active_account(tmp_path) -> Non
         custom_status = conn.execute(
             "SELECT status FROM paper_accounts WHERE account_id='paper-custom-legacy'"
         ).fetchone()[0]
+    # The M1 market-recalibration trial is a deliberate third paper ledger,
+    # separately capitalized and never pooled with the other two.
     assert active_ids == {
         LIVE_STABILITY_ACCOUNT_ID,
         TARGET_POLICY.account_id,
+        M1_ACCOUNT_ID,
     }
     assert custom_status == "ARCHIVED"
 

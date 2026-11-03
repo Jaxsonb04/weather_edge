@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from .account import LIVE_STABILITY_ACCOUNT_ID, SHARED_ACCOUNT_ID
+from .research_m1 import M1_POLICY, M1_PUBLISHED_PROFILE
 from .research_policy import (
     MOTION_POLICY,
     TARGET_POLICY,
@@ -55,6 +56,16 @@ def published_profile_key(
             and fingerprint == policy.policy_fingerprint
         ):
             return published
+    # The M1 market-recalibration trial is its own paper book with the same
+    # all-or-nothing identity rule as the research sleeves.
+    if (
+        raw in {"unknown", "research", M1_PUBLISHED_PROFILE}
+        and account == M1_POLICY.account_id
+        and sleeve == M1_POLICY.sleeve
+        and version == M1_POLICY.policy_version
+        and fingerprint == M1_POLICY.policy_fingerprint
+    ):
+        return M1_PUBLISHED_PROFILE
 
     # Canonical sleeve evidence is all-or-nothing. A partial, crossed, stale,
     # or forged tuple must not inherit a public profile from any one marker.
@@ -69,6 +80,7 @@ def published_profile_key(
             "research-target-v6",
             "research-target",
             "research-motion",
+            M1_PUBLISHED_PROFILE,
         }
         or account
         in {
@@ -80,6 +92,7 @@ def published_profile_key(
             TARGET_POLICY_V6.account_id,
             TARGET_POLICY.account_id,
             MOTION_POLICY.account_id,
+            M1_POLICY.account_id,
         }
         or bool(sleeve or version or fingerprint)
     ):
@@ -110,6 +123,7 @@ def execution_profile_key(profile: object) -> str:
         "research-target-v6",
         "research-target",
         "research-motion",
+        M1_PUBLISHED_PROFILE,
     }:
         return "research"
     if published == "live-legacy":

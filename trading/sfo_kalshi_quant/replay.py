@@ -1495,6 +1495,9 @@ def _readiness_root_profile_class(
         "research-target-v6",
         "research-target",
         "research-motion",
+        # The M1 trial's paper ledger is research evidence: never part of the
+        # live readiness clock, and never an invalid identity that fails a day.
+        "research-m1",
     }:
         return "research"
     return "invalid"
