@@ -61,8 +61,8 @@ minutes, so it isn't worth it when the steps depend on each other.
 
 | Agent | Where | Use it for |
 |---|---|---|
-| `orchestrator` | global (`/Users/jaxson/develop/agent claude md/orchestrator.md`, symlinked into `~/.claude/agents/`) | Batches of independent work: audits across areas, several bugs or pages at once. Add "plan only" to see the waves first |
-| `frontend-designer` | global (`/Users/jaxson/develop/agent claude md/frontend-designer.md`, symlinked into `~/.claude/agents/`) | Any UI work in `src/`. The site is HeroUI v3 plus licensed HeroUI Pro; its knowledge pack is `/Users/jaxson/develop/agent claude md/frontend-designer/heroui/GUIDE.md`. `AGENTS.md` "Design And Redesign Memory" binds it |
+| `orchestrator` | global (`~/develop/agent claude md/orchestrator.md`, symlinked into `~/.claude/agents/`) | Batches of independent work: audits across areas, several bugs or pages at once. Add "plan only" to see the waves first |
+| `frontend-designer` | global (`~/develop/agent claude md/frontend-designer.md`, symlinked into `~/.claude/agents/`) | Any UI work in `src/`. The site is HeroUI v3 plus licensed HeroUI Pro; its knowledge pack is `~/develop/agent claude md/frontend-designer/heroui/GUIDE.md`. `AGENTS.md` "Design And Redesign Memory" binds it |
 | `release-manager` | global (`~/.claude/agents/`) | Shipping: a PR with only that work's files, the ChatGPT review loop until approve, sign-off, squash-merge. Also "what's open, is anything stuck?" |
 
 Backend work (`trading/`, `forecaster/`, `trading/deploy/aws/`) runs in the main
