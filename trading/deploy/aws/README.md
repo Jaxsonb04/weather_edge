@@ -175,10 +175,23 @@ as `git@github.com:Jaxsonb04/weather_edge.git`.
 root-owned helper verifies that the twelve application timers are enabled and
 active, rejects effective unit drift, stale/missing forecast state, checksum or
 source-provenance mismatches, and validates both local and public artifact
-freshness. Only age-only failures are eligible for repair: it may start the
-bounded Strategy Lab service and/or the operational publisher under a
-single-flight lock and 15-minute cooldown. It never starts paper scan, monitor,
-or settlement services and never changes placement or live-trading flags.
+freshness. It also fails unless every `PAPER_RISK_PROFILES` profile has
+finished a successful scan within `SFO_SCHEDULER_SCAN_MAX_AGE_MINUTES`
+(default 20) and journaled a decision in that time. A scan that fails partway
+has already journaled the cities ahead of the failure, so fresh rows are not
+enough: `run_paper_scan_profiles.sh` writes
+`.paper-scan-state/last-success-<profile>` beside the journal, holding the
+epoch second of that profile's last exit 0, and writes nothing for a failed
+run. The helper reads those stamps and the journal read-only as the
+application user, outside the artifact lock, and allows a start-up grace of
+one window after `sfo-kalshi-paper-scan.timer` starts, so a deploy quiesce or
+a reboot does not fail on old stamps. A failing profile ends the run before
+the publication checks, so no repair is attempted until scans recover; the
+publish timer keeps running. Only age-only failures are eligible for repair:
+it may start the bounded Strategy Lab service and/or the operational publisher
+under a single-flight lock and 15-minute cooldown. It never starts paper scan,
+monitor, or settlement services and never changes placement or live-trading
+flags.
 
 `sync_to_box.sh` creates `/run/weatheredge-deploy-maintenance` immediately
 before quiescence. Scheduler checks skip while that root-owned marker exists;

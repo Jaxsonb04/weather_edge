@@ -211,7 +211,18 @@ $50/$20/$10 defaults; custom absolute overrides are retained.
 - `sfo-scheduler-health.timer`: offset five-minute independent scheduler check.
   It requires the twelve application timers to be enabled and active, verifies
   canonical systemd units, forecast DB safety, artifact checksums and source
-  provenance, and local/public Strategy and operational freshness. It repairs
+  provenance, and local/public Strategy and operational freshness. It also
+  requires every `PAPER_RISK_PROFILES` profile to have finished a successful
+  scan within `SFO_SCHEDULER_SCAN_MAX_AGE_MINUTES` (default 20) and to have
+  journaled a decision in that time. `run_paper_scan_profiles.sh` writes
+  `.paper-scan-state/last-success-<profile>` beside the journal
+  (`SFO_KALSHI_DB`) only when that profile exits 0, because a scan that fails
+  partway has already journaled the cities ahead of the failure. The watchdog
+  reads those stamps and the paper journal read-only, as the application user,
+  and gives a start-up grace of one window after `sfo-kalshi-paper-scan.timer`
+  starts, so a deploy quiesce or a reboot does not fail on old stamps. A
+  failing profile ends the run before the publication checks, so no repair is
+  attempted until scans recover; the publish timer keeps running. It repairs
   only age-only failures by starting Strategy Lab and/or operational
   publication under a single-flight lock and 15-minute cooldown. It never
   starts scan, monitor, settlement, or any trading action.

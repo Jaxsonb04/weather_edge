@@ -3,8 +3,8 @@
 #
 # This process may start only the bounded Strategy Lab refresh and operational
 # publisher. It never starts paper scan/monitor/settlement services and never
-# changes trading configuration. It reads the paper decision journal read-only,
-# as the application user.
+# changes trading configuration. It reads the paper scan success stamps and the
+# paper decision journal read-only, as the application user.
 set -euo pipefail
 
 INTERNAL_MODE="${1:-}"
@@ -90,9 +90,10 @@ PROPAGATION_TIMEOUT_SECONDS="${SFO_SCHEDULER_PROPAGATION_TIMEOUT_SECONDS:-420}"
 # CDN lag resolves silently.
 PROPAGATION_FAILURE_THRESHOLD="${SFO_SCHEDULER_PROPAGATION_FAILURE_THRESHOLD:-2}"
 # Every paper risk profile the scan unit runs (same variables and default as
-# run_paper_scan_profiles.sh) must have journaled a decision within this many
-# minutes. Scans run every five minutes, so 20 tolerates two or three failed
-# ticks and still fails a scan that keeps failing or hangs.
+# run_paper_scan_profiles.sh) must have finished a successful scan within this
+# many minutes, and journaled a decision in that time. Scans run every five
+# minutes, so 20 tolerates two or three failed ticks and still fails a scan
+# that keeps failing, even partway through, or hangs.
 SCAN_MAX_AGE_MINUTES="${SFO_SCHEDULER_SCAN_MAX_AGE_MINUTES:-20}"
 SCAN_PROFILES="${PAPER_RISK_PROFILES:-${PAPER_RISK_PROFILE:-live}}"
 if (( TEST_MODE == 1 )); then
@@ -393,14 +394,21 @@ fi
 
 # A oneshot scan that fails or hangs leaves its timer "active", so the timer
 # loop above kept passing while every scan failed from Oct 27 to Nov 1 (audit
-# F5). Require each configured paper profile, a separate paper account, to have
-# journaled a decision inside the window instead. Per profile, because one can
-# fail while the other keeps scanning and the unit's single Result cannot say
-# which; by age, so a failed tick or two does not fail health but a hang does. Rows
-# from before a deploy quiesce or a reboot only count as stale once the scan
-# timer has been active for a full window. The read runs as the application
-# user (root must never create the WAL side files) and outside the artifact
-# lock, and fails before any publication repair, like a timer error.
+# F5). Require instead that each configured paper profile, a separate paper
+# account, finished a successful scan inside the window: run_paper_scan_profiles.sh
+# writes .paper-scan-state/last-success-<profile> beside the journal only when
+# that profile exits 0. Fresh decision rows cannot show this. The scan journals
+# them one city and target at a time, before steps that can still fail the run,
+# so a scan that fails partway on every tick keeps them fresh for days. Each
+# profile's newest journaled decision must also be inside the window, which
+# catches a scan that exits 0 without journaling into this DB. Per profile,
+# because one can fail while the other keeps scanning and the unit's single
+# Result cannot say which; by age, so a failed tick or two does not fail health
+# but a hang does. Stamps and rows from before a deploy quiesce or a reboot only
+# count as stale once the scan timer has been active for a full window. The
+# reads run as the application user (root must never create the WAL side
+# files) and outside the artifact lock, and fail before any publication repair,
+# like a timer error.
 if [[ -n "$PAPER_DB" ]]; then
   if ! scan_timer_active_since="$(
     "${SYSTEMCTL[@]}" show --property=ActiveEnterTimestampMonotonic --value \
@@ -414,6 +422,7 @@ if [[ -n "$PAPER_DB" ]]; then
     cd "$TRADING_DIR"
     run_as_app "$PYTHON_BIN" - "$PAPER_DB" "$SCAN_PROFILES" \
       "$SCAN_MAX_AGE_MINUTES" "$scan_timer_active_since" <<'PY'
+import re
 import sqlite3
 import sys
 import time
@@ -425,6 +434,9 @@ from sfo_kalshi_quant.config import normalize_risk_profile_name
 db_path, profiles_csv, max_minutes, timer_active_since = sys.argv[1:]
 now = datetime.now(timezone.utc)
 window = timedelta(minutes=float(max_minutes))
+# run_paper_scan_profiles.sh keeps last-success-<profile> here, holding the
+# epoch second that profile last exited 0.
+state_dir = Path(db_path).parent / ".paper-scan-state"
 expected = []
 for raw in profiles_csv.split(","):
     if not raw.strip():
@@ -447,6 +459,22 @@ def parse_utc(value):
     except ValueError:
         return None
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def last_success(profile):
+    """When the runner last saw this profile exit 0, or None if unrecorded.
+
+    A missing or malformed stamp is no evidence of success. Any other read
+    error propagates, because then nothing can be concluded.
+    """
+
+    try:
+        text = (state_dir / f"last-success-{profile}").read_text(encoding="ascii")
+    except (FileNotFoundError, UnicodeDecodeError):
+        return None
+    if not re.fullmatch(r"[0-9]{1,10}", text.strip()):
+        return None
+    return datetime.fromtimestamp(int(text.strip()), timezone.utc)
 
 
 def profiles_with_recent_decisions():
@@ -482,12 +510,52 @@ def profiles_with_recent_decisions():
 
 
 try:
-    recent = profiles_with_recent_decisions()
+    finished_at = {profile: last_success(profile) for profile in expected}
+except OSError as exc:
+    print(f"paper scan success stamp is unreadable: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+try:
+    journaled = profiles_with_recent_decisions()
 except sqlite3.Error as exc:
     print(f"paper decision journal is unreadable: {exc}", file=sys.stderr)
     raise SystemExit(2)
-stale = [profile for profile in expected if profile not in recent]
-if not stale:
+
+not_succeeding = []
+not_journaling = []
+for profile in expected:
+    finished = finished_at[profile]
+    # Both directions: a stamp dated in the future (the clock stepped back
+    # after it was written) must not count as fresh until the clock catches up.
+    if finished is None or abs(now - finished) > window:
+        last = (
+            "no valid success stamp"
+            if finished is None
+            else f"last success {finished:%Y-%m-%dT%H:%M:%SZ}"
+        )
+        partway = (
+            "; its runs still journal decisions but none has succeeded"
+            if profile in journaled
+            else ""
+        )
+        not_succeeding.append(
+            (
+                profile,
+                f"paper scan profile={profile} has no successful run in the last "
+                f"{max_minutes} minutes ({last}){partway}",
+            )
+        )
+    elif profile not in journaled:
+        minutes_ago = max(now - finished, timedelta(0)).total_seconds() / 60
+        not_journaling.append(
+            (
+                profile,
+                f"paper scan profile={profile} last succeeded {minutes_ago:.1f} "
+                f"minutes ago but journaled no decision in the last {max_minutes} "
+                "minutes",
+            )
+        )
+problems = not_succeeding + not_journaling
+if not problems:
     raise SystemExit(0)
 
 # systemd stamps unit transitions in CLOCK_MONOTONIC microseconds; 0 or an
@@ -502,22 +570,23 @@ if activated_us > 0:
     )
     if timedelta(0) <= active_for < window:
         print(
-            "paper scan freshness deferred: sfo-kalshi-paper-scan.timer has been "
+            "paper scan health deferred: sfo-kalshi-paper-scan.timer has been "
             f"active for {active_for.total_seconds() / 60:.1f} of {max_minutes} "
-            f"minutes (start-up grace); no decision yet from {', '.join(stale)}"
+            "minutes (start-up grace); not yet healthy: "
+            + ", ".join(profile for profile, _ in problems)
         )
         raise SystemExit(0)
-for profile in stale:
-    print(
-        f"paper scan profile={profile} recorded no decision in the last "
-        f"{max_minutes} minutes",
-        file=sys.stderr,
-    )
-raise SystemExit(3)
+for _, message in problems:
+    print(message, file=sys.stderr)
+raise SystemExit(3 if not_succeeding else 4)
 PY
   ) || scan_status=$?
   if (( scan_status == 3 )); then
-    echo "scheduler health failed: paper scans stopped recording decisions" >&2
+    echo "scheduler health failed: paper scans have not succeeded recently" >&2
+    exit 1
+  fi
+  if (( scan_status == 4 )); then
+    echo "scheduler health failed: paper scans succeed but journal no decisions" >&2
     exit 1
   fi
   if (( scan_status != 0 )); then
