@@ -271,6 +271,7 @@ if failing and sys.argv[sys.argv.index('--risk-profile') + 1] == failing:
         "PAPER_PLACE_LIVE",
         "PAPER_PLACE_RESEARCH_TARGET",
         "PAPER_PLACE_RESEARCH_MOTION",
+        "PAPER_PLACE_RESEARCH_M1",
         "SFO_PAPER_PLACE_ORDERS",
     ):
         if name not in placement_flags:
@@ -352,6 +353,35 @@ def test_paper_scan_placement_flags_are_default_off_and_account_isolated(
     assert "--place-paper" not in research
     assert ("--place-research-target" in research) is expected_target
     assert ("--place-research-motion" in research) is expected_motion
+
+
+@pytest.mark.parametrize(
+    ("placement_flags", "expected_m1"),
+    [
+        ({}, False),
+        ({"PAPER_PLACE_RESEARCH_M1": "1"}, True),
+        ({"PAPER_PLACE_RESEARCH_M1": "On"}, True),
+        ({"PAPER_PLACE_RESEARCH_M1": "unknown"}, False),
+        ({"PAPER_PLACE_RESEARCH_TARGET": "1"}, False),
+        ({"PAPER_PLACE_LIVE": "1"}, False),
+    ],
+)
+def test_m1_trial_placement_is_its_own_default_off_research_switch(
+    tmp_path: Path,
+    placement_flags: dict[str, str],
+    expected_m1: bool,
+) -> None:
+    calls = _run_paper_scan_with_placement_flags(tmp_path, **placement_flags)
+    live = _paper_scan_call_for_profile(calls, "live")
+    research = _paper_scan_call_for_profile(calls, "research")
+
+    assert "--place-research-m1" not in live
+    assert ("--place-research-m1" in research) is expected_m1
+    # The M1 switch never turns on the target book or live placement.
+    if placement_flags == {"PAPER_PLACE_RESEARCH_M1": "1"}:
+        assert "--place-research-target" not in research
+        assert "--place-paper" not in live
+        assert "--place-paper" not in research
 
 
 @pytest.mark.parametrize(

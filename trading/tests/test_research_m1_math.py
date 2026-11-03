@@ -379,6 +379,7 @@ def test_pinned_risk_limits_match_the_research_profile_they_were_copied_from() -
 def test_m1_module_never_imports_live_execution() -> None:
     script = (
         "import sys; import sfo_kalshi_quant.research_m1; "
+        "import sfo_kalshi_quant.research_m1_store; "
         "print('sfo_kalshi_quant.live_execution' in sys.modules)"
     )
     result = subprocess.run(
@@ -389,9 +390,10 @@ def test_m1_module_never_imports_live_execution() -> None:
         cwd=Path(__file__).resolve().parents[1],
     )
     assert result.stdout.strip() == "False"
-    source = Path(m1.__file__).read_text(encoding="utf-8")
-    assert "import live_execution" not in source
-    assert "from .live_execution" not in source
+    for module in ("research_m1.py", "research_m1_store.py"):
+        source = (Path(m1.__file__).parent / module).read_text(encoding="utf-8")
+        assert "import live_execution" not in source
+        assert "from .live_execution" not in source
 
 
 def _recorded(evaluation_id: int, *, placement: bool = True, decision=None, **overrides):

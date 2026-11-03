@@ -53,6 +53,7 @@ PORTFOLIO_MIN_PROFIT="${SFO_PORTFOLIO_MIN_PROFIT:-0.01}"
 PAPER_PLACE_LIVE="${PAPER_PLACE_LIVE:-0}"
 PAPER_PLACE_RESEARCH_TARGET="${PAPER_PLACE_RESEARCH_TARGET:-0}"
 PAPER_PLACE_RESEARCH_MOTION="${PAPER_PLACE_RESEARCH_MOTION:-0}"
+PAPER_PLACE_RESEARCH_M1="${PAPER_PLACE_RESEARCH_M1:-0}"
 
 truthy() {
   value="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
@@ -166,6 +167,11 @@ for profile in "${canonical_profiles[@]}"; do
       fi
       if ! truthy "$PAPER_PLACE_RESEARCH_TARGET"; then
         echo "research target allocator shadow mode: recording decisions without paper placement"
+      fi
+      if truthy "$PAPER_PLACE_RESEARCH_M1"; then
+        args+=(--place-research-m1)
+      else
+        echo "M1 market-recalibration trial shadow mode: recording decisions without paper placement"
       fi
       ;;
   esac

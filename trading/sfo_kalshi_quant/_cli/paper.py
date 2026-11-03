@@ -23,6 +23,13 @@ from .. import exchange_settlement as _exchange_settlement
 from ..kalshi import KalshiPublicClient
 from ..models import target_date_from_event_ticker
 from ..report import build_daily_report, write_report
+from ..research_m1 import FINAL_READ_BOOTSTRAP_RESAMPLES
+from ..research_m1_store import (
+    PUBLICATION_BOOTSTRAP_RESAMPLES,
+    m1_trial_payload,
+    reconcile_m1_day,
+    run_m1_settle_maintenance,
+)
 from ..ladder_truth import (
     LADDER_OBSERVED_MIN_OBSERVATIONS,
     previous_complete_settlement_day,
@@ -701,6 +708,7 @@ def cmd_paper_auto_settle(args: argparse.Namespace) -> int:
     cities = _cities_for_args(args)
     code = _settle_completed_paper_targets(args, color, store, cities)
     _recheck_booked_settlements(color, store, args, cities)
+    _run_m1_settle_maintenance(color, store, args, cities)
     # The exchange reconciliation runs on every tick, not only on ticks
     # that settled something: a market can still be unfinalized when its
     # lot settles (KXHIGHMIA-26AUG29 settled at 12:00 UTC, an hour after
@@ -728,6 +736,89 @@ def cmd_paper_auto_settle(args: argparse.Namespace) -> int:
         ).isoformat(),
     )
     return code
+
+
+def _run_m1_settle_maintenance(
+    color: Color,
+    store: PaperStore,
+    args: argparse.Namespace,
+    cities: tuple[CityConfig, ...],
+) -> None:
+    """M1 trial upkeep on the existing settle timer; never blocks settlement.
+
+    Records final CLI highs for legs the trial evaluated, reconciles each
+    complete UTC day once (feeding the fidelity halt and the premise check),
+    and applies the loss, futility and final-read stop rules. It adds no
+    systemd timer and cannot change this command's exit status.
+    """
+
+    def load_truth(city: CityConfig):
+        adapter = SfoForecasterAdapter(args.forecaster_root, city=city)
+        return adapter.load_cli_settlement_highs()
+
+    try:
+        summary = run_m1_settle_maintenance(
+            store,
+            load_truth=load_truth,
+            cities=cities,
+            # The settle path's own clock, so the trial reconciles on the same
+            # notion of "now" that decided which targets settled.
+            now=settlement_clock(),
+        )
+    except Exception as exc:  # noqa: BLE001 -- trial upkeep must not stop settling
+        print(
+            color.red(
+                f"M1 trial maintenance failed ({type(exc).__name__}: {exc}); "
+                "settlement is unaffected; re-run paper-m1-reconcile"
+            ),
+            file=sys.stderr,
+        )
+        return
+    for day in summary["reconciled_days"]:
+        line = (
+            f"M1 trial reconciliation {day['utc_day']}: failed matches="
+            f"{day['failed']} breaches={day['breaches']} missed={day['missed']}"
+        )
+        if day["failed"] or day["breaches"]:
+            print(color.red(line), file=sys.stderr)
+        else:
+            print(color.cyan(line))
+    for rule in (summary.get("stop_rules") or {}).get("new_halts") or []:
+        print(
+            color.red(
+                f"M1 TRIAL HALTED by stop rule '{rule}': new entries stopped; "
+                "open positions hold to settlement"
+            ),
+            file=sys.stderr,
+        )
+
+
+def cmd_paper_m1_status(args: argparse.Namespace) -> int:
+    store = PaperStore(args.db_path)
+    resamples = (
+        FINAL_READ_BOOTSTRAP_RESAMPLES
+        if getattr(args, "final_read", False)
+        else PUBLICATION_BOOTSTRAP_RESAMPLES
+    )
+    payload = m1_trial_payload(store, resamples=resamples)
+    print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    return 0
+
+
+def cmd_paper_m1_reconcile(args: argparse.Namespace) -> int:
+    color = Color.from_no_color(args.no_color)
+    store = PaperStore(args.db_path)
+    day = (
+        date.fromisoformat(args.day)
+        if getattr(args, "day", None)
+        else datetime.now(UTC).date() - timedelta(days=1)
+    )
+    if day >= datetime.now(UTC).date():
+        print(color.red("paper-m1-reconcile needs a complete UTC day"), file=sys.stderr)
+        return 2
+    report = reconcile_m1_day(store, day)
+    print(json.dumps(report, indent=2, sort_keys=True, default=str))
+    return 1 if report["failed"] or report["breaches"] else 0
 
 
 def _settle_completed_paper_targets(

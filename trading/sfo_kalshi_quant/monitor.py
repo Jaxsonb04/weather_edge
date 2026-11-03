@@ -43,6 +43,7 @@ from .maker_fills import (
 )
 from .models import MarketBin
 from .probability import ResidualCalibrator, post_peak_cap_engaged
+from .research_m1 import M1_ACCOUNT_ID
 from .research_policy import ALL_RESEARCH_POLICIES, ResearchSleeve
 from .settlement_day import settlement_clock
 
@@ -183,6 +184,17 @@ def _monitor_thresholds_for_side(args: argparse.Namespace, side: str) -> tuple[f
 def _is_guaranteed_payoff_group_row(row) -> bool:
     group_id = row["group_id"] if "group_id" in row.keys() else None
     return bool(group_id and not str(group_id).startswith("DEGRADED-"))
+
+
+def _is_m1_hold_to_settlement_row(row) -> bool:
+    """M1 trial positions are held to settlement by pre-registered policy.
+
+    The monitor never stops, takes profit, holds on a model veto or
+    catastrophic-exits them; the normal account-scoped settle closes them.
+    """
+
+    account_id = row["account_id"] if "account_id" in row.keys() else None
+    return str(account_id or "") == M1_ACCOUNT_ID
 
 
 def _settlement_first_no_min_cost_for_order(row) -> float | None:
@@ -442,7 +454,12 @@ def run_paper_monitor(
             log=lambda message: print(color.yellow(message), file=sys.stderr),
             held=held_same_day,
         )
-    quote_rows = [row for row in rows if not _is_guaranteed_payoff_group_row(row)]
+    quote_rows = [
+        row
+        for row in rows
+        if not _is_guaranteed_payoff_group_row(row)
+        and not _is_m1_hold_to_settlement_row(row)
+    ]
     quote_observed_at: dict[str, str] = {}
     market_lookup = _monitor_market_lookup(
         client,
@@ -473,6 +490,20 @@ def run_paper_monitor(
         inspected += 1
         side = str(row["side"] or ("NO" if "NO" in str(row["action"]).upper() else "YES")).upper()
         group_id = row["group_id"] if "group_id" in row.keys() else None
+        if _is_m1_hold_to_settlement_row(row):
+            # Checked before every exit rule, quote fetch and model read: no
+            # exit path below can reach an M1 position.
+            store.record_monitor_snapshot(
+                row,
+                side=side,
+                action="HOLD_TO_SETTLEMENT",
+                reason="M1 market-recalibration trial: held to settlement by policy",
+            )
+            print(
+                f"HOLD order {row['id']} {row['market_ticker']} {side}: "
+                "M1 trial (held to settlement)"
+            )
+            continue
         if _is_guaranteed_payoff_group_row(row):
             # Legs of an arbitrage box/ladder or a tail basket form a single
             # guaranteed/worst-case-bounded payoff. Closing one leg early

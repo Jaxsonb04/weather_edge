@@ -307,6 +307,14 @@ def cmd_paper_ladder_outcomes(args: argparse.Namespace) -> int:
     return _paper_dispatch("cmd_paper_ladder_outcomes", args)
 
 
+def cmd_paper_m1_status(args: argparse.Namespace) -> int:
+    return _paper_dispatch("cmd_paper_m1_status", args)
+
+
+def cmd_paper_m1_reconcile(args: argparse.Namespace) -> int:
+    return _paper_dispatch("cmd_paper_m1_reconcile", args)
+
+
 def _completed_open_target_dates(*args, **kwargs):
     return _paper_dispatch("_completed_open_target_dates", *args, **kwargs)
 
