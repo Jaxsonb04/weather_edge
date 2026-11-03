@@ -8,6 +8,7 @@ from sfo_kalshi_quant import research_m1 as m1
 from sfo_kalshi_quant import research_m1_store as engine
 from sfo_kalshi_quant.account import LIVE_STABILITY_ACCOUNT_ID
 from sfo_kalshi_quant.strategy_lab.build import (
+    _account_daily_balance_rows,
     _accounting_payload,
 )
 from sfo_kalshi_quant.strategy_lab.paper_card import _paper_payload
@@ -139,3 +140,24 @@ def test_m1_lots_never_enter_the_shared_paper_lists(tmp_path) -> None:
     assert "research-m1" not in {row["risk_profile"] for row in paper["profiles"]}
     assert {row["label"] for row in paper["recent_monitor_actions"]} == {"live lot"}
     assert [row["risk_profile"] for row in _load_orders(tmp_path / "paper.db")] == ["live"] * 3
+
+
+def test_the_m1_daily_balance_counts_pnl_on_days_the_shared_summary_omits(tmp_path) -> None:
+    store, _ = _store(tmp_path)
+    _scan(store)
+    store.settle_paper_orders(TARGET.isoformat(), 70.0, series_ticker="KXHIGHLAX")
+    with store.connect() as conn:  # M1 settles on a day with no Live/V7 activity
+        conn.execute(
+            "UPDATE paper_orders SET settled_at='2026-10-21T20:00:00+00:00' WHERE account_id=?",
+            (M1,),
+        )
+    days = _account_daily_balance_rows(
+        store,
+        M1,
+        initial_equity=10_000.0,
+        account_created_at=None,
+        day_rows=[{"date": "2026-10-19"}, {"date": "2026-10-23"}],
+    )
+    assert days[0]["closing_equity"] == 10_000.0
+    assert days[1]["opening_equity"] == days[1]["closing_equity"] == pytest.approx(10_010.49)
+    assert days[1]["cumulative_realized"] == pytest.approx(10.49)

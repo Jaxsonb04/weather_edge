@@ -802,6 +802,20 @@ def test_the_monitor_never_exits_an_m1_position(tmp_path) -> None:
     assert "held to settlement" in out.getvalue()
 
 
+def test_the_same_day_heartbeat_never_reads_for_an_m1_lot(tmp_path, monkeypatch) -> None:
+    store, _ = _store(tmp_path)
+    assert _scan(store).order_ids
+    passed: list = []
+    monkeypatch.setenv("PAPER_SAME_DAY_MODEL_HEARTBEAT_ENABLED", "true")
+    monkeypatch.setattr(
+        "sfo_kalshi_quant.cli._refresh_same_day_model_reads",
+        lambda store, rows, **kwargs: passed.extend(rows),
+    )
+    with patch("sfo_kalshi_quant.cli.KalshiPublicClient"), redirect_stdout(io.StringIO()):
+        assert main(["--db-path", str(tmp_path / "paper.db"), "--no-color", "paper-monitor"]) == 0
+    assert passed == []  # an M1 lot never starts a research-profile model read
+
+
 def test_settlement_closes_m1_positions_through_the_account_scoped_settle(tmp_path) -> None:
     store, _ = _store(tmp_path)
     _scan(store)
@@ -1467,6 +1481,19 @@ def test_the_scan_reraises_a_sqlite_lock_so_the_tick_retries(tmp_path, monkeypat
             SimpleNamespace(risk_profile="research", place_research_m1=True),
             TARGET, _context(markets, decisions), store, Color.from_no_color(True),
         )
+
+    # Any other sqlite error in M1 stays contained: V7 keeps scanning.
+    def broken(*args, **kwargs):
+        raise sqlite3.OperationalError("no such column: m1_bogus")
+
+    monkeypatch.setattr(scan_module, "run_m1_scan", broken)
+    stderr = io.StringIO()
+    with redirect_stderr(stderr):
+        scan_module._run_research_m1_scan(
+            SimpleNamespace(risk_profile="research", place_research_m1=True),
+            TARGET, _context(markets, decisions), store, Color.from_no_color(True),
+        )
+    assert "the research target book is unaffected" in stderr.getvalue()
 
 
 def test_turning_placement_on_never_enters_a_leg_that_crossed_in_shadow(tmp_path) -> None:

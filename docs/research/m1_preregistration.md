@@ -227,8 +227,10 @@ that production prunes after about a day:
   not the research decision journal the decision named, because production
   prunes that journal after about a day. It catches admission errors (wrong
   leg, hour or price, listing hour, spread, lead, re-entry) but cannot catch
-  drift between the journal and M1's sample. To keep the two on one clock, M1
-  rows carry the time the scan read its quotes, not the time M1 ran.
+  drift between the journal and M1's sample. To keep the two close, M1 rows
+  carry the time the scan built its context from the fetched quotes, not the
+  time M1 ran. The rolling scan fetches a city's quotes once before its
+  targets, so the stamp can trail the fetch by that city's forecast work.
 
 ## 11. Implementation record
 

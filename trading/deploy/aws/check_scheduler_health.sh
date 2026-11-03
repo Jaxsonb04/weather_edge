@@ -598,93 +598,6 @@ PY
   fi
 fi
 
-# The M1 paper trial runs inside every research scan, but its failures are
-# contained there (the scan still exits 0 and stamps success), so the checks
-# above cannot see them. Alert when its newest evaluation is over 90 minutes
-# old, or when an admission has sat in PENDING_ADMISSION over an hour. M1 only
-# evaluates the next civil day's ladder, so it legitimately writes nothing
-# from about 07:00 to 15:00 UTC while Kalshi lists no next-day market; the
-# staleness check is skipped from 07:00 until 16:30 UTC (the first 90 minutes
-# after listing). The pending-row check always runs. Read-only, as the app user.
-if [[ -n "$PAPER_DB" && ",${SCAN_PROFILES// /}," == *",research,"* ]]; then
-  m1_status=0
-  (
-    cd "$TRADING_DIR"
-    run_as_app "$PYTHON_BIN" - "$PAPER_DB" "$M1_NOW_OVERRIDE" <<'PY'
-import sqlite3
-import sys
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-
-from sfo_kalshi_quant.research_m1 import DECISION_PENDING
-
-db_path, now_override = sys.argv[1:]
-now = (
-    datetime.fromisoformat(now_override.replace("Z", "+00:00"))
-    if now_override
-    else datetime.now(timezone.utc)
-)
-
-
-def parse_utc(value):
-    try:
-        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
-
-
-if not Path(db_path).is_file():
-    raise SystemExit(0)  # the paper scan check above owns a missing journal
-conn = sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
-try:
-    if not conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='m1_evaluations'"
-    ).fetchone():
-        raise SystemExit(0)
-    newest = conn.execute(
-        "SELECT created_at FROM m1_evaluations ORDER BY id DESC LIMIT 1"
-    ).fetchone()
-    pending = [
-        parse_utc(row[0])
-        for row in conn.execute(
-            "SELECT created_at FROM m1_evaluations WHERE decision=?", (DECISION_PENDING,)
-        )
-    ]
-except sqlite3.Error as exc:
-    print(f"M1 trial journal is unreadable: {exc}", file=sys.stderr)
-    raise SystemExit(2)
-finally:
-    conn.close()
-
-problems = []
-stale_pending = sum(
-    1 for moment in pending if moment is not None and now - moment > timedelta(hours=1)
-)
-if stale_pending:
-    problems.append(f"M1 trial has {stale_pending} PENDING_ADMISSION row(s) older than 1 hour")
-minute_of_day = now.hour * 60 + now.minute
-if not 7 * 60 <= minute_of_day < 16 * 60 + 30:
-    # shortcut: an empty journal is not alerted (a never-started M1 stays silent),
-    # since a fresh deploy has no evaluation until the first listing.
-    last = parse_utc(newest[0]) if newest else None
-    if last is not None and now - last > timedelta(minutes=90):
-        problems.append(f"M1 trial has no evaluation in the last 90 minutes (newest {newest[0]})")
-for message in problems:
-    print(message, file=sys.stderr)
-raise SystemExit(3 if problems else 0)
-PY
-  ) || m1_status=$?
-  if (( m1_status == 3 )); then
-    echo "scheduler health failed: M1 paper trial is stale or has stuck admissions" >&2
-    exit 1
-  fi
-  if (( m1_status != 0 )); then
-    echo "scheduler health blocked: M1 trial health check failed (status=$m1_status)" >&2
-    exit 1
-  fi
-fi
-
 run_as_app /bin/mkdir -p "$(/usr/bin/dirname "$ARTIFACT_LOCK")"
 validation_status=0
 validation_output="$(
@@ -824,4 +737,98 @@ if ! run_as_app /bin/bash "$FINAL_HEALTH_CHECK"; then
 fi
 
 clear_propagation_misses
+# The M1 paper trial runs inside every research scan, but its failures are
+# contained there (the scan still exits 0 and stamps success), so the checks
+# above cannot see them. It runs last, after the Live/V7 publication repair, so
+# an M1 fault never blocks that repair. Alert when M1's newest evaluation is
+# over 90 minutes old, or when admissions failed (ADMISSION_ERROR, or PENDING
+# over an hour) in two or more UTC hours of the last three: one crash-orphaned
+# row or one transient lock never alarms, a crash every hour does. M1 only
+# evaluates the next civil day's ladder, so it legitimately writes nothing
+# from about 07:00 to 15:00 UTC while Kalshi lists no next-day market; the
+# staleness check is skipped from 07:00 until 16:30 UTC (the first 90 minutes
+# after listing). The admission check always runs. Read-only, as the app user.
+if [[ -n "$PAPER_DB" && ",${SCAN_PROFILES// /}," == *",research,"* ]]; then
+  m1_status=0
+  (
+    cd "$TRADING_DIR"
+    run_as_app "$PYTHON_BIN" - "$PAPER_DB" "$M1_NOW_OVERRIDE" <<'PY'
+import sqlite3
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from sfo_kalshi_quant.research_m1 import DECISION_ADMISSION_ERROR, DECISION_PENDING
+
+db_path, now_override = sys.argv[1:]
+now = (
+    datetime.fromisoformat(now_override.replace("Z", "+00:00"))
+    if now_override
+    else datetime.now(timezone.utc)
+)
+
+
+def parse_utc(value):
+    try:
+        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+if not Path(db_path).is_file():
+    raise SystemExit(0)  # the paper scan check above owns a missing journal
+conn = sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
+try:
+    if not conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='m1_evaluations'"
+    ).fetchone():
+        raise SystemExit(0)
+    newest = conn.execute(
+        "SELECT created_at FROM m1_evaluations ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    failures = conn.execute(
+        "SELECT utc_hour, created_at, decision FROM m1_evaluations WHERE decision IN (?, ?)",
+        (DECISION_ADMISSION_ERROR, DECISION_PENDING),
+    ).fetchall()
+except sqlite3.Error as exc:
+    print(f"M1 trial journal is unreadable: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+finally:
+    conn.close()
+
+problems = []
+failed_hours = set()
+for utc_hour, created_at, decision in failures:
+    age = now - moment if (moment := parse_utc(created_at)) is not None else None
+    if age is None or age > timedelta(hours=3):
+        continue
+    if decision == DECISION_ADMISSION_ERROR or age > timedelta(hours=1):
+        failed_hours.add(utc_hour)
+if len(failed_hours) >= 2:
+    problems.append(
+        f"M1 trial admissions failed in {len(failed_hours)} UTC hours of the last 3"
+    )
+minute_of_day = now.hour * 60 + now.minute
+if not 7 * 60 <= minute_of_day < 16 * 60 + 30:
+    # shortcut: an empty journal is not alerted (a never-started M1 stays silent),
+    # since a fresh deploy has no evaluation until the first listing.
+    last = parse_utc(newest[0]) if newest else None
+    if last is not None and now - last > timedelta(minutes=90):
+        problems.append(f"M1 trial has no evaluation in the last 90 minutes (newest {newest[0]})")
+for message in problems:
+    print(message, file=sys.stderr)
+raise SystemExit(3 if problems else 0)
+PY
+  ) || m1_status=$?
+  if (( m1_status == 3 )); then
+    echo "scheduler health failed: M1 paper trial is stale or its admissions keep failing" >&2
+    exit 1
+  fi
+  if (( m1_status != 0 )); then
+    echo "scheduler health blocked: M1 trial health check failed (status=$m1_status)" >&2
+    exit 1
+  fi
+fi
+
 echo "OK: scheduler and publication health verified"

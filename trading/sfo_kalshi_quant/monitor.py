@@ -471,7 +471,8 @@ def run_paper_monitor(
     if _env_enabled("PAPER_SAME_DAY_MODEL_HEARTBEAT_ENABLED"):
         refresh_model_reads(
             store,
-            rows,
+            # M1 lots hold to settlement; their reads would only feed Live/V7.
+            [row for row in rows if not _is_m1_hold_to_settlement_row(row)],
             forecaster_root=args.forecaster_root,
             log=lambda message: print(color.yellow(message), file=sys.stderr),
             held=held_same_day,

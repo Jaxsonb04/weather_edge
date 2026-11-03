@@ -19,6 +19,7 @@ from sfo_kalshi_quant.research_m1_store import m1_trial_payload
 
 from test_nov01_scan_age import (
     CHECK_BLOCKED,
+    SCRIPT,
     _every_tick,
     _paper_db,
     _run,
@@ -26,7 +27,7 @@ from test_nov01_scan_age import (
 )
 from test_research_m1_trial import NOW, _store
 
-M1_FAILED = "scheduler health failed: M1 paper trial is stale or has stuck admissions"
+M1_FAILED = "scheduler health failed: M1 paper trial is stale or its admissions keep failing"
 INSERT_EVALUATION = """
 INSERT INTO m1_evaluations (
     created_at, utc_hour, scan_id, policy_version, policy_fingerprint,
@@ -105,14 +106,34 @@ def test_watchdog_alerts_on_stale_m1_evaluations_but_not_the_daily_gap(
         assert "no evaluation in the last 90 minutes" in result.stderr
 
 
-def test_watchdog_alerts_on_stuck_pending_admissions_even_inside_the_gap(
+def test_watchdog_alerts_on_repeated_admission_failures_even_inside_the_gap(
     tmp_path, monkeypatch
 ) -> None:
-    result = _watchdog(tmp_path, monkeypatch, _at(11), [(90, m1.DECISION_PENDING)])
+    # Failures in two UTC hours (an error at 10:50, a PENDING row orphaned at
+    # 09:30) alert even in the listing gap.
+    result = _watchdog(
+        tmp_path, monkeypatch, _at(11), [(10, m1.DECISION_ADMISSION_ERROR), (90, m1.DECISION_PENDING)]
+    )
     assert result.returncode == 1
-    assert M1_FAILED in result.stderr and "1 PENDING_ADMISSION row" in result.stderr
-    fresh = _watchdog(tmp_path / "fresh", monkeypatch, _at(11), [(20, m1.DECISION_PENDING)])
-    assert fresh.returncode == 0, fresh.stderr
+    assert M1_FAILED in result.stderr and "admissions failed in 2 UTC hours" in result.stderr
+
+    # One crash-orphaned PENDING row, one transient lock, or failures older than
+    # three hours never alarm (and never alarm forever).
+    for name, evaluations in {
+        "orphan": [(90, m1.DECISION_PENDING)],
+        "one-lock-hour": [(10, m1.DECISION_ADMISSION_ERROR), (15, m1.DECISION_ADMISSION_ERROR)],
+        "old": [(300, m1.DECISION_ADMISSION_ERROR), (400, m1.DECISION_PENDING)],
+        "in-flight": [(90, m1.DECISION_ADMISSION_ERROR), (5, m1.DECISION_PENDING)],
+    }.items():
+        quiet = _watchdog(tmp_path / name, monkeypatch, _at(11), evaluations)
+        assert quiet.returncode == 0, (name, quiet.stderr)
+
+
+def test_the_m1_check_runs_after_the_live_and_v7_publication_repair() -> None:
+    script = SCRIPT.read_text(encoding="utf-8")
+    m1_check = script.index("# The M1 paper trial runs inside every research scan")
+    assert script.index("OK: scheduler repaired bounded publication freshness") < m1_check
+    assert m1_check < script.index('echo "OK: scheduler and publication health verified"')
 
 
 def test_watchdog_skips_m1_when_research_is_not_scanned(tmp_path, monkeypatch) -> None:

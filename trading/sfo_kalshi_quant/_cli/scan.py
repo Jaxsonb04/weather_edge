@@ -1160,11 +1160,13 @@ def _run_research_m1_scan(
             place=_research_m1_placement_flag(args),
             now=getattr(context, "quote_observed_at", None),
         )
-    except sqlite3.OperationalError:
-        # A sqlite lock must fail the tick so the CLI exits 75 and the runner's
-        # bounded retry runs; the trial already marked its failed admissions.
-        raise
     except Exception as exc:  # noqa: BLE001 -- the trial must not stop the scan
+        from ..cli import _is_retryable_sqlite_lock  # cli imports this module
+
+        # Only a sqlite lock fails the tick, so the CLI exits 75 and the runner's
+        # bounded retry runs; the trial already marked its failed admissions.
+        if isinstance(exc, sqlite3.OperationalError) and _is_retryable_sqlite_lock(exc):
+            raise
         print(
             color.red(
                 f"[{context.city.slug}] {target.isoformat()}: M1 trial evaluation "

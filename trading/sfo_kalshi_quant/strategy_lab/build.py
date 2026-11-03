@@ -1418,10 +1418,6 @@ def _account_daily_balance_rows(
         key = resolved.astimezone(WEEKLY_GOAL_TZ).date().isoformat()
         pnl_by_day[key] = pnl_by_day.get(key, 0.0) + float(realized_pnl or 0.0)
 
-    first_day = day_keys[0]
-    cumulative = float(initial_equity) + sum(
-        pnl for key, pnl in pnl_by_day.items() if key < first_day
-    )
     output: list[dict[str, Any]] = []
     for key in day_keys:
         if created_day is not None and key < created_day:
@@ -1436,9 +1432,13 @@ def _account_daily_balance_rows(
                 }
             )
             continue
-        opening = cumulative
+        # Count P&L on days the shared summary does not list (M1 trades on
+        # days Live and V7 may not), so the running balance stays exact.
+        opening = float(initial_equity) + sum(
+            pnl for day, pnl in pnl_by_day.items() if day < key
+        )
         daily_pnl = pnl_by_day.get(key, 0.0)
-        cumulative += daily_pnl
+        cumulative = opening + daily_pnl
         output.append(
             {
                 "date": key,
