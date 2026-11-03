@@ -7,7 +7,10 @@ import pytest
 from sfo_kalshi_quant import research_m1 as m1
 from sfo_kalshi_quant import research_m1_store as engine
 from sfo_kalshi_quant.account import LIVE_STABILITY_ACCOUNT_ID
-from sfo_kalshi_quant.strategy_lab.build import _accounting_payload
+from sfo_kalshi_quant.strategy_lab.build import (
+    _accounting_payload,
+    _bind_accounting_to_profiles,
+)
 from sfo_kalshi_quant.strategy_lab.profiles import _profile_label
 
 from test_research_m1_trial import (
@@ -95,3 +98,27 @@ def test_an_unreadable_m1_book_publishes_as_unavailable_without_hiding_others(
     assert book["available"] is False
     assert book["reason"] == "M1 trial ledger unavailable (ZeroDivisionError)"
 
+
+
+def test_the_m1_profile_reads_its_balances_from_its_own_book(tmp_path) -> None:
+    store, _ = _store(tmp_path)
+    _scan(store)
+    store.settle_paper_orders(TARGET.isoformat(), 70.0, series_ticker="KXHIGHLAX")
+    accounting = _accounting_payload(
+        {"days": [{"date": "2026-10-21"}]}, {"profiles": []}, db_path=tmp_path / "paper.db"
+    )
+    profiles = [
+        {"risk_profile": name, "daily_summary": {"bankroll": 1000.0}}
+        for name in ("research-target-v6", "research-m1", "research-target", "live")
+    ]
+    bound = _bind_accounting_to_profiles(profiles, accounting)
+    # Active books first (live, Research V7, the M1 trial), archives after.
+    assert [row["risk_profile"] for row in bound][:3] == [
+        "live", "research-target", "research-m1",
+    ]
+    assert all(row.get("archived") is True for row in bound[3:])
+    m1_row = bound[2]
+    assert m1_row["account_key"] == "research_m1" and m1_row["archived"] is False
+    assert m1_row["daily_summary"]["bankroll"] == 10_000.0
+    assert m1_row["daily_summary"]["current_equity"] == pytest.approx(10_010.49)
+    assert m1_row["daily_summary"]["equity_basis"] == "account_equity"
