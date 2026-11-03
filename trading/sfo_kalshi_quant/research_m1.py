@@ -73,6 +73,12 @@ DECISION_SHADOW = "SHADOW"
 DECISION_ALREADY_ENTERED = "ALREADY_ENTERED"
 DECISION_ACCOUNT_BLOCKED = "ACCOUNT_BLOCKED"
 DECISION_HALTED = "HALTED"
+# Admission raised (a sqlite lock, a crash in the admission code): no order
+# exists, and the leg stays eligible at its next sampled crossing.
+DECISION_ADMISSION_ERROR = "ADMISSION_ERROR"
+# The leg's first crossing was already recorded in shadow mode, so it is never
+# entered later: the rule enters at the first crossing only.
+DECISION_ALREADY_CROSSED = "ALREADY_CROSSED"
 
 # Shadow arms (no paper fills).
 ARM_FIVE_MINUTE = "m1_5min"
@@ -741,25 +747,38 @@ class ActualEntry:
 
 
 # Recorded account-level outcomes the replay takes as given: the leg rule is
-# recomputed from raw inputs, but cash, caps, pauses and halts are account
-# state the evaluation row cannot reproduce on its own.
-_ACCOUNT_LEVEL_DECISIONS = frozenset({DECISION_ACCOUNT_BLOCKED, DECISION_HALTED})
+# recomputed from raw inputs, but cash, caps, pauses, halts and admission
+# failures are account state the evaluation row cannot reproduce on its own.
+# A PENDING row that reaches the replay never got an order (a crash between
+# committing it and admitting it), so it is account-level too: no entry was
+# made and the leg stays eligible at its next sampled crossing.
+_ACCOUNT_LEVEL_DECISIONS = frozenset(
+    {
+        DECISION_ACCOUNT_BLOCKED,
+        DECISION_HALTED,
+        DECISION_ADMISSION_ERROR,
+        DECISION_PENDING,
+    }
+)
 
 
 def replay_expected_entries(
     evaluations: Sequence[RecordedEvaluation],
     *,
-    already_entered: Iterable[tuple[str, str, str]] = (),
+    already_crossed: Iterable[tuple[str, str, str]] = (),
     policy: M1TrialPolicy = M1_POLICY,
 ) -> tuple[list[ExpectedEntry], list[dict[str, object]]]:
     """Replay recorded sampled evaluations through the same rule.
 
-    Returns the entries the rule implies (first crossing per leg, legs entered
-    before the window excluded) and every row whose recorded decision the
-    recomputation contradicts.
+    A leg is crossed at its first passing sampled evaluation. With placement
+    enabled that is its entry (unless an account-level limit or an admission
+    failure stopped it, in which case the next sampled crossing may enter);
+    with placement disabled the crossing is recorded in shadow mode and the
+    leg is never entered later. Returns the entries the rule implies and every
+    row whose recorded decision the recomputation contradicts.
     """
 
-    entered = set(already_entered)
+    crossed = set(already_crossed)
     expected: list[ExpectedEntry] = []
     contradictions: list[dict[str, object]] = []
     ordered = sorted(
@@ -770,13 +789,13 @@ def replay_expected_entries(
         evaluation = evaluate_leg(row.inputs, policy=policy)
         leg = evaluation.leg
         recorded_entered = row.recorded_decision == DECISION_ENTERED
-        if leg in entered:
+        if leg in crossed:
             if recorded_entered:
                 contradictions.append(
                     {
                         "evaluation_id": row.evaluation_id,
                         "leg": list(leg),
-                        "issue": "recorded entry on an already-entered leg",
+                        "issue": "recorded entry on an already-crossed leg",
                     }
                 )
             continue
@@ -792,6 +811,7 @@ def replay_expected_entries(
                 )
             continue
         if not row.placement_enabled:
+            crossed.add(leg)
             continue
         if row.recorded_decision in _ACCOUNT_LEVEL_DECISIONS:
             continue
@@ -804,7 +824,7 @@ def replay_expected_entries(
                 contracts=evaluation.contracts,
             )
         )
-        entered.add(leg)
+        crossed.add(leg)
     return expected, contradictions
 
 

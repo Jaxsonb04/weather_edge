@@ -5,12 +5,13 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import sqlite3
 import sys
 import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 from urllib.error import URLError
@@ -335,6 +336,10 @@ class ScanContext:
     risk_profile: str
     paper_bankroll: float
     decisions: list[TradeDecision]
+    # When this context read its event and markets: the quotes behind every
+    # decision. The M1 trial stamps its evaluations with it, so its UTC hour,
+    # bucket, lead and listing hour describe the quote, not a later moment.
+    quote_observed_at: datetime | None = None
 
 
 def build_scan_context(
@@ -399,6 +404,7 @@ def build_scan_context(
             )
             event = None
 
+    quote_observed_at = datetime.now(UTC)
     if event:
         markets = event.active_markets or event.markets
         event_title = event.title
@@ -479,6 +485,7 @@ def build_scan_context(
         risk_profile=risk_profile,
         paper_bankroll=paper_bankroll,
         decisions=decisions,
+        quote_observed_at=quote_observed_at,
     )
 
 
@@ -1151,7 +1158,12 @@ def _run_research_m1_scan(
             forecast=context.forecast,
             entry_gate_reason=None if entry_allowed else entry_block_reason,
             place=_research_m1_placement_flag(args),
+            now=getattr(context, "quote_observed_at", None),
         )
+    except sqlite3.OperationalError:
+        # A sqlite lock must fail the tick so the CLI exits 75 and the runner's
+        # bounded retry runs; the trial already marked its failed admissions.
+        raise
     except Exception as exc:  # noqa: BLE001 -- the trial must not stop the scan
         print(
             color.red(

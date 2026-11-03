@@ -25,6 +25,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .cities import CITIES, CityConfig, city_for_market_ticker
 from .db import PaperStore
@@ -37,6 +38,8 @@ from .research_m1 import (
     ARM_FIVE_MINUTE,
     ARM_MODEL_VETO,
     DECISION_ACCOUNT_BLOCKED,
+    DECISION_ADMISSION_ERROR,
+    DECISION_ALREADY_CROSSED,
     DECISION_ALREADY_ENTERED,
     DECISION_ENTERED,
     DECISION_HALTED,
@@ -76,6 +79,10 @@ from .research_m1 import (
 )
 from .research_policy import RESEARCH_OBJECTIVE_TZ
 from .store.diagnostics import _market_close_time
+
+# The westernmost station clock. A target date's last day-ahead hour ends at
+# midnight here, so the trading-day horizon closes then.
+_LATEST_STATION_TZ = ZoneInfo("America/Los_Angeles")
 
 
 _OPEN_STATUSES = ("PAPER_FILLED", "PAPER_PARTIALLY_FILLED", "PAPER_PARTIAL_EXPIRED")
@@ -253,6 +260,31 @@ def _entered_legs(
         "AND status != 'REJECTED'"
     )
     params: tuple[object, ...] = (M1_ACCOUNT_ID,)
+    if before is not None:
+        query += " AND created_at < ?"
+        params = (*params, before)
+    return {
+        (str(row[0]), str(row[1]), str(row[2]))
+        for row in conn.execute(query, params).fetchall()
+    }
+
+
+def _shadow_crossed_legs(
+    conn: sqlite3.Connection,
+    *,
+    target_date: str | None = None,
+    before: str | None = None,
+) -> set[tuple[str, str, str]]:
+    """Legs whose first passing sampled evaluation was recorded in shadow mode."""
+
+    query = (
+        "SELECT DISTINCT target_date, market_ticker, side FROM m1_evaluations "
+        "WHERE leg_passes = 1 AND placement_enabled = 0"
+    )
+    params: tuple[object, ...] = ()
+    if target_date is not None:
+        query += " AND target_date = ?"
+        params = (*params, target_date)
     if before is not None:
         query += " AND created_at < ?"
         params = (*params, before)
@@ -513,6 +545,7 @@ def run_m1_scan(
         conn.execute("BEGIN IMMEDIATE")
         halts = m1_halts(conn)
         entered = _entered_legs(conn)
+        shadow_crossed = _shadow_crossed_legs(conn, target_date=target_date.isoformat())
         for evaluation, decision in evaluated:
             if evaluation.passes and _record_shadow_entry(
                 conn, ARM_FIVE_MINUTE, evaluation, decision, scan_id=run_id
@@ -524,6 +557,9 @@ def run_m1_scan(
             if evaluation.passes:
                 if evaluation.leg in entered:
                     recorded, reason = DECISION_ALREADY_ENTERED, "leg already entered once"
+                elif evaluation.leg in shadow_crossed:
+                    recorded = DECISION_ALREADY_CROSSED
+                    reason = "first crossing already recorded in shadow mode"
                 elif halts:
                     recorded = DECISION_HALTED
                     reason = "halted by stop rule(s): " + ", ".join(
@@ -561,20 +597,54 @@ def run_m1_scan(
         conn.commit()
     result.shadow_entries = shadow_counts
     result.candidates = len(candidates)
-    for evaluation_id, evaluation, decision in candidates:
-        order_id, block_reason = admit_m1_entry(
-            store,
-            evaluation,
-            decision,
-            evaluation_id=evaluation_id,
-            scan_id=run_id,
-            now=current,
-        )
+    for index, (evaluation_id, evaluation, decision) in enumerate(candidates):
+        try:
+            order_id, block_reason = admit_m1_entry(
+                store,
+                evaluation,
+                decision,
+                evaluation_id=evaluation_id,
+                scan_id=run_id,
+                now=current,
+            )
+        except Exception as exc:
+            # No PENDING row may outlive this scan: the replay would read it as
+            # the leg's entry and fail the next sampled crossing's real entry.
+            _mark_admission_errors(
+                store, [row[0] for row in candidates[index:]], exc
+            )
+            raise
         if order_id is not None:
             result.order_ids.append(order_id)
         else:
             result.blocked.append((evaluation.inputs.market_ticker, str(block_reason)))
     return result
+
+
+def _mark_admission_errors(
+    store: PaperStore, evaluation_ids: Sequence[int], exc: BaseException
+) -> None:
+    """Record the failed candidate and every later one as admission errors.
+
+    Runs in a fresh transaction. If even that fails (the database is still
+    locked), the rows stay PENDING, which the replay already treats as an
+    account-level outcome.
+    """
+
+    reason = f"admission error: {type(exc).__name__}: {exc}"[:500]
+    try:
+        with store.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.executemany(
+                "UPDATE m1_evaluations SET decision=?, reason=? WHERE id=? AND decision=?",
+                [
+                    (DECISION_ADMISSION_ERROR, reason, int(evaluation_id), DECISION_PENDING)
+                    for evaluation_id in evaluation_ids
+                ],
+            )
+            conn.commit()
+    except sqlite3.Error:
+        pass
 
 
 # --------------------------------------------------------------------------
@@ -1047,6 +1117,7 @@ def build_m1_reconciliation(store: PaperStore, utc_day: date) -> dict[str, Any]:
             (lower, upper),
         ).fetchall()
         prior_legs = _entered_legs(conn, before=lower)
+        prior_crossed = prior_legs | _shadow_crossed_legs(conn, before=lower)
         orders = conn.execute(
             "SELECT id, created_at, target_date, market_ticker, "
             "UPPER(COALESCE(side, 'YES')) AS side, entry_price, entry_bid "
@@ -1060,7 +1131,7 @@ def build_m1_reconciliation(store: PaperStore, utc_day: date) -> dict[str, Any]:
         ]
     evaluations = [_recorded_evaluation(row) for row in rows]
     expected, contradictions = replay_expected_entries(
-        evaluations, already_entered=prior_legs
+        evaluations, already_crossed=prior_crossed
     )
     actual: list[ActualEntry] = []
     prior_reentries: list[dict[str, object]] = []
@@ -1338,10 +1409,14 @@ def evaluate_m1_stop_rules(
             )
         ):
             new_halts.append(STOP_FUTILITY)
-        # The 60th trading day may finish its own entries; the horizon closes
-        # once that target day has arrived and no day-ahead entry for it remains.
+        # The 60th trading day may finish its own entries. Its last day-ahead
+        # hour is the end of D-1 at the westernmost station, so the horizon
+        # closes at midnight starting D60 in Los Angeles, not at the UTC date.
         horizon_days_done = len(trading_days) >= M1_POLICY.final_read_trading_days and (
-            current.date() >= date.fromisoformat(max(trading_days))
+            current
+            >= datetime.combine(
+                date.fromisoformat(max(trading_days)), time.min, tzinfo=_LATEST_STATION_TZ
+            )
         )
         if (
             entries >= M1_POLICY.final_read_entries or horizon_days_done

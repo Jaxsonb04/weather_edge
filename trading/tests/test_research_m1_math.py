@@ -427,7 +427,7 @@ def test_replay_takes_the_first_sampled_crossing_once_per_leg() -> None:
     # A leg entered before the replay window can never be entered again.
     expected, _ = m1.replay_expected_entries(
         rows,
-        already_entered={(TARGET.isoformat(), "KXHIGHLAX-26OCT21-B70.5", "YES")},
+        already_crossed={(TARGET.isoformat(), "KXHIGHLAX-26OCT21-B70.5", "YES")},
     )
     assert expected == []
 
@@ -439,14 +439,42 @@ def test_replay_flags_recorded_entries_the_rule_rejects() -> None:
     assert contradictions[0]["issue"] == "recorded entry that the rule rejects"
 
 
-def test_replay_skips_shadow_and_account_blocked_rows_but_keeps_scanning() -> None:
+def test_replay_keeps_scanning_past_account_level_outcomes() -> None:
+    rows = [
+        _recorded(1, created_at=_la(11, 2), decision=m1.DECISION_ACCOUNT_BLOCKED),
+        _recorded(2, created_at=_la(12, 2), decision=m1.DECISION_ADMISSION_ERROR),
+        # Committed PENDING with no order behind it: a crash between the two.
+        _recorded(3, created_at=_la(13, 2), decision=m1.DECISION_PENDING),
+        _recorded(4, created_at=_la(14, 2), decision=m1.DECISION_HALTED),
+        _recorded(5, created_at=_la(15, 2)),
+    ]
+    expected, contradictions = m1.replay_expected_entries(rows)
+    assert [entry.evaluation_id for entry in expected] == [5]
+    assert contradictions == []
+
+
+def test_a_first_crossing_in_shadow_mode_closes_the_leg_for_good() -> None:
     rows = [
         _recorded(1, created_at=_la(11, 2), placement=False, decision=m1.DECISION_SHADOW),
-        _recorded(2, created_at=_la(12, 2), decision=m1.DECISION_ACCOUNT_BLOCKED),
-        _recorded(3, created_at=_la(13, 2)),
+        _recorded(2, created_at=_la(12, 2)),  # placement switched on later
     ]
-    expected, _ = m1.replay_expected_entries(rows)
-    assert [entry.evaluation_id for entry in expected] == [3]
+    expected, contradictions = m1.replay_expected_entries(rows)
+    assert expected == []
+    assert contradictions == [
+        {
+            "evaluation_id": 2,
+            "leg": [TARGET.isoformat(), "KXHIGHLAX-26OCT21-B70.5", "YES"],
+            "issue": "recorded entry on an already-crossed leg",
+        }
+    ]
+    # Before the switch the leg had not crossed, so a later passing row would
+    # not have been a shadow crossing either: only passing rows close a leg.
+    quiet = [
+        _recorded(1, created_at=_la(11, 2), placement=False, market_probability=0.45),
+        _recorded(2, created_at=_la(12, 2)),
+    ]
+    expected, _ = m1.replay_expected_entries(quiet)
+    assert [entry.evaluation_id for entry in expected] == [2]
 
 
 def _actual(order_id: int, created_at: datetime, *, price=0.48, bid=0.46,

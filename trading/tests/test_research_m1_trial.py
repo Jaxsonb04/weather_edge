@@ -1053,7 +1053,15 @@ def test_final_read_lets_the_sixtieth_trading_day_finish_then_stops(tmp_path) ->
         )
     assert len(_scan(store).order_ids) == 2  # the 60th trading day, both legs
     assert engine.evaluate_m1_stop_rules(store, now=NOW)["new_halts"] == []
-    later = engine.evaluate_m1_stop_rules(store, now=datetime(2026, 10, 21, 1, tzinfo=UTC))
+    # 00:10 UTC on the 60th target date is still 17:10 PDT on D-1: Pacific
+    # stations can still enter it, so the horizon stays open.
+    assert engine.evaluate_m1_stop_rules(
+        store, now=datetime(2026, 10, 21, 0, 10, tzinfo=UTC)
+    )["new_halts"] == []
+    assert engine.evaluate_m1_stop_rules(
+        store, now=datetime(2026, 10, 21, 6, 59, tzinfo=UTC)
+    )["new_halts"] == []
+    later = engine.evaluate_m1_stop_rules(store, now=datetime(2026, 10, 21, 7, 0, tzinfo=UTC))
     assert later["new_halts"] == ["final_read"]
     assert later["trading_days"] == 60
 
@@ -1296,12 +1304,16 @@ def test_the_research_scan_feeds_the_trial_and_respects_the_flag(tmp_path) -> No
     with redirect_stdout(io.StringIO()):
         scan_module._run_research_m1_scan(shadow_args, TARGET, _context(markets, decisions), store, color)
     assert _m1_orders(store) == []
-    clock.now = NOW + timedelta(hours=1)
+    # Placing in a fresh book (in this one the legs already crossed in shadow
+    # mode and are never entered later).
+    placing_store, _ = _store(tmp_path / "placing")
     place_args = SimpleNamespace(risk_profile="research", place_research_m1=True)
     out = io.StringIO()
     with redirect_stdout(out):
-        scan_module._run_research_m1_scan(place_args, TARGET, _context(markets, decisions), store, color)
-    assert len(_m1_orders(store)) == 2
+        scan_module._run_research_m1_scan(
+            place_args, TARGET, _context(markets, decisions), placing_store, color
+        )
+    assert len(_m1_orders(placing_store)) == 2
     assert "M1 trial (placing) sampled 6/6 legs, 2 signal(s), 2 paper entries" in out.getvalue()
 
     # No listed ladder: nothing is evaluated at all.
@@ -1367,3 +1379,154 @@ def test_status_and_reconcile_commands(tmp_path) -> None:
         )
     assert code == 0
     assert len(json.loads(out.getvalue())["matched"]) == 2
+
+
+
+# --------------------------------------------------------------------------
+# Review fixes: admission errors, shadow crossings, quote time, monitor writes
+# --------------------------------------------------------------------------
+
+
+def test_a_locked_admission_never_becomes_a_false_fidelity_breach(tmp_path, monkeypatch) -> None:
+    store, _ = _store(tmp_path)
+    real = engine.admit_m1_entry
+    calls = {"n": 0}
+
+    def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(engine, "admit_m1_entry", flaky)
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        _scan(store)
+    crossed = _rows(
+        store,
+        "SELECT decision, reason FROM m1_evaluations WHERE leg_passes=1 ORDER BY id",
+    )
+    # The failed candidate and every one after it leave PENDING behind.
+    assert [row["decision"] for row in crossed] == ["ADMISSION_ERROR", "ADMISSION_ERROR"]
+    assert all("database is locked" in row["reason"] for row in crossed)
+    assert calls["n"] == 1 and _m1_orders(store) == []
+
+    monkeypatch.setattr(engine, "admit_m1_entry", real)
+    later = _scan(store, now=datetime(2026, 10, 20, 20, 3, tzinfo=UTC))
+    assert len(later.order_ids) == 2
+    report = engine.reconcile_m1_day(store, date(2026, 10, 20), now=NOW)
+    assert report["failed"] == [] and report["breaches"] == [] and report["missed"] == []
+    assert len(report["matched"]) == 2
+    assert report["fidelity"]["triggered"] is False
+    assert _halt_rules(store) == set()
+
+
+def test_a_crash_between_commit_and_admission_is_not_a_fidelity_breach(
+    tmp_path, monkeypatch
+) -> None:
+    store, _ = _store(tmp_path)
+
+    def killed(*args, **kwargs):
+        raise KeyboardInterrupt  # stands in for a kill: nothing gets to clean up
+
+    monkeypatch.setattr(engine, "admit_m1_entry", killed)
+    with pytest.raises(KeyboardInterrupt):
+        _scan(store)
+    assert {
+        row["decision"]
+        for row in _rows(store, "SELECT decision FROM m1_evaluations WHERE leg_passes=1")
+    } == {"PENDING_ADMISSION"}
+    monkeypatch.undo()
+    assert len(_scan(store, now=datetime(2026, 10, 20, 20, 3, tzinfo=UTC)).order_ids) == 2
+    report = engine.reconcile_m1_day(store, date(2026, 10, 20), now=NOW)
+    assert report["failed"] == [] and report["missed"] == []
+    assert len(report["pending_admissions"]) == 2
+    assert _halt_rules(store) == set()
+
+
+def test_the_scan_reraises_a_sqlite_lock_so_the_tick_retries(tmp_path, monkeypatch) -> None:
+    store, _ = _store(tmp_path)
+    markets, decisions = _ladder()
+
+    def locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(scan_module, "run_m1_scan", locked)
+    with pytest.raises(sqlite3.OperationalError), redirect_stderr(io.StringIO()):
+        scan_module._run_research_m1_scan(
+            SimpleNamespace(risk_profile="research", place_research_m1=True),
+            TARGET, _context(markets, decisions), store, Color.from_no_color(True),
+        )
+
+
+def test_turning_placement_on_never_enters_a_leg_that_crossed_in_shadow(tmp_path) -> None:
+    store, _ = _store(tmp_path)
+    _scan(store, place=False)
+    shadow_again = _scan(store, place=False, now=datetime(2026, 10, 20, 20, 4, tzinfo=UTC))
+    assert shadow_again.sampled == 6
+    placing = _scan(store, place=True, now=datetime(2026, 10, 20, 21, 4, tzinfo=UTC))
+    assert placing.order_ids == [] and placing.candidates == 0
+    by_hour = {
+        (row["utc_hour"], row["market_ticker"]): (row["decision"], row["reason"])
+        for row in _rows(store, "SELECT * FROM m1_evaluations WHERE leg_passes=1")
+    }
+    assert by_hour[("2026-10-20T19", YES_TICKER)][0] == "SHADOW"
+    for hour in ("2026-10-20T20", "2026-10-20T21"):
+        decision, reason = by_hour[(hour, YES_TICKER)]
+        assert decision == "ALREADY_CROSSED"
+        assert reason == "first crossing already recorded in shadow mode"
+    report = engine.reconcile_m1_day(store, date(2026, 10, 20), now=NOW)
+    assert report["expected_entries"] == 0
+    assert report["failed"] == report["missed"] == report["contradictions"] == []
+
+    # A leg whose first crossing comes after the switch is entered as usual.
+    next_day = _scan(
+        store, now=datetime(2026, 10, 21, 19, 4, tzinfo=UTC), target=date(2026, 10, 22)
+    )
+    assert len(next_day.order_ids) == 2
+
+
+def test_m1_rows_carry_the_time_the_scan_read_its_quotes(tmp_path) -> None:
+    store, clock = _store(tmp_path)
+    # The quotes were read just before 19:00 UTC; the target book's placement
+    # and depth budget pushed M1's turn past the hour.
+    clock.now = datetime(2026, 10, 20, 19, 0, 20, tzinfo=UTC)
+    quoted_at = datetime(2026, 10, 20, 18, 59, 58, tzinfo=UTC)
+    markets, decisions = _ladder()
+    context = _context(markets, decisions)
+    context.quote_observed_at = quoted_at
+    with redirect_stdout(io.StringIO()):
+        scan_module._run_research_m1_scan(
+            SimpleNamespace(risk_profile="research", place_research_m1=True),
+            TARGET, context, store, Color.from_no_color(True),
+        )
+    rows = _rows(store, "SELECT created_at, utc_hour, local_hour FROM m1_evaluations")
+    assert {row["utc_hour"] for row in rows} == {"2026-10-20T18"}
+    assert {row["created_at"] for row in rows} == {quoted_at.isoformat()}
+    assert {o["created_at"] for o in _m1_orders(store)} == {quoted_at.isoformat()}
+
+
+def test_build_scan_context_records_when_it_read_the_event(monkeypatch) -> None:
+    assert "quote_observed_at" in {
+        field.name for field in scan_module.ScanContext.__dataclass_fields__.values()
+    }
+    source = Path(scan_module.__file__).read_text(encoding="utf-8")
+    assert "quote_observed_at=quote_observed_at" in source
+
+
+def test_the_monitor_records_the_hold_once_per_lot(tmp_path) -> None:
+    store, _ = _store(tmp_path)
+    order_ids = _scan(store).order_ids
+
+    class NoQuotes:
+        def get_market(self, ticker):  # pragma: no cover -- never called for M1
+            raise AssertionError("an M1 lot never needs a quote")
+
+    for _ in range(3):
+        with patch("sfo_kalshi_quant.cli.KalshiPublicClient", NoQuotes), redirect_stdout(io.StringIO()):
+            assert main(["--db-path", str(tmp_path / "paper.db"), "--no-color", "paper-monitor"]) == 0
+    snapshots = _rows(
+        store,
+        "SELECT order_id, action FROM paper_monitor_snapshots ORDER BY id",
+    )
+    assert sorted(row["order_id"] for row in snapshots) == sorted(order_ids)
+    assert {row["action"] for row in snapshots} == {"HOLD_TO_SETTLEMENT"}

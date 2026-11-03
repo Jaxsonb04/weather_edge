@@ -197,6 +197,28 @@ def _is_m1_hold_to_settlement_row(row) -> bool:
     return str(account_id or "") == M1_ACCOUNT_ID
 
 
+def _orders_with_snapshot_action(
+    store: PaperStore, order_ids: list[int], *, action: str
+) -> set[int]:
+    """Which of these orders already carry a monitor snapshot with ``action``."""
+
+    if not order_ids:
+        return set()
+    found: set[int] = set()
+    with store.connect() as conn:
+        for start in range(0, len(order_ids), 500):
+            chunk = order_ids[start : start + 500]
+            found.update(
+                int(row[0])
+                for row in conn.execute(
+                    "SELECT DISTINCT order_id FROM paper_monitor_snapshots "
+                    f"WHERE action=? AND order_id IN ({','.join('?' for _ in chunk)})",
+                    (action, *chunk),
+                ).fetchall()
+            )
+    return found
+
+
 def _settlement_first_no_min_cost_for_order(row) -> float | None:
     risk_profile = normalize_risk_profile_name(str(row["risk_profile"] or "live"))
     if risk_profile == "research":
@@ -484,6 +506,13 @@ def run_paper_monitor(
         print(f"HOLD order {row['id']} {row['market_ticker']} {side}: {reason}")
         unreadable_markets.setdefault(str(row["market_ticker"]), error)
 
+    # An M1 lot's hold is fixed by policy, so its snapshot is written once per
+    # lot, not on every two-minute tick.
+    m1_lots_already_held = _orders_with_snapshot_action(
+        store,
+        [int(row["id"]) for row in rows if _is_m1_hold_to_settlement_row(row)],
+        action="HOLD_TO_SETTLEMENT",
+    )
     closed = 0
     inspected = 0
     for row in rows:
@@ -493,16 +522,17 @@ def run_paper_monitor(
         if _is_m1_hold_to_settlement_row(row):
             # Checked before every exit rule, quote fetch and model read: no
             # exit path below can reach an M1 position.
-            store.record_monitor_snapshot(
-                row,
-                side=side,
-                action="HOLD_TO_SETTLEMENT",
-                reason="M1 market-recalibration trial: held to settlement by policy",
-            )
-            print(
-                f"HOLD order {row['id']} {row['market_ticker']} {side}: "
-                "M1 trial (held to settlement)"
-            )
+            if int(row["id"]) not in m1_lots_already_held:
+                store.record_monitor_snapshot(
+                    row,
+                    side=side,
+                    action="HOLD_TO_SETTLEMENT",
+                    reason="M1 market-recalibration trial: held to settlement by policy",
+                )
+                print(
+                    f"HOLD order {row['id']} {row['market_ticker']} {side}: "
+                    "M1 trial (held to settlement)"
+                )
             continue
         if _is_guaranteed_payoff_group_row(row):
             # Legs of an arbitrage box/ladder or a tail basket form a single
