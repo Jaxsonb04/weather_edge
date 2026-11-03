@@ -1626,30 +1626,7 @@ def _bind_accounting_to_profiles(
             status.update(alerts=alerts, alert_level=_alert_level(alerts))
             profile["status"] = status
 
-    # The M1 trial's profile view reads its balances from its own $10,000
-    # book, never from the shared profile bankroll.
-    m1_book = (accounting.get("accounts") or {}).get("research_m1")
-    m1_profile = by_name.get(M1_PUBLISHED_PROFILE)
-    if (
-        m1_profile is not None
-        and isinstance(m1_book, dict)
-        and m1_book.get("available") is True
-    ):
-        m1_daily = dict(m1_profile.get("daily_summary") or {})
-        m1_daily.update(
-            {
-                "equity_available": True,
-                "equity_basis": "account_equity",
-                "starting_bankroll": m1_book.get("initial_equity"),
-                "bankroll": m1_book.get("initial_equity"),
-                "current_equity": m1_book.get("realized_equity"),
-            }
-        )
-        m1_profile["daily_summary"] = m1_daily
-        m1_profile["archived"] = False
-        m1_profile["account_key"] = "research_m1"
-
-    active_order = {"live": 0, "research-target": 1, M1_PUBLISHED_PROFILE: 2}
+    active_order = {"live": 0, "research-target": 1}
     return sorted(
         rows,
         key=lambda row: (

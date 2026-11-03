@@ -16,6 +16,7 @@ from .exit_audit import audited_exit_reason
 from .forecast import ForecastDataError, SfoForecasterAdapter
 from .logical_positions import group_logical_positions
 from .profile_identity import row_published_profile_key
+from .research_m1 import M1_ACCOUNT_ID
 
 
 _COMBINED_EQUITY_UNAVAILABLE_REASON = (
@@ -810,7 +811,12 @@ def _load_orders(db_path: Path) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
-    return [order for order in orders if order["risk_profile"] != "unknown"]
+    # M1 is its own book (accounting.accounts.research_m1), never pooled here.
+    return [
+        order
+        for order in orders
+        if order["risk_profile"] != "unknown" and order["account_id"] != M1_ACCOUNT_ID
+    ]
 
 
 def _decision_stats(db_path: Path, window_start: date) -> dict[str, Any]:

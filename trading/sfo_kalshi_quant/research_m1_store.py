@@ -1600,6 +1600,16 @@ def m1_trial_payload(
             "FROM m1_reconciliations ORDER BY utc_day DESC LIMIT 1"
         ).fetchone()
         shadow = {arm: _shadow_arm_summary(conn, arm) for arm in SHADOW_ARMS}
+        pending_cutoff = _iso(current - timedelta(hours=1))
+        stale_pending = conn.execute(
+            "SELECT COUNT(*) FROM m1_evaluations WHERE decision=? AND created_at < ?",
+            (DECISION_PENDING, pending_cutoff),
+        ).fetchone()[0]
+        last_error = conn.execute(
+            "SELECT created_at, reason FROM m1_evaluations WHERE decision=? "
+            "ORDER BY id DESC LIMIT 1",
+            (DECISION_ADMISSION_ERROR,),
+        ).fetchone()
         latest_entry = conn.execute(
             "SELECT MAX(created_at) FROM paper_orders WHERE account_id=?",
             (M1_ACCOUNT_ID,),
@@ -1739,6 +1749,20 @@ def m1_trial_payload(
             "failure but cannot confirm a small edge."
         ),
         "shadow_arms": shadow,
+        # Derived from the journal. A scan-level exception is not stored; it
+        # shows up as a stale last_evaluation_at (the scheduler watchdog alerts).
+        "health": {
+            "last_evaluation_at": evaluation_stats[2],
+            "stale_pending_admissions": int(stale_pending),
+            "last_error": (
+                None
+                if last_error is None
+                else {"at": last_error[0], "reason": last_error[1]}
+            ),
+            "missed_entries": (
+                None if last_reconciliation is None else int(last_reconciliation[2])
+            ),
+        },
         "last_reconciliation": (
             None
             if last_reconciliation is None

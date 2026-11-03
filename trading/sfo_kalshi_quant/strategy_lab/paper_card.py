@@ -43,6 +43,7 @@ from ..logical_positions import (
     group_logical_positions,
 )
 from ..profile_identity import row_published_profile_key
+from ..research_m1 import M1_ACCOUNT_ID
 from ..research_policy import TARGET_POLICY
 from ..settlement_day import settlement_today
 from . import DEFAULT_MODEL_VETO_BUFFER, DEFAULT_MODEL_VETO_MAX_LOSS_PCT
@@ -291,6 +292,14 @@ def _duplicate_open_rows(rows: tuple[dict[str, Any], ...]) -> list[dict[str, Any
     return duplicates[:5]
 
 
+def _shared_paper_rows(rows: list[sqlite3.Row]) -> list[sqlite3.Row]:
+    # M1 is its own book (accounting.accounts.research_m1); it never shares
+    # the open/closed/action lists or counts with Live or Research V7.
+    return [
+        row for row in rows if _sqlite_row_value(row, "account_id") != M1_ACCOUNT_ID
+    ]
+
+
 def _paper_payload(db_path: Path) -> dict[str, Any]:
     monitor = _paper_monitor_config()
     empty = {
@@ -346,10 +355,10 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
 
     with _sqlite.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        journal_rows = conn.execute(
+        journal_rows = _shared_paper_rows(conn.execute(
             "SELECT * FROM paper_orders "
             "WHERE status != 'REJECTED' ORDER BY id"
-        ).fetchall()
+        ).fetchall())
         journal = _project_paper_journal(journal_rows)
         summary = _paper_book_summary(journal)
         open_rows = sorted(
@@ -698,10 +707,10 @@ def _paper_diagnostics(
             return _empty_paper_diagnostics()
         with _sqlite.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute(
+            rows = _shared_paper_rows(conn.execute(
                 "SELECT * FROM paper_orders "
                 "WHERE status != 'REJECTED' ORDER BY id"
-            ).fetchall()
+            ).fetchall())
         journal = _project_paper_journal(rows)
 
     resolved = list(journal.terminal_rows)

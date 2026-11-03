@@ -21,7 +21,10 @@ if (( TEST_MODE == 1 )); then
   REPAIR_STATE_DIR="${SFO_SCHEDULER_REPAIR_STATE_DIR:-/tmp/weatheredge-scheduler-health}"
   # Empty skips the paper scan freshness check, like the helpers above.
   PAPER_DB="${SFO_SCHEDULER_PAPER_DB:-}"
+  # Test-only clock for the M1 listing-gap check; production uses the real time.
+  M1_NOW_OVERRIDE="${SFO_SCHEDULER_M1_NOW:-}"
 else
+  M1_NOW_OVERRIDE=""
   DEPLOY_MAINTENANCE_MARKER="/run/weatheredge-deploy-maintenance"
   SYSTEMCTL=(/bin/systemctl)
   INTEGRITY_HELPER="/usr/local/libexec/weatheredge/verify_systemd_unit_integrity.sh"
@@ -591,6 +594,93 @@ PY
   fi
   if (( scan_status != 0 )); then
     echo "scheduler health blocked: paper scan freshness check failed (status=$scan_status)" >&2
+    exit 1
+  fi
+fi
+
+# The M1 paper trial runs inside every research scan, but its failures are
+# contained there (the scan still exits 0 and stamps success), so the checks
+# above cannot see them. Alert when its newest evaluation is over 90 minutes
+# old, or when an admission has sat in PENDING_ADMISSION over an hour. M1 only
+# evaluates the next civil day's ladder, so it legitimately writes nothing
+# from about 07:00 to 15:00 UTC while Kalshi lists no next-day market; the
+# staleness check is skipped from 07:00 until 16:30 UTC (the first 90 minutes
+# after listing). The pending-row check always runs. Read-only, as the app user.
+if [[ -n "$PAPER_DB" && ",${SCAN_PROFILES// /}," == *",research,"* ]]; then
+  m1_status=0
+  (
+    cd "$TRADING_DIR"
+    run_as_app "$PYTHON_BIN" - "$PAPER_DB" "$M1_NOW_OVERRIDE" <<'PY'
+import sqlite3
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from sfo_kalshi_quant.research_m1 import DECISION_PENDING
+
+db_path, now_override = sys.argv[1:]
+now = (
+    datetime.fromisoformat(now_override.replace("Z", "+00:00"))
+    if now_override
+    else datetime.now(timezone.utc)
+)
+
+
+def parse_utc(value):
+    try:
+        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+if not Path(db_path).is_file():
+    raise SystemExit(0)  # the paper scan check above owns a missing journal
+conn = sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
+try:
+    if not conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='m1_evaluations'"
+    ).fetchone():
+        raise SystemExit(0)
+    newest = conn.execute(
+        "SELECT created_at FROM m1_evaluations ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    pending = [
+        parse_utc(row[0])
+        for row in conn.execute(
+            "SELECT created_at FROM m1_evaluations WHERE decision=?", (DECISION_PENDING,)
+        )
+    ]
+except sqlite3.Error as exc:
+    print(f"M1 trial journal is unreadable: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+finally:
+    conn.close()
+
+problems = []
+stale_pending = sum(
+    1 for moment in pending if moment is not None and now - moment > timedelta(hours=1)
+)
+if stale_pending:
+    problems.append(f"M1 trial has {stale_pending} PENDING_ADMISSION row(s) older than 1 hour")
+minute_of_day = now.hour * 60 + now.minute
+if not 7 * 60 <= minute_of_day < 16 * 60 + 30:
+    # shortcut: an empty journal is not alerted (a never-started M1 stays silent),
+    # since a fresh deploy has no evaluation until the first listing.
+    last = parse_utc(newest[0]) if newest else None
+    if last is not None and now - last > timedelta(minutes=90):
+        problems.append(f"M1 trial has no evaluation in the last 90 minutes (newest {newest[0]})")
+for message in problems:
+    print(message, file=sys.stderr)
+raise SystemExit(3 if problems else 0)
+PY
+  ) || m1_status=$?
+  if (( m1_status == 3 )); then
+    echo "scheduler health failed: M1 paper trial is stale or has stuck admissions" >&2
+    exit 1
+  fi
+  if (( m1_status != 0 )); then
+    echo "scheduler health blocked: M1 trial health check failed (status=$m1_status)" >&2
     exit 1
   fi
 fi

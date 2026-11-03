@@ -9,14 +9,15 @@ from sfo_kalshi_quant import research_m1_store as engine
 from sfo_kalshi_quant.account import LIVE_STABILITY_ACCOUNT_ID
 from sfo_kalshi_quant.strategy_lab.build import (
     _accounting_payload,
-    _bind_accounting_to_profiles,
 )
-from sfo_kalshi_quant.strategy_lab.profiles import _profile_label
+from sfo_kalshi_quant.strategy_lab.paper_card import _paper_payload
+from sfo_kalshi_quant.summary import _load_orders
 
 from test_research_m1_trial import (
     M1,
     NOW,
     TARGET,
+    _insert_m1_order,
     _insert_settled_book,
     _scan,
     _store,
@@ -77,10 +78,6 @@ def test_publication_reports_halts_without_hiding_other_accounts(tmp_path) -> No
     assert loss["status"] == "halted" and loss["realized_pnl"] == -310.0
 
 
-def test_the_m1_profile_has_its_own_label() -> None:
-    assert _profile_label("research-m1") == "M1 market-recalibration trial (paper only)"
-
-
 def test_an_unreadable_m1_book_publishes_as_unavailable_without_hiding_others(
     tmp_path, monkeypatch
 ) -> None:
@@ -99,26 +96,46 @@ def test_an_unreadable_m1_book_publishes_as_unavailable_without_hiding_others(
     assert book["reason"] == "M1 trial ledger unavailable (ZeroDivisionError)"
 
 
+def _insert_live_open(store, index: int) -> None:
+    """An open Live Stability lot older than every M1 lot."""
 
-def test_the_m1_profile_reads_its_balances_from_its_own_book(tmp_path) -> None:
+    created = f"2026-10-19T12:{index:02d}:00+00:00"
+    with store.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO paper_orders (
+                created_at, target_date, market_ticker, label, action, risk_profile,
+                side, contracts, yes_ask, entry_price, entry_bid, fee_per_contract,
+                cost_per_contract, probability, probability_lcb, edge, edge_lcb,
+                trade_quality_score, expected_profit, status, reasons_json,
+                account_id, filled_contracts
+            ) VALUES (?, '2026-10-21', ?, 'live lot', 'BUY_YES', 'live', 'YES', 5,
+                      0.5, 0.5, 0.48, 0, 0.5, 0.6, 0.5, 0.1, 0.1, 0, 0.0,
+                      'PAPER_FILLED', '[]', ?, 5)
+            """,
+            (created, f"KXHIGHLAX-LIVE{index}-B70.5", LIVE_STABILITY_ACCOUNT_ID),
+        )
+
+
+def test_m1_lots_never_enter_the_shared_paper_lists(tmp_path) -> None:
     store, _ = _store(tmp_path)
-    _scan(store)
-    store.settle_paper_orders(TARGET.isoformat(), 70.0, series_ticker="KXHIGHLAX")
-    accounting = _accounting_payload(
-        {"days": [{"date": "2026-10-21"}]}, {"profiles": []}, db_path=tmp_path / "paper.db"
-    )
-    profiles = [
-        {"risk_profile": name, "daily_summary": {"bankroll": 1000.0}}
-        for name in ("research-target-v6", "research-m1", "research-target", "live")
-    ]
-    bound = _bind_accounting_to_profiles(profiles, accounting)
-    # Active books first (live, Research V7, the M1 trial), archives after.
-    assert [row["risk_profile"] for row in bound][:3] == [
-        "live", "research-target", "research-m1",
-    ]
-    assert all(row.get("archived") is True for row in bound[3:])
-    m1_row = bound[2]
-    assert m1_row["account_key"] == "research_m1" and m1_row["archived"] is False
-    assert m1_row["daily_summary"]["bankroll"] == 10_000.0
-    assert m1_row["daily_summary"]["current_equity"] == pytest.approx(10_010.49)
-    assert m1_row["daily_summary"]["equity_basis"] == "account_equity"
+    for index in range(3):
+        _insert_live_open(store, index)
+    before = _paper_payload(tmp_path / "paper.db")
+    for index in range(35):  # more than the 30-row open list, all newer than Live
+        _insert_m1_order(
+            store,
+            target_date="2026-10-21",
+            ticker=f"KXHIGHLAX-M1{index:03d}-B70.5",
+            created_at=f"2026-10-20T13:{index:02d}:00+00:00",
+            status="PAPER_FILLED",
+        )
+    paper = _paper_payload(tmp_path / "paper.db")
+    assert paper["open_positions"] == before["open_positions"]
+    assert len(paper["open_positions"]) == 3
+    assert {row["account_id"] for row in paper["open_positions"]} == {LIVE_STABILITY_ACCOUNT_ID}
+    for key in ("open_positions", "published_open_positions", "hidden_open_positions", "open_risk"):
+        assert paper["summary"][key] == before["summary"][key]
+    assert "research-m1" not in {row["risk_profile"] for row in paper["profiles"]}
+    assert {row["label"] for row in paper["recent_monitor_actions"]} == {"live lot"}
+    assert [row["risk_profile"] for row in _load_orders(tmp_path / "paper.db")] == ["live"] * 3
