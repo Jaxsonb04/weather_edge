@@ -320,10 +320,15 @@ def cmd_paper_resettle(args: argparse.Namespace) -> int:
             (city_today - timedelta(days=args.days - 1)).isoformat(),
             city_today.isoformat(),
         )
-    store = PaperStore(args.db_path)
     if getattr(args, "restate", False):
-        _preview_settlement_restatement(color, store, args, intervals)
+        # The preview must not write, so it opens the journal without
+        # PaperStore.init: init migrates the schema and can expire resting
+        # orders from older execution semantics, appending ledger rows.
+        _preview_settlement_restatement(
+            color, PaperStore(args.db_path, init=False), args, intervals
+        )
         return 0
+    store = PaperStore(args.db_path)
     if getattr(args, "exchange_check_only", False):
         # Backfilling exchange verdicts must not move restatement evidence:
         # verify_paper_settlements upserts paper_settlement_verifications, which

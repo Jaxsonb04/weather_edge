@@ -396,6 +396,39 @@ def test_the_recheck_window_is_the_operator_sweeps_fourteen_days():
         assert "window=14d checked=1 drift=1" in out
 
 
+def test_restate_preview_does_not_run_store_init_or_expire_legacy_resting_orders():
+    """ChatGPT review of PR #162: PaperStore.init migrates the schema and its
+    exec-v5 cutover expires resting orders from older execution semantics,
+    appending RESERVATION_RELEASE ledger rows. The dry run must not run it."""
+
+    with TemporaryDirectory() as tmp:
+        root = _forecaster_root(Path(tmp))
+        _store_final(root, TARGET, 71)
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        resting = store.record_paper_order(TARGET, _lot_3687())
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.execute(
+                "UPDATE paper_orders SET status='PAPER_LIMIT_RESTING', "
+                "execution_model_version='exec-v4', remaining_contracts=3, "
+                "reserved_cost=2.0, settled_at=NULL WHERE id=?",
+                (resting,),
+            )
+            conn.commit()
+        tables = ("paper_orders", "paper_account_ledger")
+        before = {table: _table(db_path, table) for table in tables}
+
+        code, out, err = _run(
+            root, db_path, date(2026, 11, 1),
+            "paper-resettle", "--verify", "--restate", "--days", "30",
+        )
+
+        assert code == 0, err
+        assert "dry run" in out
+        assert {table: _table(db_path, table) for table in tables} == before
+        assert _order(db_path, resting)["status"] == "PAPER_LIMIT_RESTING"
+
+
 def test_restate_previews_each_account_separately_and_writes_nothing():
     """Restating rewrites ledger history, so the explicit path is a dry run."""
 
