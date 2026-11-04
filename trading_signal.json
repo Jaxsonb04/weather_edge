@@ -166,9 +166,9 @@
     ]
   },
   "disclaimer": "Paper-trading research only. This report does not place live orders.",
-  "generated_at": "2026-11-04T11:52:18+00:00",
+  "generated_at": "2026-11-04T12:02:18+00:00",
   "live_orders_enabled": false,
-  "market_data_at": "2026-11-04T11:52:22+00:00",
+  "market_data_at": "2026-11-04T12:02:22+00:00",
   "mode": "paper_research_only",
   "schema_version": 1,
   "summary": {
@@ -287,6 +287,7 @@
           "probability": 0.7013,
           "probability_lcb": 0.5165,
           "reasons": [
+            "NO ask size 0.01 below min 1.00; no displayed entry liquidity",
             "NO price 0.55 outside favorite band [0.70, 0.97]; documented post-fee edge concentrates on high-probability favorites",
             "model/market gap 0.235 exceeds max 0.200",
             "lower-bound edge -0.053 below min 0.000"
@@ -298,7 +299,7 @@
           "side": "NO",
           "spread": 0.01,
           "ticker": "KXHIGHTSFO-26NOV04-B65.5",
-          "trade_quality_score": 58.2
+          "trade_quality_score": 61.4
         },
         {
           "action": "BUY_NO",
@@ -391,7 +392,7 @@
           "side": "YES",
           "spread": 0.01,
           "ticker": "KXHIGHTSFO-26NOV04-B63.5",
-          "trade_quality_score": 47.5
+          "trade_quality_score": 46.4
         },
         {
           "action": "BUY_NO",
@@ -507,6 +508,7 @@
           "probability": 0.2987,
           "probability_lcb": 0.1139,
           "reasons": [
+            "YES bid size 0.01 below min 1.00",
             "YES price 0.46 outside favorite band [0.70, 0.97]; documented post-fee edge concentrates on high-probability favorites",
             "model/market gap 0.235 exceeds max 0.200",
             "edge -0.181 below min 0.012",
@@ -520,39 +522,7 @@
           "side": "YES",
           "spread": 0.01,
           "ticker": "KXHIGHTSFO-26NOV04-B65.5",
-          "trade_quality_score": 31.0
-        },
-        {
-          "action": "BUY_YES",
-          "approved": false,
-          "ask": 0.51,
-          "bid": 0.5,
-          "decision": "NO_TRADE",
-          "edge": -0.2563,
-          "edge_lcb": -0.506,
-          "ensemble_probability": 0.0,
-          "expected_profit": -0.0,
-          "intraday_probability": 0.1426,
-          "label": "67\u00b0 to 68\u00b0",
-          "market_probability": 0.472,
-          "model_probability": 0.1035,
-          "probability": 0.2737,
-          "probability_lcb": 0.024,
-          "reasons": [
-            "YES price 0.51 outside favorite band [0.70, 0.97]; documented post-fee edge concentrates on high-probability favorites",
-            "model/market gap 0.368 exceeds max 0.200",
-            "edge -0.256 below min 0.012",
-            "lower-bound edge -0.506 below min 0.000",
-            "YES lower-bound edge -0.506 is not positive"
-          ],
-          "recommended_contracts": 0.0,
-          "recommended_spend": 0.0,
-          "remaining_heat_risk": 0.7061,
-          "residual_probability": 0.1293,
-          "side": "YES",
-          "spread": 0.01,
-          "ticker": "KXHIGHTSFO-26NOV04-B67.5",
-          "trade_quality_score": 30.4
+          "trade_quality_score": 29.9
         },
         {
           "action": "BUY_YES",
@@ -588,6 +558,38 @@
           "spread": 0.01,
           "ticker": "KXHIGHTSFO-26NOV04-T63",
           "trade_quality_score": 28.2
+        },
+        {
+          "action": "BUY_YES",
+          "approved": false,
+          "ask": 0.51,
+          "bid": 0.5,
+          "decision": "NO_TRADE",
+          "edge": -0.2563,
+          "edge_lcb": -0.506,
+          "ensemble_probability": 0.0,
+          "expected_profit": -0.0,
+          "intraday_probability": 0.1426,
+          "label": "67\u00b0 to 68\u00b0",
+          "market_probability": 0.472,
+          "model_probability": 0.1035,
+          "probability": 0.2737,
+          "probability_lcb": 0.024,
+          "reasons": [
+            "YES price 0.51 outside favorite band [0.70, 0.97]; documented post-fee edge concentrates on high-probability favorites",
+            "model/market gap 0.368 exceeds max 0.200",
+            "edge -0.256 below min 0.012",
+            "lower-bound edge -0.506 below min 0.000",
+            "YES lower-bound edge -0.506 is not positive"
+          ],
+          "recommended_contracts": 0.0,
+          "recommended_spend": 0.0,
+          "remaining_heat_risk": 0.7061,
+          "residual_probability": 0.1293,
+          "side": "YES",
+          "spread": 0.01,
+          "ticker": "KXHIGHTSFO-26NOV04-B67.5",
+          "trade_quality_score": 28.1
         },
         {
           "action": "BUY_YES",
@@ -726,7 +728,7 @@
         "p75_f": 67.6961,
         "p90_f": 68.3196
       },
-      "market_data_at": "2026-11-04T11:52:20+00:00",
+      "market_data_at": "2026-11-04T12:02:20+00:00",
       "target_date": "2026-11-04",
       "target_status": "settlement_day",
       "warnings": []
@@ -1166,7 +1168,7 @@
       "market_consensus": {
         "available": false
       },
-      "market_data_at": "2026-11-04T11:52:22+00:00",
+      "market_data_at": "2026-11-04T12:02:22+00:00",
       "target_date": "2026-11-05",
       "target_status": "upcoming",
       "warnings": []
