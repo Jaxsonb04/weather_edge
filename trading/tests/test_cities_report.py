@@ -8,11 +8,23 @@ from pathlib import Path
 from unittest.mock import patch
 
 from sfo_kalshi_quant import cities_report
+from sfo_kalshi_quant.account import LIVE_STABILITY_ACCOUNT_ID
 from sfo_kalshi_quant.db import PaperStore
+from sfo_kalshi_quant.research_policy import TARGET_POLICY
 
 
 NOW = datetime(2026, 7, 9, 12, 0, tzinfo=timezone.utc)
 CUTOFF = "2026-07-08T12:00:00+00:00"
+# (account_id, research_sleeve, research_policy_version, policy_fingerprint):
+# the books are per account, so fixture rows carry the active accounts' identity.
+LIVE_IDENTITY = (LIVE_STABILITY_ACCOUNT_ID, None, None, None)
+RESEARCH_IDENTITY = (
+    TARGET_POLICY.account_id,
+    TARGET_POLICY.sleeve.value,
+    TARGET_POLICY.policy_version,
+    TARGET_POLICY.policy_fingerprint,
+)
+LEGACY_IDENTITY = (None, None, None, None)
 
 
 def _create_activity_tables(conn: sqlite3.Connection) -> None:
@@ -31,7 +43,11 @@ def _create_activity_tables(conn: sqlite3.Connection) -> None:
             status TEXT NOT NULL,
             settled_at TEXT,
             closed_at TEXT,
-            realized_pnl REAL
+            realized_pnl REAL,
+            account_id TEXT,
+            research_sleeve TEXT,
+            research_policy_version TEXT,
+            policy_fingerprint TEXT
         );
         """
     )
@@ -50,7 +66,7 @@ def _seed_activity(conn: sqlite3.Connection) -> None:
         ],
     )
     conn.executemany(
-        "INSERT INTO paper_orders VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO paper_orders VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
             (
                 "KXHIGHTSFO-26JUL09-B65.5",
@@ -61,6 +77,7 @@ def _seed_activity(conn: sqlite3.Connection) -> None:
                 None,
                 None,
                 None,
+                *LIVE_IDENTITY,
             ),
             (
                 "KXHIGHTSFO-26JUL09-B67.5",
@@ -71,6 +88,7 @@ def _seed_activity(conn: sqlite3.Connection) -> None:
                 None,
                 None,
                 None,
+                *RESEARCH_IDENTITY,
             ),
             (
                 "KXHIGHTSFO-26JUL08-B63.5",
@@ -81,6 +99,7 @@ def _seed_activity(conn: sqlite3.Connection) -> None:
                 "2026-07-09T01:00:00+00:00",
                 None,
                 0.8,
+                *LIVE_IDENTITY,
             ),
             (
                 "KXHIGHNY-26JUL09-B81.5",
@@ -91,6 +110,7 @@ def _seed_activity(conn: sqlite3.Connection) -> None:
                 None,
                 None,
                 None,
+                *LEGACY_IDENTITY,
             ),
         ],
     )
@@ -128,7 +148,10 @@ def test_all_city_books_uses_one_grouped_pass_and_does_not_duplicate_decisions_b
         "settled_pnl": 0.0,
     }
     assert books["nyc"]["decisions_24h"] == 1
-    assert books["nyc"]["live"]["open_positions"] == 1
+    # A pre-account NULL-profile row is the legacy shared ledger, which is
+    # archived: it must not be counted in the active Live Stability book.
+    assert books["nyc"]["live"]["open_positions"] == 0
+    assert books["nyc"]["archived"]["live-legacy"]["open_positions"] == 1
     assert len([sql for sql in statements if "FROM decision_snapshots" in sql]) == 1
     assert len([sql for sql in statements if "FROM paper_orders" in sql]) == 1
 
@@ -146,16 +169,19 @@ def test_resting_limit_orders_are_not_counted_as_open_positions():
             """
             INSERT INTO paper_orders (
                 market_ticker, risk_profile, contracts, cost_per_contract,
-                status, settled_at, closed_at, realized_pnl
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                status, settled_at, closed_at, realized_pnl, account_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                # Filled: open only.
-                ("KXHIGHTSFO-26JUL09-B68.5", "live", 2.0, 0.25, "PAPER_FILLED", None, None, None),
-                # Resting: resting only.
-                ("KXHIGHTSFO-26JUL09-B69.5", "live", 4.0, 0.10, "PAPER_LIMIT_RESTING", None, None, None),
-                # Partially filled: both, because it holds contracts and rests.
-                ("KXHIGHTSFO-26JUL09-B70.5", "live", 1.0, 0.20, "PAPER_PARTIALLY_FILLED", None, None, None),
+                (*row, LIVE_STABILITY_ACCOUNT_ID)
+                for row in (
+                    # Filled: open only.
+                    ("KXHIGHTSFO-26JUL09-B68.5", "live", 2.0, 0.25, "PAPER_FILLED", None, None, None),
+                    # Resting: resting only.
+                    ("KXHIGHTSFO-26JUL09-B69.5", "live", 4.0, 0.10, "PAPER_LIMIT_RESTING", None, None, None),
+                    # Partially filled: both, because it holds contracts and rests.
+                    ("KXHIGHTSFO-26JUL09-B70.5", "live", 1.0, 0.20, "PAPER_PARTIALLY_FILLED", None, None, None),
+                )
             ],
         )
         books = cities_report._all_city_books(conn, CUTOFF)

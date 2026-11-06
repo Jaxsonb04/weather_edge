@@ -25,6 +25,7 @@ if command -v flock >/dev/null 2>&1; then
   mkdir -p "$(dirname "$SCAN_LOCK")"
   exec 9>"$SCAN_LOCK"
   if ! flock -n 9; then
+    # No success stamp here; the run holding the lock records its own.
     echo "previous paper scan still running; skipping this tick"
     exit 0
   fi
@@ -33,6 +34,14 @@ fi
 FORECASTER_DIR="${SFO_FORECASTER_ROOT:-/opt/weatheredge/forecaster}"
 PYTHON_BIN="${SFO_TRADING_PYTHON:-$TRADING_DIR/.venv/bin/python}"
 DB_PATH="${SFO_KALSHI_DB:-$TRADING_DIR/data/paper_trading.db}"
+# check_scheduler_health.sh requires every configured profile to have exited 0
+# recently (audit F5), so each profile that does records when it finished, in
+# last-success-<profile> beside the journal it writes. Fresh decision rows do
+# not prove a profile works: the scan journals one city and target at a time,
+# so a run that fails partway (a later city's target lookup, a containment
+# error, a placement or admission error) still leaves fresh rows behind.
+# Deploys never sync the data directory, so the stamps survive a release.
+SCAN_STATE_DIR="$(dirname "$DB_PATH")/.paper-scan-state"
 BANKROLL="${PAPER_BANKROLL:-1000}"
 PROFILES_CSV="${PAPER_RISK_PROFILES:-${PAPER_RISK_PROFILE:-live}}"
 CALIBRATION_SOURCE="${SFO_TRADING_SIGNAL_CALIBRATION_SOURCE:-lstm}"
@@ -69,6 +78,22 @@ normalize_profile() {
       ;;
     *) return 1 ;;
   esac
+}
+
+# Write the stamp under a temporary name and rename it into place, so the
+# watchdog never reads a partial one. It holds the epoch second the profile
+# finished. Callers test the status, which also keeps set -e from skipping the
+# remaining profiles when the stamp cannot be written.
+record_scan_success() {
+  local profile="$1" finished tmp
+  finished="$(date +%s)" || return 1
+  mkdir -p "$SCAN_STATE_DIR" || return 1
+  tmp="$SCAN_STATE_DIR/.last-success-$profile.$$"
+  if ! { printf '%s\n' "$finished" >"$tmp" \
+    && mv -f "$tmp" "$SCAN_STATE_DIR/last-success-$profile"; }; then
+    rm -f "$tmp"
+    return 1
+  fi
 }
 
 if [[ "$PYTHON_BIN" != */* ]]; then
@@ -161,6 +186,10 @@ for profile in "${canonical_profiles[@]}"; do
     "$PYTHON_BIN" -m sfo_kalshi_quant.cli "${args[@]}" || profile_status=$?
   if (( profile_status == 0 )); then
     context_recorded=1
+    # The scan's own result stands; a stale stamp fails scheduler health.
+    if ! record_scan_success "$profile"; then
+      echo "warning: paper scan profile=$profile succeeded but its success stamp could not be written under $SCAN_STATE_DIR; scheduler health will report no successful run for it" >&2
+    fi
   else
     echo "paper scan profile=$profile failed with status $profile_status; continuing with the remaining profiles" >&2
     if (( scan_status == 0 )); then

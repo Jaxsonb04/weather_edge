@@ -1,10 +1,10 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-10-15 (owner Mac background switch installed and off; $40 monthly AWS cap retained)
+Last updated: 2026-11-02 (Nov 1 scan-outage incident and hotfix, Spot migration, November audit fixes in review, M1 trial built; nothing deployed beyond the hotfix)
 
 Last complete production verification: 2026-10-05 23:04 PDT (bounded read-only verification)
 
-Last backend safety inspection: 2026-10-15 14:15 PDT (read-only source, flags, units, maintenance, disk and V7 table checks; last independent financial reconciliation October 11)
+Last backend safety inspection: 2026-11-02 19:27 PST (read-only units, timers, scans, disk, flags, retention mode, indexes, accounts and new-station rows; ledgers reconciled to the published equities on November 1)
 
 Last public artifact inspection: 2026-10-11 13:05 PDT (independent stable manifest and all five runtime JSON hashes; no static release)
 
@@ -15,182 +15,150 @@ operational claim; all production observations below are dated snapshots.
 
 ## Session Brief
 
-- **Owner scope (October 12):** verify and complete five-city attributed training,
-  missing final reports, budget-compatible recovery and V7 activation across the
-  two active paper profiles, then gather realistic prospective evidence before
-  selecting real capital. The owner wants activation today and better results.
-  The owner explicitly approved the proposed one recovery/cutover attempt up
-  to $1 and confirmed a new **$40 total AWS budget per calendar month**, including
-  existing infrastructure, storage and backups. This supersedes the previous
-  zero-increment spending restriction. The recovery allowance belongs inside
-  the monthly cap, not on top of it. Persist it across failed attempts and month
-  rollover; another paid attempt needs a new authorization. Do not deploy or add
-  charges based only on month-to-date headroom: verify the projected full month
-  and each month of retained backup storage. The last verified forecast was
-  $54.50 on October 5, so the $40 cap is not yet proved feasible. October 12's
-  console session has expired; fresh billing sign-in is pending. Real-money
-  trading, retention deletion, weakened risk or promotion gates, and sustained
-  intensive Mac work remain unauthorized.
-  A same-day profit improvement cannot be demonstrated from a new policy era.
-- **Latest production snapshot (October 15, 14:15 PDT):** AWS remains clean
-  September 4 backend `2a6432e3`, exec-v4 and fifteen deployed cities, with no V7
-  weather-vintage/member tables. Both paper placement flags remain on; real
-  execution is off and dry-run on. Canonical integrity passed for all 29 units,
-  zero units failed and no maintenance marker exists. The paper database is
-  37.29 GiB with 13.53 GiB free; local canonical backup still cannot fit.
-  No source cutover, S3 backup upload or history import has occurred. Source
-  main includes bounded recovery PR #147 at `4a089719c` and Mac control PR #153
-  at `1b3c40b4a`. The exact merged-main Python 3.12/3.13 and Web checks passed
-  for `1b3c40b4a`; this is source validation, not an AWS backend release.
-  Latest public artifact verification remains the dated October 11 snapshot;
-  fresh publication must not be presented as fresh historical analysis.
-- **Current cost/recovery decision (October 15, about 15:00 PDT):** current
-  hosting remains the same 4-GiB ARM server at $0.04/hour, one 64-GiB gp3
-  volume and standard CPU credits; there is no elastic IP allocation to remove.
-  Existing S3 lifecycle/versioning was freshly verified unchanged. Daily
-  standard-storage bytes declined from 144.73 billion on October 12 to 89.41
-  billion on October 14 under existing lifecycle expiration; no retention was
-  deleted by this task. A same-memory Spot proposal, capped at $0.018/hour and
-  reusing the existing journal disk, estimates $39.76 for October if the old
-  server stops by 18:00 PDT today, and about $31.03 for a full later 31-day month.
-  It includes retained temporary boot storage, existing S3, IPv4, the approved
-  $1 attempt and a reserve. It is a conditional planning estimate, not verified
-  spend-policy evidence. Owner acceptance of interruption/collection gaps and
-  keeping the old server stopped after a failed cutover is pending; do not
-  launch Spot or schedule shutdown based only on this proposal. The Mac is
-  actually on battery, so the one bounded independent restore also awaits AC.
-  Background research remains OFF even if manual maintenance proceeds.
-- **Latest loss update (October 15, 14:27 PDT):** a fresh bounded, query-only
-  same-transaction AWS audit found October 12–14 completed PDT P&L of −$3.64
-  for Live Stability and −$31.2722 for Research ROI V6, with $1.10 and $3.21
-  included fees. October 5–14 totals are −$38.42 and −$52.7794 respectively.
-  October 15 is partial: +$2.19 and +$3.48. Realized ledger equities are
-  $1,033.4485 and $970.3159, each from a separate $1,000 opening account.
-  Both independently match opening cash plus retained realized order P&L;
-  this includes still-open partial-expired filled lots in cost basis, and
-  zero outstanding reservations. Full market marks remain unavailable. These
-  are paper outcomes under the installed old policy, not V7 results. New
-  indexed traces reproduce model-veto then catastrophic-stop exits in Boston
-  and Denver. Research V6's Houston October 13 logical position lost $16.87
-  across two close lots; Denver October 14 lost $11.55 across two lots. These
-  observed exits do not quantify avoidable loss or prove a V7 counterfactual.
-  The October 11 all-account/order-lifecycle reconciliation remains the last full
-  reconciliation; this latest bounded summary is not a replacement for it.
-- **Recent paper losses:** October 5–10 completed PDT booking dates lost $38.21
-  in Live Stability and $19.6772 in Research ROI V6. Their separate realized
-  ledger equities at 21:57 PDT are $1,034.8985 and $998.1081, each from its own
-  $1,000 paper account. October 11 is partial: +$3.43 and −$1.83. Never combine
-  these capitals or borrow V6 results for V7. Live's recent Dallas, Atlanta and
-  Austin attribution is −$13.95, −$12.54 and −$8.02. V6's full retained winners
-  at the earlier 13:03 PDT snapshot earned $513.7007 while losers cost
-  $512.5426. That snapshot's 71.90% win rate barely clears
-  its 71.85% observed payout break-even rate. Fees are included, not subtracted
-  twice. Bounded monitor traces show normal stops vetoed by still-high model
-  probabilities, followed by worse catastrophic exits; the model reads were
-  minutes old. No avoided-dollar claim or recent partial-loss-memory incident
-  is established by the nine sampled roots. Full sanitized evidence is in
-  `docs/audits/2026-10-11-v7-priorities.md`.
-- **Five-city training actually collected:** Las Vegas, Minneapolis, San Antonio,
-  New Orleans and Washington DC now each have 120 matched final-truth dates at
-  leads 1 and 2 with eight named models: 9,600 reconstructed NWP rows and
-  600 attributed final observations in the transferable bundle. Fourteen
-  original NWS finals retain their source/clocks, with matching independent
-  IEM corroboration appended from retained responses using zero new GETs.
-  These data are in the separate Mac store. Root independently verified counts, final-truth joins,
-  raw-evidence references and zero FK errors. Current retrieval clocks, raw
-  hashes, station/model scope and provider attribution are preserved; original
-  initialization/availability remains unknown. These are training values, not
-  originally issued historical vintages, AWS evidence or paper profit. AWS
-  onboarding requires the separate guarded import after safe cutover.
-- **Final reports recovered:** the four older Mac gaps have original archived
-  NWS text/hashes: Los Angeles October 5 = 101°F; Austin October 6 = 90°F;
-  Denver October 6/7 = 87/81°F. Two exposed a parser defect: valid record-high
-  tokens `101R` and `87R` were rejected. Both parsers now accept only an official
-  optional R flag on a complete integer token; missing/malformed/fractional
-  values stay rejected. Retained raw reports replayed with zero new GETs.
-  Phoenix September 27 remains explicit M in its archive; the three AWS paper
-  positions must remain unresolved. A fresh 13:33 PDT AWS indexed audit found
-  464/465 final station/dates for September 10–October 10, with Phoenix the
-  sole gap; the four Mac recoveries were already final in AWS. One additional
-  native-guarded GET retrieved the original Phoenix report: it truly contains
-  MAXIMUM MM, not a rejected numeric record flag. Record/normal/last-year
-  columns cannot substitute. No numeric final exists to settle those positions.
-  Houston uses KHOU (October 10 = 86°F), not KIAH. Initial historical recovery used eighteen bounded free GETs,
-  within eight per batch and the shared 96/day ceiling. No paid provider used.
-- **Recovery/cutover preparation:** the 21:48 PDT journal is 34.82 GiB with
-  16.37 GiB free, still short for canonical backup plus margin. An opt-in compressed
-  S3/offhost restore path is implemented and under exact-candidate validation:
-  shared installed-worker lock and configuration hash, exact bucket/prefix/
-  region plus hash-bound 24-hour operator evidence of existing 35-day retention
-  and enabled versioning (no IAM expansion), 8-GiB hard archive
-  ceiling, encrypted/versioned durable S3, independently downloaded manifest,
-  raw/compressed hashes, full SQLite integrity/FK checks, FileVault and native
-  Mac guards, frozen source identity immediately before transfer. Sampling
-  suggests about 4.72 GiB compressed but does not guarantee that size. After the
-  owner signed in, actual billing/control reads at 21:49–21:54 PDT found no
-  active credits or applicable S3 free storage, $16.59 month-to-date charges,
-  and billable S3 storage at $0.026/GB-month. Internet transfer out is 32.756 GB
-  under the 100-GB global monthly allowance; free transfer does not make retained
-  storage or requests free. Existing snapshot versioning is Enabled, with
-  35-day current expiration plus seven noncurrent days; cost evidence must cover
-  both periods. The October 11 zero-extra-spend deferment is superseded by the
-  October 12 explicit one-attempt approval and $40 total monthly cap. The prepared
-  bounded-spend path uses conditional single-PUT parts and a persistent full-cap
-  reservation; it cannot leave incomplete multipart uploads outside the verified
-  lifecycle. Fresh whole-account projections must fit $40 in every retained-
-  storage month, including the full $1 allowance. No cost policy is fabricated
-  and no AWS write or deployment has occurred. Latest read-only AWS source
-  inspection at October 12, 20:29 PDT still found exec-v4 and no V7 tables.
-  A bounded native supervisor probe on October 12 passed actual pause/resume
-  and cleanup signals after AC power was connected; it did not prove a full
-  database restore. Fresh native admission remains required. Full independent
-  restore has not run.
-  An opt-in SHA-pinned raw-replayed weather-only bundle import runs while
-  maintenance holds every producer and refuses conflicts before timer recovery.
-  Installed archive-only behavior must be explicitly preserved at cutover:
-  its old default is archive-only while current source defaults bounded-delete.
-- **V7/prospective boundary:** V7 source already changes correctness for both
-  active profiles. Live Stability retains its economic ledger with a fresh
-  evidence cohort; Research ROI gets a new V7 account while V6 filled exposure
-  settles. Archived generations remain entry-frozen. New source links decisions
-  to exact content-verified immutable served vintages with a compact allowlisted
-  receipt; missing initialization, hour completeness, truth-publication and
-  serving-code provenance stays explicit and unqualified. No admission gate is
-  relaxed. At least thirty completed independent prospective weather dates in
-  one account/policy plus realistic net fills, fees, gross losses, exposure and
-  positive uncertainty evidence are needed before capital selection. The
-  present evidence does not support an initial real-money bankroll; live $0.
-  Exact merged-main CI at `a1c2d6e32` passed Python 3.12/3.13 with 3,878 tests
-  each, twelve skips, 74 subtests, zero Semgrep findings and Web 223 tests/all
-  build gates. Independent reviews recomputed loss/fee/position conclusions,
-  passed fifty recovery tests and 54 account/lifecycle cases. Fresh AWS indexes
-  match current reporting definitions and all retention indexes exist, avoiding
-  another full-size index build. The pinned five-city bundle has no AWS history
-  conflicts and reverified locally. During a future guarded deployment, stage
-  paper placement off until fresh V7 forecaster rows for all twenty cities are
-  verified, then restore the existing paper flags. Preserve real-live off/dry-run
-  on and all archived account attribution.
-- **Local operation (owner switch, October 15):** the owner requested an easy
-  way to stop Mac background research while using battery power. WeatherEdge
-  Control is installed in the user's Applications folder with a Desktop
-  shortcut and Turn Off / Turn On buttons. Both buttons were driven through
-  the native UI and verified against launchd and the shared worker lock. The
-  final saved preference is **OFF**, LaunchAgent unloaded/disabled and worker
-  idle. Keep this preference across source maintenance, reinstall and reboot;
-  do not silently restore the old enabled schedule. The control app exits after
-  use and adds no background monitor. Turning on resumes the existing two-hour
-  schedule with no immediate run, 300-second wall / 120-second CPU ceiling,
-  half-core, one numeric thread, 2-GiB RSS and all native resource gates intact.
-  Scheduled work checks the private pause marker before work and during child
-  supervision, cleaning up the owned child session before unload. Battery
-  power still defers admission; unplugging during work stops it at the next
-  native power check. AWS paper trading continues independently. Explicit
-  manual recovery has separate authorization and the same native guards.
-  Focused validation passed 147 tests and 74 subtests, including actual child
-  cancellation on owner pause and simulated power loss. No weather API or AWS
-  mutation was used for switch verification. The older scheduled SIGSTOP
-  permission failure remains a separate unresolved incident; this switch does
-  not claim to repair it. See `docs/local_compute.md` for operation.
+- **Owner scope (November 1–2):** find missing fixes, bugs and unfinished work.
+  Explain the $43.34 October AWS bill and bring AWS under $20/month. Redesign the
+  website and verify every number on `#/lab`. Make the model profitable again.
+  The owner approved in chat:
+  - the one-file scan-crash hotfix;
+  - copying full history to the Mac and trimming AWS;
+  - moving production to a t4g.small Spot host;
+  - publishing the redesign after review;
+  - deploying main (V7 plus the November fixes) after CI;
+  - correcting wrong settlements;
+  - a paper-only M1 market-recalibration trial in a NEW $10,000 paper account. M1's
+    entry rule replaces the model-based signal gates for that account only, and
+    every risk limit stays.
+
+  Alerts are skipped for now because there is no destination. Real-money
+  trading, retention deletion beyond the November 1 trim, and weakened risk or
+  promotion gates remain unauthorized.
+- **Incident, October 27 09:46 PT → November 1 14:02 PT:**
+  - **Cause:** Kalshi finalized LA Oct 22 and Boston Oct 24 with the winning
+    bracket label in `expiration_value` ("70° to 71°", "56° or below").
+    `MarketBin.from_kalshi` passed the label to `float()` inside the rolling
+    listing.
+  - **Effect:** every 5-minute portfolio scan exited 1, about 1,300 consecutive
+    failures. Under `set -e` the research profile never ran. No paper order was
+    created in either account for five days. Monitor and settle kept running.
+  - **Detection:** nothing alerted. Scheduler health only checked that timers
+    were active.
+  - **Fix:** owner-approved hotfix commit `45015a3d6` changed only `models.py`.
+    PR #156 (`b1f02edf1`) carries the parser fix plus profile-independent scanning
+    to `main`.
+- **Settlement source:** Kalshi series now name "The Weather Company". Its
+  settled values equal NWS CLI highs on 1018 of 1019 station-days from Aug 25 to
+  Oct 31. Not a cause of losses.
+- **AWS bill and hosting:**
+  - **October invoice, $43.34:** on-demand t4g.medium $29.76, 64 GB gp3 $6.14,
+    public IPv4 $3.72, S3 $2.45, an unused Lightsail static IP $1.25, transfer
+    $0.02. AWS bills provisioned hours, not work done.
+  - **Cutover, November 1 19:00–19:13 PT:** production moved to a t4g.small Spot
+    host (persistent request, stop on interruption, standard credits) with an
+    encrypted 60 GB gp3 root and an Elastic IP. The host is in the same subnet,
+    security group and backup role. The exact old tree, units, env and journals
+    were copied; all 14 timers were restored and a real publication matched the
+    public manifest.
+  - **Old host:** the t4g.medium is STOPPED, not terminated, with its full
+    journal and disk kept for rollback. Only the owner may delete it.
+  - **Expected cost:** about $14–16/month.
+- **Disk and data:**
+  - **Only full copy of history:** the full 48.5 GB journal is on the Mac,
+    SHA-verified, in the gitignored `.local/migration-20261101/full/`. It is the
+    only complete copy of history older than about 90 days. Keep it and back it up.
+  - **Production journal:** trimmed with the deployed
+    `prune_decision_snapshots(full_days=1, dedup_days=45)` to 17.17 GiB (Nov 1).
+    It was 17.75 GiB on Nov 2 and grows about 0.57 GiB/day.
+  - **Retention:** the installed backend defaults to archive-only. Main defaults
+    to bounded-delete, so every deploy of main must keep `SFO_PRUNE_MODE=archive-only`
+    (the installer appends it when the key is missing). Deletion is not
+    authorized, and audit F9 found that S3 archive copies expire at 90 days.
+  - **Owner decision pending (soon):** under archive-only, the same-volume deploy
+    backup (journal plus 1 GiB free) stops fitting about 8 days after Nov 2.
+- **Production snapshot (November 2, 19:27 PT):**
+  - Backend is still `2a6432e3` plus hotfix `45015a3d6`.
+  - 0 failed units and 14 timers. 288 of 288 scans OK in 24 h (median tick 18 s,
+    maximum 74 s). Disk 51%.
+  - Spot interruptions at 12:31 and 17:07 PT, about 1 minute each, recovered on
+    their own.
+  - Active ledgers: Live Stability and Research V6. V6 has one open lot.
+  - Paper placement flags on. Live trading off, dry-run on.
+- **Where the money went (1,688 resolved positions, Jun 10–Oct 27, all accounts):**
+  - Realized +$41.86 in total, which is break-even.
+  - By exit type:
+
+    | Exit | Positions | Result |
+    |---|---|---|
+    | Held to settlement | 602 | 98.5% won, +$538 |
+    | Take-profit | 269 | +$339 |
+    | Stop-loss | 515 | −$744 (holding would have been −$622) |
+
+  - The model was overconfident on the trades it took, while prices were close
+    to calibrated.
+  - Same-day entries returned −17.7% ROI and next-day entries +2.0%.
+- **Research verdict and M1:**
+  - **Weather model:** on the full history, no policy driven by the weather model
+    is profitable out of sample at taker prices.
+  - **M1 signal:** the market's favorite–longshot bias ("M1": a frozen logit
+    recalibration of the market price, day-ahead, first research scan of each
+    UTC hour) is the only positive signal.
+  - **Adversarial verification:** GO for a PAPER-ONLY test with low confidence.
+    Expected ROI after the multiple-comparisons haircut is about 0% to +2.5%
+    (central about +1%). Trades where the model agrees with M1 are the strongest
+    lead and are pre-registered as a co-primary.
+  - **Owner and implementation decisions:**
+    - $10,000 capital.
+    - $10 per entry and a −$300 cumulative loss stop. Both were calibrated to $10
+      stakes, and the 25-contract and displayed-size clamps bind first.
+    - Daily-loss pause at 15% of equity. It never binds; the −$300 stop is the
+      real control.
+- **November audit and fixes:**
+  - **Audit (November 1, report-only):** found money-path defects in both
+    `2a6432e3` and `main`, silent operational failures, combined account books,
+    and a never-re-checked wrong settlement.
+  - **PR #162:** nine fixes and an evening heartbeat hold.
+    - F1 newest-observation time
+    - F2 post-peak cap
+    - F10 trim-only joint Kelly
+    - F13 monitor isolation
+    - F6 settled-lot re-check with a dry-run restate preview
+    - F7 per-account city books
+    - F12 report during a Kalshi outage
+    - F11 backfill isolation
+    - F5 per-profile scan-success health check
+    - After the maximum is more than 90 minutes old, the heartbeat journals a
+      read only while the post-peak cap is engaged. Otherwise the position holds
+      without a read, as before.
+
+    F3/F4, the stop veto design, were refuted. F9 remains open. The PR was
+    reviewed per fix, by an integration panel and by ChatGPT, and is not deployed.
+  - **M1 branch:** built (a new research sleeve, its own ledger, stop rules,
+    daily reconciliation and published book). Its review confirmed 12 findings,
+    which are being fixed; it ships as its own PR. Placement flag
+    `PAPER_PLACE_RESEARCH_M1` defaults to off.
+  - **Deploy plan:** main (V7) plus the fixes plus the five-city onboarding
+    bundle. Pre-checks passed:
+    - indexes current;
+    - zero existing rows for the five new stations;
+    - bundle verified against its pinned content SHA;
+    - account cutover rehearsed on a clone of the Nov 1 journal.
+  - **What the V7 deploy changes:**
+    - 13 timers (the Apple refresh is retired).
+    - V6 is archived, and its open lots still settle.
+    - V7 becomes active at $1,000.
+    - behavior-v4 fingerprints.
+    - Twenty published cities.
+  - **Rollback:** after V7 migrates the journal, old code cannot run on it, so
+    fix forward.
+- **Website:**
+  - The redesign is live (PR #158; ChatGPT pre-publish GO; release receipt
+    `public_verified`).
+  - Audit F28: the Lab's policy lineage skips v6 once V7 is live. It will be
+    fixed with the M1 page in one site release, which needs the owner's OK to
+    publish.
+- **Lot 3687 (LA Oct 22, Research V6, NO):** booked at 72 °F for −$2.38. The
+  final is 71 °F, which is +$0.62 (+$3.00). The new settle re-check flags it.
+  Applying a restatement needs an explicit apply path, because the shipped
+  `paper-resettle --verify --restate` is a dry run only.
 
 ## Prior Session Brief Snapshots (through October 11, 11:38 PDT)
 
@@ -658,6 +626,184 @@ above supersedes their operational status; preserve their evidence and attributi
 
 ## Prior session briefs (dated snapshots)
 
+- **Session Brief of October 12–15 (superseded November 2):** the bullets below were the
+  Session Brief until the November 1–2 session.
+- **Owner scope (October 12):** verify and complete five-city attributed training,
+  missing final reports, budget-compatible recovery and V7 activation across the
+  two active paper profiles, then gather realistic prospective evidence before
+  selecting real capital. The owner wants activation today and better results.
+  The owner explicitly approved the proposed one recovery/cutover attempt up
+  to $1 and confirmed a new **$40 total AWS budget per calendar month**, including
+  existing infrastructure, storage and backups. This supersedes the previous
+  zero-increment spending restriction. The recovery allowance belongs inside
+  the monthly cap, not on top of it. Persist it across failed attempts and month
+  rollover; another paid attempt needs a new authorization. Do not deploy or add
+  charges based only on month-to-date headroom: verify the projected full month
+  and each month of retained backup storage. The last verified forecast was
+  $54.50 on October 5, so the $40 cap is not yet proved feasible. October 12's
+  console session has expired; fresh billing sign-in is pending. Real-money
+  trading, retention deletion, weakened risk or promotion gates, and sustained
+  intensive Mac work remain unauthorized.
+  A same-day profit improvement cannot be demonstrated from a new policy era.
+- **Latest production snapshot (October 15, 14:15 PDT):** AWS remains clean
+  September 4 backend `2a6432e3`, exec-v4 and fifteen deployed cities, with no V7
+  weather-vintage/member tables. Both paper placement flags remain on; real
+  execution is off and dry-run on. Canonical integrity passed for all 29 units,
+  zero units failed and no maintenance marker exists. The paper database is
+  37.29 GiB with 13.53 GiB free; local canonical backup still cannot fit.
+  No source cutover, S3 backup upload or history import has occurred. Source
+  main includes bounded recovery PR #147 at `4a089719c` and Mac control PR #153
+  at `1b3c40b4a`. The exact merged-main Python 3.12/3.13 and Web checks passed
+  for `1b3c40b4a`; this is source validation, not an AWS backend release.
+  Latest public artifact verification remains the dated October 11 snapshot;
+  fresh publication must not be presented as fresh historical analysis.
+- **Current cost/recovery decision (October 15, about 15:00 PDT):** current
+  hosting remains the same 4-GiB ARM server at $0.04/hour, one 64-GiB gp3
+  volume and standard CPU credits; there is no elastic IP allocation to remove.
+  Existing S3 lifecycle/versioning was freshly verified unchanged. Daily
+  standard-storage bytes declined from 144.73 billion on October 12 to 89.41
+  billion on October 14 under existing lifecycle expiration; no retention was
+  deleted by this task. A same-memory Spot proposal, capped at $0.018/hour and
+  reusing the existing journal disk, estimates $39.76 for October if the old
+  server stops by 18:00 PDT today, and about $31.03 for a full later 31-day month.
+  It includes retained temporary boot storage, existing S3, IPv4, the approved
+  $1 attempt and a reserve. It is a conditional planning estimate, not verified
+  spend-policy evidence. Owner acceptance of interruption/collection gaps and
+  keeping the old server stopped after a failed cutover is pending; do not
+  launch Spot or schedule shutdown based only on this proposal. The Mac is
+  actually on battery, so the one bounded independent restore also awaits AC.
+  Background research remains OFF even if manual maintenance proceeds.
+- **Latest loss update (October 15, 14:27 PDT):** a fresh bounded, query-only
+  same-transaction AWS audit found October 12–14 completed PDT P&L of −$3.64
+  for Live Stability and −$31.2722 for Research ROI V6, with $1.10 and $3.21
+  included fees. October 5–14 totals are −$38.42 and −$52.7794 respectively.
+  October 15 is partial: +$2.19 and +$3.48. Realized ledger equities are
+  $1,033.4485 and $970.3159, each from a separate $1,000 opening account.
+  Both independently match opening cash plus retained realized order P&L;
+  this includes still-open partial-expired filled lots in cost basis, and
+  zero outstanding reservations. Full market marks remain unavailable. These
+  are paper outcomes under the installed old policy, not V7 results. New
+  indexed traces reproduce model-veto then catastrophic-stop exits in Boston
+  and Denver. Research V6's Houston October 13 logical position lost $16.87
+  across two close lots; Denver October 14 lost $11.55 across two lots. These
+  observed exits do not quantify avoidable loss or prove a V7 counterfactual.
+  The October 11 all-account/order-lifecycle reconciliation remains the last full
+  reconciliation; this latest bounded summary is not a replacement for it.
+- **Recent paper losses:** October 5–10 completed PDT booking dates lost $38.21
+  in Live Stability and $19.6772 in Research ROI V6. Their separate realized
+  ledger equities at 21:57 PDT are $1,034.8985 and $998.1081, each from its own
+  $1,000 paper account. October 11 is partial: +$3.43 and −$1.83. Never combine
+  these capitals or borrow V6 results for V7. Live's recent Dallas, Atlanta and
+  Austin attribution is −$13.95, −$12.54 and −$8.02. V6's full retained winners
+  at the earlier 13:03 PDT snapshot earned $513.7007 while losers cost
+  $512.5426. That snapshot's 71.90% win rate barely clears
+  its 71.85% observed payout break-even rate. Fees are included, not subtracted
+  twice. Bounded monitor traces show normal stops vetoed by still-high model
+  probabilities, followed by worse catastrophic exits; the model reads were
+  minutes old. No avoided-dollar claim or recent partial-loss-memory incident
+  is established by the nine sampled roots. Full sanitized evidence is in
+  `docs/audits/2026-10-11-v7-priorities.md`.
+- **Five-city training actually collected:** Las Vegas, Minneapolis, San Antonio,
+  New Orleans and Washington DC now each have 120 matched final-truth dates at
+  leads 1 and 2 with eight named models: 9,600 reconstructed NWP rows and
+  600 attributed final observations in the transferable bundle. Fourteen
+  original NWS finals retain their source/clocks, with matching independent
+  IEM corroboration appended from retained responses using zero new GETs.
+  These data are in the separate Mac store. Root independently verified counts, final-truth joins,
+  raw-evidence references and zero FK errors. Current retrieval clocks, raw
+  hashes, station/model scope and provider attribution are preserved; original
+  initialization/availability remains unknown. These are training values, not
+  originally issued historical vintages, AWS evidence or paper profit. AWS
+  onboarding requires the separate guarded import after safe cutover.
+- **Final reports recovered:** the four older Mac gaps have original archived
+  NWS text/hashes: Los Angeles October 5 = 101°F; Austin October 6 = 90°F;
+  Denver October 6/7 = 87/81°F. Two exposed a parser defect: valid record-high
+  tokens `101R` and `87R` were rejected. Both parsers now accept only an official
+  optional R flag on a complete integer token; missing/malformed/fractional
+  values stay rejected. Retained raw reports replayed with zero new GETs.
+  Phoenix September 27 remains explicit M in its archive; the three AWS paper
+  positions must remain unresolved. A fresh 13:33 PDT AWS indexed audit found
+  464/465 final station/dates for September 10–October 10, with Phoenix the
+  sole gap; the four Mac recoveries were already final in AWS. One additional
+  native-guarded GET retrieved the original Phoenix report: it truly contains
+  MAXIMUM MM, not a rejected numeric record flag. Record/normal/last-year
+  columns cannot substitute. No numeric final exists to settle those positions.
+  Houston uses KHOU (October 10 = 86°F), not KIAH. Initial historical recovery used eighteen bounded free GETs,
+  within eight per batch and the shared 96/day ceiling. No paid provider used.
+- **Recovery/cutover preparation:** the 21:48 PDT journal is 34.82 GiB with
+  16.37 GiB free, still short for canonical backup plus margin. An opt-in compressed
+  S3/offhost restore path is implemented and under exact-candidate validation:
+  shared installed-worker lock and configuration hash, exact bucket/prefix/
+  region plus hash-bound 24-hour operator evidence of existing 35-day retention
+  and enabled versioning (no IAM expansion), 8-GiB hard archive
+  ceiling, encrypted/versioned durable S3, independently downloaded manifest,
+  raw/compressed hashes, full SQLite integrity/FK checks, FileVault and native
+  Mac guards, frozen source identity immediately before transfer. Sampling
+  suggests about 4.72 GiB compressed but does not guarantee that size. After the
+  owner signed in, actual billing/control reads at 21:49–21:54 PDT found no
+  active credits or applicable S3 free storage, $16.59 month-to-date charges,
+  and billable S3 storage at $0.026/GB-month. Internet transfer out is 32.756 GB
+  under the 100-GB global monthly allowance; free transfer does not make retained
+  storage or requests free. Existing snapshot versioning is Enabled, with
+  35-day current expiration plus seven noncurrent days; cost evidence must cover
+  both periods. The October 11 zero-extra-spend deferment is superseded by the
+  October 12 explicit one-attempt approval and $40 total monthly cap. The prepared
+  bounded-spend path uses conditional single-PUT parts and a persistent full-cap
+  reservation; it cannot leave incomplete multipart uploads outside the verified
+  lifecycle. Fresh whole-account projections must fit $40 in every retained-
+  storage month, including the full $1 allowance. No cost policy is fabricated
+  and no AWS write or deployment has occurred. Latest read-only AWS source
+  inspection at October 12, 20:29 PDT still found exec-v4 and no V7 tables.
+  A bounded native supervisor probe on October 12 passed actual pause/resume
+  and cleanup signals after AC power was connected; it did not prove a full
+  database restore. Fresh native admission remains required. Full independent
+  restore has not run.
+  An opt-in SHA-pinned raw-replayed weather-only bundle import runs while
+  maintenance holds every producer and refuses conflicts before timer recovery.
+  Installed archive-only behavior must be explicitly preserved at cutover:
+  its old default is archive-only while current source defaults bounded-delete.
+- **V7/prospective boundary:** V7 source already changes correctness for both
+  active profiles. Live Stability retains its economic ledger with a fresh
+  evidence cohort; Research ROI gets a new V7 account while V6 filled exposure
+  settles. Archived generations remain entry-frozen. New source links decisions
+  to exact content-verified immutable served vintages with a compact allowlisted
+  receipt; missing initialization, hour completeness, truth-publication and
+  serving-code provenance stays explicit and unqualified. No admission gate is
+  relaxed. At least thirty completed independent prospective weather dates in
+  one account/policy plus realistic net fills, fees, gross losses, exposure and
+  positive uncertainty evidence are needed before capital selection. The
+  present evidence does not support an initial real-money bankroll; live $0.
+  Exact merged-main CI at `a1c2d6e32` passed Python 3.12/3.13 with 3,878 tests
+  each, twelve skips, 74 subtests, zero Semgrep findings and Web 223 tests/all
+  build gates. Independent reviews recomputed loss/fee/position conclusions,
+  passed fifty recovery tests and 54 account/lifecycle cases. Fresh AWS indexes
+  match current reporting definitions and all retention indexes exist, avoiding
+  another full-size index build. The pinned five-city bundle has no AWS history
+  conflicts and reverified locally. During a future guarded deployment, stage
+  paper placement off until fresh V7 forecaster rows for all twenty cities are
+  verified, then restore the existing paper flags. Preserve real-live off/dry-run
+  on and all archived account attribution.
+- **Local operation (owner switch, October 15):** the owner requested an easy
+  way to stop Mac background research while using battery power. WeatherEdge
+  Control is installed in the user's Applications folder with a Desktop
+  shortcut and Turn Off / Turn On buttons. Both buttons were driven through
+  the native UI and verified against launchd and the shared worker lock. The
+  final saved preference is **OFF**, LaunchAgent unloaded/disabled and worker
+  idle. Keep this preference across source maintenance, reinstall and reboot;
+  do not silently restore the old enabled schedule. The control app exits after
+  use and adds no background monitor. Turning on resumes the existing two-hour
+  schedule with no immediate run, 300-second wall / 120-second CPU ceiling,
+  half-core, one numeric thread, 2-GiB RSS and all native resource gates intact.
+  Scheduled work checks the private pause marker before work and during child
+  supervision, cleaning up the owned child session before unload. Battery
+  power still defers admission; unplugging during work stops it at the next
+  native power check. AWS paper trading continues independently. Explicit
+  manual recovery has separate authorization and the same native guards.
+  Focused validation passed 147 tests and 74 subtests, including actual child
+  cancellation on owner pause and simulated power loss. No weather API or AWS
+  mutation was used for switch verification. The older scheduled SIGSTOP
+  permission failure remains a separate unresolved incident; this switch does
+  not claim to repair it. See `docs/local_compute.md` for operation.
 - **October 2 outage recovery (08:13 PDT snapshot):** a redundant local rollback
   snapshot plus journal growth exhausted disk space, interrupting forecasts,
   paper scans and publication. The local snapshot was deleted only after its
@@ -1726,7 +1872,8 @@ At the 2026-07-26 verification:
 1. Print the `Session Brief` above before taking action.
 2. Confirm the checkout is clean and compare local `HEAD` with `origin/main`.
 3. When production state matters, freshly revalidate runtime source, failed
-   units, all 14 timers, unit integrity, manifest parity/freshness, disk, active
+   units, all 14 timers (13 after the V7 deploy retires the Apple refresh), unit
+   integrity, manifest parity/freshness, disk, active
    ledger reconciliation, readiness scope, and real-money safety flags.
 4. Keep the narrow owner SSH rule until the owner says access is finished.
 5. Continue observing later natural Strategy refreshes and archived-position

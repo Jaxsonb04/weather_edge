@@ -320,6 +320,14 @@ def cmd_paper_resettle(args: argparse.Namespace) -> int:
             (city_today - timedelta(days=args.days - 1)).isoformat(),
             city_today.isoformat(),
         )
+    if getattr(args, "restate", False):
+        # The preview must not write, so it opens the journal without
+        # PaperStore.init: init migrates the schema and can expire resting
+        # orders from older execution semantics, appending ledger rows.
+        _preview_settlement_restatement(
+            color, PaperStore(args.db_path, init=False), args, intervals
+        )
+        return 0
     store = PaperStore(args.db_path)
     if getattr(args, "exchange_check_only", False):
         # Backfilling exchange verdicts must not move restatement evidence:
@@ -378,6 +386,64 @@ def _verify_booked_settlements(
             f"checked={len(result['checked'])} mismatches={result['mismatches']} "
             f"missing_final_truth={result['missing_truth']} "
             "(booked P&L unchanged)"
+        )
+    )
+
+
+def _preview_settlement_restatement(
+    color: Color,
+    store: PaperStore,
+    args: argparse.Namespace,
+    intervals: dict[str, tuple[str, str]],
+) -> None:
+    """Dry run of restating each lot whose booked high disagrees with truth.
+
+    Restating a lot rewrites its booked outcome and P&L, which is ledger
+    history and needs the owner's approval, so this path only reports what each
+    restatement would book. It writes nothing -- no order, ledger row,
+    verification row or exchange check -- and makes no network call. Each
+    account is totalled on its own; the books are never combined.
+    """
+
+    result = store.recheck_paper_settlements(
+        SfoForecasterAdapter(args.forecaster_root).load_cli_settlement_truth(),
+        intervals=intervals,
+    )
+    print(
+        color.cyan(
+            "settlement restatement (dry run): nothing written; booked P&L and "
+            "the ledger unchanged"
+        )
+    )
+    per_account: dict[str, tuple[int, float]] = {}
+    for row in result["drift"]:
+        print(
+            color.yellow(
+                f"RESTATE order={row['order_id']} account={row['account_id']} "
+                f"market={row['market_ticker']} target={row['target_date']} "
+                f"{row['side']} x{row['contracts']:g} "
+                f"booked={row['booked_high_f']:.0f}F final={row['final_high_f']:.0f}F "
+                f"pnl={_format_signed(row['booked_realized_pnl'])}->"
+                f"{_format_signed(row['restated_realized_pnl'])} "
+                f"delta={_format_signed(row['pnl_delta'])} "
+                f"verification={row['recorded_status'] or 'none'}"
+            )
+        )
+        lots, delta = per_account.get(row["account_id"], (0, 0.0))
+        per_account[row["account_id"]] = (lots + 1, delta + (row["pnl_delta"] or 0.0))
+    for account, (lots, delta) in sorted(per_account.items()):
+        print(
+            color.cyan(
+                f"settlement restatement (dry run): account={account} lots={lots} "
+                f"pnl_delta={delta:+.2f}"
+            )
+        )
+    print(
+        color.cyan(
+            "settlement restatement (dry run): "
+            f"checked={result['checked']} restatable={len(result['drift'])} "
+            f"missing_final={result['missing_final']} (each account on its own; "
+            "never combined)"
         )
     )
 
@@ -634,6 +700,7 @@ def cmd_paper_auto_settle(args: argparse.Namespace) -> int:
     store = PaperStore(args.db_path)
     cities = _cities_for_args(args)
     code = _settle_completed_paper_targets(args, color, store, cities)
+    _recheck_booked_settlements(color, store, args, cities)
     # The exchange reconciliation runs on every tick, not only on ticks
     # that settled something: a market can still be unfinalized when its
     # lot settles (KXHIGHMIA-26AUG29 settled at 12:00 UTC, an hour after
@@ -672,7 +739,6 @@ def _settle_completed_paper_targets(
     any_open = False
     db_settled = 0
     verification_truth: dict[tuple[str, str], float] = {}
-    settled_intervals: dict[str, tuple[str, str]] = {}
     outcomes_recorded = 0
     for city in cities:
         open_targets = _completed_open_target_dates(
@@ -750,13 +816,6 @@ def _settle_completed_paper_targets(
                 verification_truth[(city.series_ticker, target_date)] = settlements[
                     target_date
                 ]
-                lower, upper = settled_intervals.get(
-                    city.series_ticker, (target_date, target_date)
-                )
-                settled_intervals[city.series_ticker] = (
-                    min(lower, target_date),
-                    max(upper, target_date),
-                )
 
     if outcomes_recorded:
         print(
@@ -783,10 +842,22 @@ def _settle_completed_paper_targets(
         # Audit ST-01: every settlement is immediately re-verified read-only
         # against the same final truth and persisted idempotently (one row per
         # settled order). Verification never edits P&L; a mismatch is an
-        # incident signal, so it goes loudly to stderr.
-        verification = store.verify_paper_settlements(
-            verification_truth, intervals=settled_intervals
-        )
+        # incident signal, so it goes loudly to stderr. Only the exact
+        # (series, date) pairs settled now: one interval spanning this tick's
+        # earliest and latest dates also re-verified lots settled between them
+        # on earlier ticks, against a truth map holding only this tick's dates,
+        # and rewrote their MATCH rows to MISSING_FINAL. Later changes to a final
+        # are _recheck_booked_settlements' job; it escalates them but does not
+        # repair MISSING_FINAL rows the older interval verify already wrote.
+        verification = {"checked": [], "mismatches": 0, "missing_truth": 0}
+        for (series, target_date), high in verification_truth.items():
+            result = store.verify_paper_settlements(
+                {(series, target_date): high},
+                intervals={series: (target_date, target_date)},
+            )
+            verification["checked"].extend(result["checked"])
+            verification["mismatches"] += result["mismatches"]
+            verification["missing_truth"] += result["missing_truth"]
         for row in verification["checked"]:
             if row["verification_status"] == "MATCH":
                 continue
@@ -811,6 +882,101 @@ def _settle_completed_paper_targets(
     else:
         print(color.yellow("auto-settle: completed open targets remain but no CLI truth is available yet"))
     return 0
+
+
+# The timer re-checks the window `paper-resettle --verify` sweeps by default,
+# the one the runbook's health and finality checks already rewrite. A final
+# corrected later than that is left to that operator sweep.
+AUTO_SETTLE_TRUTH_RECHECK_DAYS = 14
+
+
+def _recheck_booked_settlements(
+    color: Color,
+    store: PaperStore,
+    args: argparse.Namespace,
+    cities: tuple[CityConfig, ...],
+) -> None:
+    """Re-check recently settled lots against today's final truth, every tick.
+
+    Settling verifies a lot against the value it was just settled from, so its
+    row says MATCH by construction, and most ticks settle nothing. This re-reads
+    every station's final from weather.db and flips to MISMATCH the row of any
+    lot whose final has changed since. It never writes a first row, never
+    clears a flag and never re-books P&L (``PaperStore.recheck_paper_settlements``).
+    A flip is stricter evidence: restatement then reports SETTLEMENT_MISMATCH
+    and the replay drops the lot. Like the exchange guard, it can never change
+    the command's exit status.
+    """
+
+    try:
+        intervals = {}
+        for city in cities:
+            city_today = settlement_today(city=city)
+            intervals[city.series_ticker] = (
+                (
+                    city_today - timedelta(days=AUTO_SETTLE_TRUTH_RECHECK_DAYS - 1)
+                ).isoformat(),
+                city_today.isoformat(),
+            )
+        result = store.recheck_paper_settlements(
+            SfoForecasterAdapter(args.forecaster_root).load_cli_settlement_truth(),
+            intervals=intervals,
+            record=True,
+        )
+        for row in result["drift"]:
+            # A flip is announced once. A lot with no verification row cannot
+            # be recorded here, so it is repeated while it stays in the window.
+            if not row["flagged"] and row["recorded_status"] is not None:
+                continue
+            print(
+                color.red(
+                    "SETTLEMENT VERIFICATION MISMATCH: "
+                    f"order={row['order_id']} market={row['market_ticker']} "
+                    f"target={row['target_date']} booked={row['booked_high_f']:.0f}F "
+                    f"final={row['final_high_f']:.0f}F "
+                    f"was={row['recorded_status'] or 'none'} "
+                    f"account={row['account_id']} "
+                    f"pnl_delta={_format_signed(row['pnl_delta'])} (booked "
+                    "P&L unchanged; preview with paper-resettle --verify --restate "
+                    "and open an incident instead of editing the journal)"
+                ),
+                file=sys.stderr,
+            )
+        print(
+            color.cyan(
+                "settlement truth re-check: "
+                f"window={AUTO_SETTLE_TRUTH_RECHECK_DAYS}d "
+                f"checked={result['checked']} drift={len(result['drift'])} "
+                f"newly_flagged={result['flagged']} "
+                f"unverified={result['unverified']} "
+                f"missing_final={result['missing_final']} "
+                f"standing_mismatches={result['standing_mismatches']}"
+            )
+        )
+        if result["standing_mismatches"]:
+            # Repeated on every run, like the exchange guard's standing line.
+            print(
+                color.red(
+                    "STANDING SETTLEMENT VERIFICATION MISMATCHES: "
+                    f"{result['standing_mismatches']} lot(s) hold a MISMATCH "
+                    "verification (booked P&L unchanged; preview with "
+                    "paper-resettle --verify --restate and open an incident "
+                    "instead of editing the journal)"
+                ),
+                file=sys.stderr,
+            )
+    except Exception as exc:  # a measurement must never fail or block settling
+        print(
+            color.red(
+                f"SETTLEMENT TRUTH RE-CHECK FAILED: {type(exc).__name__}: {exc} "
+                "(settlement and booked P&L unaffected; re-checked on the next run)"
+            ),
+            file=sys.stderr,
+        )
+
+
+def _format_signed(value: float | None) -> str:
+    return "-" if value is None else f"{value:+.2f}"
 
 
 def cmd_paper_backfill_market_day_settlements(args: argparse.Namespace) -> int:

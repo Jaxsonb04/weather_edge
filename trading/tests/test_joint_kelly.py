@@ -9,6 +9,7 @@ from sfo_kalshi_quant.joint_kelly import (
     build_joint_positions,
     expected_log_growth,
     joint_kelly_fractions,
+    joint_kelly_optimum,
 )
 
 
@@ -121,3 +122,110 @@ def test_build_and_solve_end_to_end_prefers_the_underpriced_bin():
     positions, scenario_probs = build_joint_positions(bin_keys, yes_probs, legs)
     fractions = joint_kelly_fractions(positions, scenario_probs, total_fraction_cap=1.0)
     assert fractions["yes_b1"] > fractions["yes_b2"]
+
+
+# --- joint_kelly_optimum: the exact solve behind the portfolio's joint trims ---
+
+
+def _marginal_growth(positions, fractions, scenario_probs):
+    """d E[log W] / d fraction for each position (the KKT gradient)."""
+
+    gradient = {position.key: 0.0 for position in positions}
+    for scenario, prob in scenario_probs.items():
+        wealth = 1.0
+        for position in positions:
+            if scenario in position.win_scenarios:
+                wealth += fractions[position.key] * position.win_return_per_fraction()
+            else:
+                wealth -= fractions[position.key]
+        for position in positions:
+            ret = position.win_return_per_fraction() if scenario in position.win_scenarios else -1.0
+            gradient[position.key] += prob * ret / wealth
+    return gradient
+
+
+def test_optimum_matches_scalar_kelly_exactly():
+    even_money = [JointPosition("a", frozenset({1}), cost=0.5)]
+    assert joint_kelly_optimum(even_money, {1: 0.6, 0: 0.4})["a"] == approx(0.2, abs=1e-9)
+    # An expensive NO favorite: (q - c) / (1 - c) = (0.999 - 0.98) / 0.02 = 0.95.
+    favorite = [JointPosition("no", frozenset({1}), cost=0.98)]
+    assert joint_kelly_optimum(favorite, {0: 0.001, 1: 0.999})["no"] == approx(0.95, abs=1e-9)
+
+
+def test_optimum_stakes_nothing_without_an_edge():
+    pos = [JointPosition("a", frozenset({1}), cost=0.5)]
+    assert joint_kelly_optimum(pos, {1: 0.5, 0: 0.5}) == {"a": 0.0}
+    overpriced = [JointPosition("a", frozenset({1}), cost=0.6)]
+    assert joint_kelly_optimum(overpriced, {1: 0.4, 0: 0.6}) == {"a": 0.0}
+
+
+def test_optimum_finds_the_split_the_gradient_solver_stops_short_of():
+    # Cheap YES legs beside an expensive NO: the fixed-step gradient solver
+    # stops at 0.41 on the NO, under half its optimal stake, although its own
+    # cap (1.0) is nowhere near binding.
+    ladder = {"b0": 0.0378, "b1": 0.0006, "b2": 0.1931, "b3": 0.2741, "b4": 0.4458, "b5": 0.0487}
+    legs = [
+        ("yes_b2", "b2", "YES", 0.17),
+        ("no_b1", "b1", "NO", 0.98),
+        ("yes_b0", "b0", "YES", 0.02),
+        ("no_b4", "b4", "NO", 0.57),
+        ("yes_b5", "b5", "YES", 0.06),
+    ]
+    positions, scenario_probs = build_joint_positions(sorted(ladder), ladder, legs)
+    gradient_split = joint_kelly_fractions(positions, scenario_probs, total_fraction_cap=1.0)
+    optimum = joint_kelly_optimum(positions, scenario_probs)
+
+    assert optimum is not None
+    assert sum(optimum.values()) < 1.0  # interior: the bound plays no part
+    assert gradient_split["no_b1"] < 0.45
+    assert optimum["no_b1"] == approx(0.924, abs=1e-3)
+
+    def growth(split):
+        return expected_log_growth(positions, [split[p.key] for p in positions], scenario_probs)
+
+    assert growth(optimum) > growth(gradient_split) + 0.008
+    # KKT: staked legs have zero marginal growth; unstaked ones have none to gain.
+    marginal = _marginal_growth(positions, optimum, scenario_probs)
+    for key, fraction in optimum.items():
+        if fraction > 0.0:
+            assert marginal[key] == approx(0.0, abs=1e-9)
+        else:
+            assert marginal[key] <= 1e-9
+
+
+def test_optimum_is_none_when_it_would_stake_past_the_bound():
+    favorite = [JointPosition("no", frozenset({1}), cost=0.98)]
+    probs = {0: 0.001, 1: 0.999}
+    assert joint_kelly_optimum(favorite, probs, max_total_fraction=1.0) is not None
+    assert joint_kelly_optimum(favorite, probs, max_total_fraction=0.5) is None
+
+
+def test_optimum_is_none_for_unbounded_growth():
+    # YES on both bins of a two-bin ladder for 0.80 in all is a sure profit.
+    pos = [
+        JointPosition("a", frozenset({0}), cost=0.40),
+        JointPosition("b", frozenset({1}), cost=0.40),
+    ]
+    assert joint_kelly_optimum(pos, {0: 0.5, 1: 0.5}) is None
+
+
+def test_optimum_is_none_when_the_split_is_not_unique():
+    # YES on bins 0, 1 and 3 pays exactly what NO on bin 2 pays, for the same
+    # 0.64, so stake can move between them without changing any outcome.
+    probs = {0: 0.40, 1: 0.08, 2: 0.25, 3: 0.27}
+    yes_legs = [
+        JointPosition("yes0", frozenset({0}), cost=0.36),
+        JointPosition("yes1", frozenset({1}), cost=0.06),
+        JointPosition("yes3", frozenset({3}), cost=0.22),
+    ]
+    replica = JointPosition("no2", frozenset({0, 1, 3}), cost=0.64)
+    assert joint_kelly_optimum([*yes_legs, replica], probs) is None
+    # A cent dearer the NO is no longer a replica: one optimum, NO unstaked.
+    dearer = JointPosition("no2", frozenset({0, 1, 3}), cost=0.65)
+    optimum = joint_kelly_optimum([*yes_legs, dearer], probs)
+    assert optimum is not None
+    assert optimum["no2"] == 0.0
+
+
+def test_optimum_of_no_positions_is_empty():
+    assert joint_kelly_optimum([], {1: 1.0}) == {}

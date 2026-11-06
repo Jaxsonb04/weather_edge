@@ -9,7 +9,12 @@ Type=oneshot
 User=__APP_USER__
 WorkingDirectory=__TRADING_DIR__
 EnvironmentFile=__ENV_FILE__
-ExecStart=/usr/bin/env bash __TRADING_DIR__/deploy/aws/run_dataset_backfill.sh
+# systemd stops a oneshot unit at its first failing command without a `-`
+# prefix. The dataset step carries one so a failed dataset night (a source
+# failing on consecutive runs, or dataset research failing) cannot skip the
+# maintenance below; ExecStartPost then fails the unit with that step's own
+# result, so OnFailure still alerts.
+ExecStart=-/usr/bin/env bash __TRADING_DIR__/deploy/aws/run_dataset_backfill.sh
 # Multi-city training-data maintenance (nightly is enough; the newest scored
 # day lands within one day, immaterial against a ~340-day archive):
 # yesterday's CLI settlements from the IEM archive (also picks up corrected
@@ -19,6 +24,10 @@ ExecStart=-__FORECASTER_DIR__/.venv/bin/python __FORECASTER_DIR__/city_truth.py 
 ExecStart=-__FORECASTER_DIR__/.venv/bin/python __FORECASTER_DIR__/nwp_archive.py --db __FORECASTER_DIR__/weather.db --daily --cities all
 ExecStart=-__FORECASTER_DIR__/.venv/bin/python __FORECASTER_DIR__/emos_forecast.py --db __FORECASTER_DIR__/weather.db --backfill --lead 1 --cities all
 ExecStart=-__FORECASTER_DIR__/.venv/bin/python __FORECASTER_DIR__/emos_forecast.py --db __FORECASTER_DIR__/weather.db --backfill --lead 2 --cities all
+# Re-raise the dataset step's result, which it records under this run's
+# INVOCATION_ID. It is ExecStartPost, not a last ExecStart, so it does not
+# replace the main-process record (ExecMain*) the runbook's timing check reads.
+ExecStartPost=/usr/bin/env bash __TRADING_DIR__/deploy/aws/run_dataset_backfill.sh --report-status
 Nice=10
 # Contain a runaway process to this unit instead of letting the kernel
 # OOM-killer pick an arbitrary victim (4 GB box: containment, not

@@ -184,7 +184,9 @@ def test_intraday_snapshot_keeps_observation_daily_high_nonfinal_without_cli_tru
 
         assert intraday is not None
         assert intraday.observed_high_f == 69.8
-        assert intraday.latest_observed_at == "2026-06-03T21:15:00+00:00"
+        # The newest station reading, not high_observed_at (the time of the
+        # maximum); this daily row carries no last_observed_at of its own.
+        assert intraday.latest_observed_at == "2026-06-03T20:00:00+00:00"
         assert intraday.observation_count == 200
         assert intraday.observed_high_source == "NWS KSFO observed daily high"
         assert intraday.is_complete is False

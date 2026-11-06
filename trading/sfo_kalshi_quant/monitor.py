@@ -42,7 +42,7 @@ from .maker_fills import (
     normalize_public_trade,
 )
 from .models import MarketBin
-from .probability import ResidualCalibrator
+from .probability import ResidualCalibrator, post_peak_cap_engaged
 from .research_policy import ALL_RESEARCH_POLICIES, ResearchSleeve
 from .settlement_day import settlement_clock
 
@@ -125,6 +125,12 @@ def _monitor_market_lookup(
     bounds every returned quote's age conservatively; missing tickers get their
     own fallback request-start time. Stamping later at execution would hide the
     time spent fetching other markets or processing earlier positions.
+
+    A market whose payload cannot be parsed comes back as its exception, like
+    a failed request, so it holds only its own positions (audit F13).
+    MarketBin parses the NO bid size only when it is read, and ``float()``
+    accepts "nan" and "inf", so the exit loop checks the bid and displayed
+    size it uses as well.
     """
 
     clock = clock or (lambda: datetime.now(UTC))
@@ -156,6 +162,11 @@ def _monitor_market_lookup(
             if observed_at_by_ticker is not None:
                 observed_at_by_ticker[ticker] = observed_at
         except (HTTPError, KalshiUnavailable, URLError, OSError, TimeoutError) as exc:
+            resolved[ticker] = exc
+        except (KeyError, TypeError, ValueError) as exc:
+            # Malformed data for ONE market (a bracket label in a numeric
+            # field, a missing key, a null market, a non-UTF-8 body) must not
+            # abort the pass and block every exit in every account.
             resolved[ticker] = exc
     return resolved
 
@@ -224,6 +235,17 @@ def _same_day_no_basket_veto_reason(
     )
 
 
+class _PostPeakHold(ForecastDataError):
+    """The heartbeat deliberately holds a same-day group without a read."""
+
+
+def _same_day_read_held(row, held: set[tuple[str, str]]) -> bool:
+    if not held:
+        return False
+    city = city_for_market_ticker(str(row["market_ticker"]))
+    return city is not None and (city.slug, str(row["target_date"])) in held
+
+
 def _refresh_same_day_model_reads(
     store: PaperStore,
     rows,
@@ -232,6 +254,7 @@ def _refresh_same_day_model_reads(
     log=print,
     clock=settlement_clock,
     adapter_factory=SfoForecasterAdapter,
+    held: set[tuple[str, str]] | None = None,
 ) -> int:
     """Journal fresh model reads for open same-day positions, never entries.
 
@@ -240,6 +263,10 @@ def _refresh_same_day_model_reads(
     keeps only the probability journal alive for positions that are already
     open, using the latest EMOS distribution and station high-so-far.  No trade
     evaluator or PaperTrader is constructed on this path.
+
+    ``held`` collects the (city slug, target date) groups this pass holds
+    without a read, so the exit loop can also ignore reads already journaled
+    for them (for example capped reads from before an evening re-warm).
     """
 
     groups: dict[tuple[str, str, str, str], tuple[CityConfig, date]] = {}
@@ -312,6 +339,27 @@ def _refresh_same_day_model_reads(
                 raise ForecastDataError(
                     "same-day heartbeat observed high is missing, stale, or mismatched"
                 )
+            # Audit F1 keeps the newest reading fresh all evening, but below a
+            # 2F drop the read is still the forecast-centred model, which on a
+            # day the forecast ran warm prices bins above the maximum as likely
+            # and so sells the winning NO and holds the losing one. Once the
+            # maximum is older than the freshness window, journal a read only
+            # if the post-peak cap is engaged; otherwise the position holds
+            # without a read, as it did before F1.
+            if (
+                not intraday.is_complete
+                and not _heartbeat_timestamp_is_fresh(
+                    intraday.observed_high_at or intraday.latest_observed_at
+                )
+                and not post_peak_cap_engaged(
+                    intraday, standard_timezone=intraday_timezone_for_city(city)
+                )
+            ):
+                raise _PostPeakHold(
+                    "same-day heartbeat maximum is over "
+                    f"{SAME_DAY_HEARTBEAT_OBSERVATION_MAX_AGE_MINUTES:.0f} minutes old and "
+                    "the post-peak cap has not engaged; holding without a model read"
+                )
             if not has_forecaster_observed_high_adjustment(forecast):
                 forecast = adapter.apply_intraday_update(forecast, intraday)
             probabilities = calibrator.bucket_probabilities(
@@ -326,6 +374,8 @@ def _refresh_same_day_model_reads(
             store.record_probabilities(target_iso, probabilities.values())
             written += len(probabilities)
         except (ForecastDataError, ValueError, OSError) as exc:
+            if held is not None and isinstance(exc, _PostPeakHold):
+                held.add((city.slug, target_iso))
             log(
                 f"same-day model heartbeat skipped {city.slug} {target_iso}: "
                 f"{type(exc).__name__}: {exc}"
@@ -383,12 +433,14 @@ def run_paper_monitor(
         if not filled:
             print(color.yellow("no open paper positions"))
         return 0
+    held_same_day: set[tuple[str, str]] = set()
     if _env_enabled("PAPER_SAME_DAY_MODEL_HEARTBEAT_ENABLED"):
         refresh_model_reads(
             store,
             rows,
             forecaster_root=args.forecaster_root,
             log=lambda message: print(color.yellow(message), file=sys.stderr),
+            held=held_same_day,
         )
     quote_rows = [row for row in rows if not _is_guaranteed_payoff_group_row(row)]
     quote_observed_at: dict[str, str] = {}
@@ -402,6 +454,19 @@ def run_paper_monitor(
     # one account, a single fetched top bid is finite even when retained legacy
     # lots share its ticker/side. New-entry uniqueness remains a separate guard.
     depth_consumed: dict[tuple[str, str, str], float] = {}
+    unreadable_markets: dict[str, str] = {}
+
+    def hold_unreadable_market(row, side: str, *, error: str, reason: str, **quote) -> None:
+        # Kalshi served data for this lot's market that cannot be used. It is
+        # not a network blip, so it is not FETCH_FAILED: hold only this lot,
+        # keep the error for audit, manage the rest of the book, and exit
+        # non-zero after the loop so the failure still alerts (audit F13).
+        store.record_monitor_snapshot(
+            row, side=side, action="HOLD_UNREADABLE_MARKET", reason=reason, **quote
+        )
+        print(f"HOLD order {row['id']} {row['market_ticker']} {side}: {reason}")
+        unreadable_markets.setdefault(str(row["market_ticker"]), error)
+
     closed = 0
     inspected = 0
     for row in rows:
@@ -445,11 +510,19 @@ def run_paper_monitor(
         ):
             exc = market_or_error
             # Genuinely transient network failures: hold this position and move on.
-            # Non-network exceptions (e.g. a programming bug) now propagate instead
-            # of being swallowed into a phantom HOLD across the whole book.
+            # Other exceptions (e.g. a programming bug) still propagate instead of
+            # being swallowed into a phantom HOLD across the whole book; only
+            # unparseable market data is held per lot, just below.
             reason = f"market fetch failed ({type(exc).__name__})"
             store.record_monitor_snapshot(row, side=side, action="FETCH_FAILED", reason=reason)
             print(f"HOLD order {row['id']} {row['market_ticker']} {side}: {reason}")
+            continue
+        if isinstance(market_or_error, (KeyError, TypeError, ValueError)):
+            # The client could not build this market from Kalshi's payload.
+            error = f"{type(market_or_error).__name__}: {market_or_error}"
+            hold_unreadable_market(
+                row, side, error=error, reason=f"market payload unreadable ({error})"
+            )
             continue
         market = market_or_error
 
@@ -465,6 +538,19 @@ def run_paper_monitor(
             continue
 
         live_bid = market.side_bid(side)
+        if not math.isfinite(live_bid):
+            # float() accepts "nan" and "inf", so such a bid passes
+            # MarketBin.from_kalshi. A NaN would fail in the exit-fee maths
+            # below and end the pass for every account (audit F13).
+            error = f"{side} bid {live_bid!r} is not a finite number"
+            hold_unreadable_market(
+                row,
+                side,
+                error=error,
+                reason=f"market payload unreadable ({error})",
+                market_status=market.status,
+            )
+            continue
         if live_bid <= 0:
             store.record_monitor_snapshot(
                 row,
@@ -536,10 +622,17 @@ def run_paper_monitor(
         # %-of-cost target is the reachable-for-cheap-positions fallback. The
         # stop-loss is the reachable downside price floor with the NO-side model
         # veto preserved (do not sell intraday noise the model still expects to win).
-        model_read = store.latest_model_probability_read(
-            str(row["target_date"]),
-            str(row["market_ticker"]),
-            risk_profile=str(row["risk_profile"] or "live"),
+        # A group the heartbeat held this pass gets no read at all, so a read
+        # journaled before the hold (a capped read from before an evening
+        # re-warm, or an earlier scan's forecast-centred read) cannot drive it.
+        model_read = (
+            None
+            if _same_day_read_held(row, held_same_day)
+            else store.latest_model_probability_read(
+                str(row["target_date"]),
+                str(row["market_ticker"]),
+                risk_profile=str(row["risk_profile"] or "live"),
+            )
         )
         model_yes_p = None if model_read is None else model_read[1]
         model_side_p = (
@@ -690,7 +783,33 @@ def run_paper_monitor(
             str(row["market_ticker"]),
             side,
         )
-        displayed_bid_size = market.side_bid_size(side)
+        try:
+            displayed_bid_size = market.side_bid_size(side)
+            if not math.isfinite(displayed_bid_size):
+                raise ValueError(f"{displayed_bid_size!r} is not a finite size")
+        except (KeyError, TypeError, ValueError) as exc:
+            # MarketBin parses the NO bid size only now, so a malformed size
+            # fails here, after the exit has fired, not in the market lookup.
+            # A NaN or infinite size is not displayed liquidity either. Defer
+            # only this close, as when no size is displayed (EX-02).
+            problem = f"{type(exc).__name__}: {exc}"
+            hold_unreadable_market(
+                row,
+                side,
+                error=f"displayed {side} bid size: {problem}",
+                reason=(
+                    f"{reason}; close deferred: displayed {side} bid size "
+                    f"unreadable ({problem})"
+                ),
+                market_status=market.status,
+                live_bid=live_bid,
+                exit_fee_per_contract=exit_fee,
+                net_exit_per_contract=net_exit,
+                unrealized_pnl=pnl_dollars,
+                unrealized_roi=pnl_pct,
+                model_read=model_read_info,
+            )
+            continue
         prior_consumed = depth_consumed.get(depth_key, 0.0)
         bid_size = max(0.0, displayed_bid_size - prior_consumed)
         if bid_size <= 0:
@@ -782,6 +901,20 @@ def run_paper_monitor(
             f"filled {filled} resting limits, expired {expired} stale limits"
         )
     )
+    if unreadable_markets:
+        # Every readable position was managed above. Fail the run so systemd's
+        # OnFailure alert fires on every tick while a held lot stays unreadable.
+        details = "; ".join(
+            f"{ticker} ({error})" for ticker, error in unreadable_markets.items()
+        )
+        print(
+            color.red(
+                f"error: {len(unreadable_markets)} market(s) could not be read; "
+                f"the positions that needed them were held: {details}"
+            ),
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
