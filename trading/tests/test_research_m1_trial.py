@@ -1220,6 +1220,30 @@ def test_settle_maintenance_records_truth_reconciles_and_checks_stops(tmp_path) 
     assert five_minute["paper_fills"] is False
 
 
+def test_a_failed_truth_read_still_applies_the_ledger_stops(tmp_path) -> None:
+    store, _ = _store(tmp_path)
+    _scan(store)  # a recorded leg with no final high, so load_truth must run
+    _insert_settled_book(store, 400, pnl_each=-0.6, offset=10)
+
+    def load_truth(city):
+        raise RuntimeError("forecaster database unavailable")
+
+    later = datetime(2026, 10, 22, 15, tzinfo=UTC)
+    with pytest.raises(RuntimeError, match="forecaster database unavailable"):
+        engine.run_m1_settle_maintenance(store, load_truth=load_truth, now=later)
+
+    assert _halt_rules(store) == {"futility"}
+    again = engine.run_m1_settle_maintenance(store, load_truth=lambda city: {}, now=later)
+    assert again["stop_rules"]["new_halts"] == []
+
+
+def test_settle_maintenance_reports_a_halt_from_the_early_stop_check(tmp_path) -> None:
+    store, _ = _store(tmp_path)
+    _insert_settled_book(store, 400, pnl_each=-0.6)
+    summary = engine.run_m1_settle_maintenance(store, now=NOW)
+    assert summary["stop_rules"]["new_halts"] == ["futility"]
+
+
 def _forecaster_root(tmp: Path) -> Path:
     root = tmp / "forecaster"
     root.mkdir()

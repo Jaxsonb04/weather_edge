@@ -1454,6 +1454,9 @@ def run_m1_settle_maintenance(
     """
 
     current = _utc_now(store, now)
+    # The ledger alone proves these stops, so a failed truth read below must not
+    # delay them. The last call picks up what truth and reconciliation add.
+    early_halts = evaluate_m1_stop_rules(store, now=current)["new_halts"]
     summary: dict[str, Any] = {"truth_recorded": 0, "reconciled_days": [], "stop_rules": None}
     if load_truth is not None:
         missing = m1_series_dates_missing_truth(
@@ -1505,7 +1508,11 @@ def run_m1_settle_maintenance(
                     "missed": len(report["missed"]),
                 }
             )
-    summary["stop_rules"] = evaluate_m1_stop_rules(store, now=current)
+    stop_rules = evaluate_m1_stop_rules(store, now=current)
+    summary["stop_rules"] = {
+        **stop_rules,
+        "new_halts": early_halts + stop_rules["new_halts"],
+    }
     return summary
 
 
