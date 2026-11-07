@@ -163,7 +163,7 @@ def ensure_m1_trial_schema(conn: sqlite3.Connection) -> None:
 
 
 def ensure_m1_trial_account(conn: sqlite3.Connection) -> None:
-    """Bootstrap the separate $10,000 paper ledger exactly once.
+    """Bootstrap the separate $2,000 paper ledger exactly once.
 
     ``INSERT OR IGNORE`` plus the fixed idempotency key make concurrent or
     repeated initialization safe. An account a previous deployment archived is

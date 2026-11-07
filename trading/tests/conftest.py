@@ -6,6 +6,21 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _restore_scan_bindings():
+    """``cli._sync_scan_bindings`` copies cli globals into the scan module.
+
+    A test that patches a cli binding therefore leaves the mock in the scan
+    module after the patch ends.  Re-copy the real bindings once every other
+    fixture has torn down, so no test depends on which one ran before it.
+    """
+
+    from sfo_kalshi_quant import cli
+
+    yield
+    cli._sync_scan_bindings()
+
+
+@pytest.fixture(autouse=True)
 def _offline_exchange_settlement_client(monkeypatch: pytest.MonkeyPatch) -> None:
     """No test may reach the real exchange through the settlement guard.
 

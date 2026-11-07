@@ -135,9 +135,9 @@ class StrategyConfig:
     #
     # Cross the displayed ask immediately when the after-fee LOWER-BOUND edge
     # at the taker price still clears limit_taker_cross_min_edge_lcb. The live
-    # override sets that bar equal to limit_price_edge_lcb_buffer: the same 2%
-    # LCB standard the maker path enforces, at a strictly worse price, so the
-    # cross can only be MORE conservative than today's resting placement.
+    # override sets that bar to 0.0, a non-negative after-fee LCB, which is
+    # looser than the 2% limit_price_edge_lcb_buffer the maker path enforces
+    # (see the 2026-07-27 note at the override).
     limit_taker_cross_enabled: bool = False
     limit_taker_cross_min_edge_lcb: float = 0.02
     # Minimum executable notional for profile-scoped paper placement. A
@@ -505,6 +505,8 @@ LIVE_PROFILE_OVERRIDES = {
     # risks, so the same $84 daily budget admits ~2-3 legs instead of one
     # phantom-priced leg. Per-order size is UNCHANGED (the $30 clamp already
     # bound); this only stops the allocator double-charging risk it never takes.
+    # 0.03 matches the $30 cap only at $1,000. On $2,000 it recommends $60, so
+    # allocate_portfolio (portfolio.py) now clamps each live leg to the cap.
     "max_position_risk_pct": 0.03,
     "max_event_risk_pct": 0.12,
     "max_target_exposure_pct": 0.18,
@@ -687,8 +689,9 @@ RESEARCH_PROFILE_OVERRIDES = {
     # 0.04/0.03, target 0.06/0.05, contracts 30/25}. Effectively the old
     # fast-feedback envelope, which was already the loosest + smallest.
     **LIVE_PROFILE_OVERRIDES,
-    # Size off live equity so this book compounds and fluctuates; the small
-    # per-day risk budget below keeps a bad research idea bounded.
+    # Research TARGET orders size off the policy's fixed reference equity
+    # (target_entry_spend_limit), so this flag does not compound the V7 book.
+    # The small per-day risk budget below keeps a bad research idea bounded.
     "size_against_live_equity": True,
     # The collector records raw/marginal YES to learn whether YES can work; the
     # strict YES gates belong on live (the exploiter), not here.
@@ -746,13 +749,18 @@ RESEARCH_PROFILE_OVERRIDES = {
     # a calibrated sigma) so the rescore can prove it improves trading calibration
     # before `live` adopts it. Identity when no EMOS forecast exists for the day.
     "emos_distribution_enabled": True,
-    # The collector runs the market-consensus anchor + guard LIVE so the
-    # readiness rescore can prove they help before `live` adopts them. The
-    # heavier market weight is safe here because the edge gate already measures
-    # the POINT edge against the pure model probability (above), so a strong
-    # anchor leans sizing/LCB toward the crowd without erasing the model's
-    # measured disagreement -- exactly the validation signal we want to collect.
+    # The collector runs the market-consensus anchor LIVE so the readiness
+    # rescore can prove it helps before `live` adopts it. The heavier market
+    # weight is safe here because the edge gate already measures the POINT edge
+    # against the pure model probability (above), so a strong anchor leans
+    # sizing/LCB toward the crowd without erasing the model's measured
+    # disagreement -- exactly the validation signal we want to collect.
     "market_consensus_anchor_enabled": True,
+    # INERT on this profile: the guard only shrinks spend_budget, research scans
+    # rank with candidate_only=True (which ignores spend_budget), and V7 sizes
+    # from its own target entry limit. It changes no research order and records
+    # no multiplier, so this book produces NO trial evidence for the guard. The
+    # flag stays set only because removing it would move the strategy fingerprint.
     "market_consensus_guard_enabled": True,
     # The collector measures the whole price curve (including the longshots the
     # live band rejects) so the favorite-band choice remains evidence, not dogma.

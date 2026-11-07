@@ -87,8 +87,8 @@ _LATEST_STATION_TZ = ZoneInfo("America/Los_Angeles")
 
 _OPEN_STATUSES = ("PAPER_FILLED", "PAPER_PARTIALLY_FILLED", "PAPER_PARTIAL_EXPIRED")
 _EPS = 1e-9
-# The settle timer reconciles at most this many recent UTC days per run, so a
-# long outage catches up without turning one tick into a history backfill.
+# The settle timer reconciles at most this many UTC days per run, oldest first,
+# so a long outage catches up without turning one tick into a history backfill.
 RECONCILIATION_LOOKBACK_DAYS = 14
 # Publication reads are descriptive; the final read uses the pre-registered
 # 10,000 resamples (research_m1.FINAL_READ_BOOTSTRAP_RESAMPLES).
@@ -1448,9 +1448,10 @@ def run_m1_settle_maintenance(
 ) -> dict[str, Any]:
     """Daily M1 upkeep from the existing settle timer (no new systemd timer).
 
-    Records final CLI highs for legs M1 evaluated, reconciles every complete
-    UTC day not yet reconciled (bounded look-back), and applies the stop
-    rules. Every step is idempotent.
+    Records final CLI highs for legs M1 evaluated, reconciles complete UTC
+    days not yet reconciled (oldest first, a bounded batch per run, so a
+    backlog drains instead of ageing out), and applies the stop rules. Every
+    step is idempotent.
     """
 
     current = _utc_now(store, now)
@@ -1484,15 +1485,13 @@ def run_m1_settle_maintenance(
         }
     first_at = parse_timestamp(first) if first else None
     if first_at is not None:
-        start = max(
-            first_at.date(), yesterday - timedelta(days=RECONCILIATION_LOOKBACK_DAYS - 1)
-        )
         pending_days = []
-        day = start
+        day = first_at.date()
         while day <= yesterday:
             if day.isoformat() not in done:
                 pending_days.append(day)
             day += timedelta(days=1)
+        pending_days = pending_days[:RECONCILIATION_LOOKBACK_DAYS]
         for index, day in enumerate(pending_days):
             report = reconcile_m1_day(
                 store,

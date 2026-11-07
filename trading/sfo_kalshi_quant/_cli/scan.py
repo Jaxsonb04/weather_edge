@@ -586,7 +586,9 @@ def _analyze_one_target(
         forecast_snapshot_id = store.record_forecast(forecast)
         if event:
             market_snapshot_id = store.record_market(event)
-        store.record_probabilities(target.isoformat(), probabilities.values())
+        store.record_probabilities(
+            target.isoformat(), probabilities.values(), risk_profile=risk_profile
+        )
     store.record_decisions(
         target.isoformat(),
         display_decisions,
@@ -1092,7 +1094,9 @@ def _research_portfolio_scan_from_context(
         forecast_snapshot_id = store.record_forecast(context.forecast)
         if context.event:
             market_snapshot_id = store.record_market(context.event)
-        store.record_probabilities(target.isoformat(), context.probabilities.values())
+        store.record_probabilities(
+            target.isoformat(), context.probabilities.values(), risk_profile="research"
+        )
 
     plans, execution, recorded_decisions = _execute_research_scan_context(
         context,
@@ -1262,6 +1266,7 @@ def _portfolio_scan_one_target(
         existing_directional_spend=store.paper_directional_spend(
             target.isoformat(), risk_profile
         ),
+        live_drawdown=float((store.live_account_state() or {}).get("drawdown") or 0.0),
     )
 
     entry_allowed = True
@@ -1340,7 +1345,9 @@ def _portfolio_scan_one_target(
         forecast_snapshot_id = store.record_forecast(forecast)
         if event:
             market_snapshot_id = store.record_market(event)
-        store.record_probabilities(target.isoformat(), probabilities.values())
+        store.record_probabilities(
+            target.isoformat(), probabilities.values(), risk_profile=risk_profile
+        )
     store.record_decisions(
         target.isoformat(),
         decisions_to_record,
@@ -1702,7 +1709,9 @@ def _tail_basket_one_target(
         forecast_snapshot_id = store.record_forecast(forecast)
         if event:
             market_snapshot_id = store.record_market(event)
-        store.record_probabilities(target.isoformat(), probabilities.values())
+        store.record_probabilities(
+            target.isoformat(), probabilities.values(), risk_profile=risk_profile
+        )
     store.record_decisions(
         target.isoformat(),
         decisions_to_record,

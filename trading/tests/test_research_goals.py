@@ -957,3 +957,67 @@ def test_goal_report_bounds_ancient_activation_without_write_amplification(
             (TARGET_POLICY.account_id,),
         ).fetchone()[0]
     assert persisted == 31
+
+
+def test_admission_refuses_a_lot_the_daily_loss_pause_cannot_see(tmp_path) -> None:
+    """Reported P&L keeps foreign identities out; admission must not ignore them."""
+    objective_day = date(2026, 7, 18)
+    store = PaperStore(
+        tmp_path / "paper.db",
+        research_clock=lambda: datetime(2026, 7, 18, 19, 0, tzinfo=UTC),
+    )
+
+    def capacity() -> dict[str, object]:
+        return store.account_policy_capacity(
+            target_date="2026-07-19",
+            market_ticker="KXHIGHTSFO-TEST-B70.5",
+            risk_profile="research",
+            requested_spend=5.0,
+            account_id=TARGET_POLICY.account_id,
+        )
+
+    assert capacity()["allowed_spend"] > 0.0
+    order_id = _record_target_fixture_order(store, "2026-07-19", _approved_decision())
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE paper_orders SET objective_day=?, lead_bucket='day-ahead', "
+            "scan_run_id='stale-scan', reentry_fingerprint='stale-entry', "
+            "status='PAPER_CLOSED', realized_pnl=-250, closed_at=?, "
+            "policy_fingerprint='fingerprint-before-a-policy-edit' WHERE id=?",
+            (objective_day.isoformat(), _pacific_noon(objective_day), order_id),
+        )
+
+    assert store.research_realized_pnl_for_day(
+        account_id=TARGET_POLICY.account_id, objective_day=objective_day
+    ) == 0.0
+    blocked = capacity()
+    assert blocked["allowed_spend"] == 0.0
+    assert blocked["reason"] == "research daily P&L is invalid"
+
+
+def test_invalid_lot_fails_the_research_daily_pnl_closed(tmp_path) -> None:
+    objective_day = date(2026, 7, 18)
+    store = PaperStore(
+        tmp_path / "paper.db",
+        research_clock=lambda: datetime(2026, 7, 18, 19, 0, tzinfo=UTC),
+    )
+    order_id = _record_target_fixture_order(store, "2026-07-19", _approved_decision())
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE paper_orders SET objective_day=?, lead_bucket='day-ahead', "
+            "scan_run_id='bad-scan', reentry_fingerprint='bad-entry', "
+            "status='PAPER_CLOSED', realized_pnl='bad', closed_at=? WHERE id=?",
+            (objective_day.isoformat(), _pacific_noon(objective_day), order_id),
+        )
+
+    with pytest.raises(ValueError, match="research daily P&L is invalid"):
+        store.research_realized_pnl_for_day(
+            account_id=TARGET_POLICY.account_id, objective_day=objective_day
+        )
+    assert store.account_policy_capacity(
+        target_date="2026-07-19",
+        market_ticker="KXHIGHTSFO-TEST-B70.5",
+        risk_profile="research",
+        requested_spend=5.0,
+        account_id=TARGET_POLICY.account_id,
+    )["reason"] == "research daily P&L is invalid"

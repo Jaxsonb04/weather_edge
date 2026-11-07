@@ -66,7 +66,10 @@ ACCOUNTING_POLICY_VERSION = "acct-v4-account-scoped-2026-07-14"
 # and the newest-observation heartbeat time) ship in the same first production
 # deploy of behavior-v4, so they share its cohort: no behavior-v4 order predates
 # them (production last ran behavior-v2).
-STRATEGY_BEHAVIOR_VERSION = "behavior-v4-v7-correctness-2026-10-05"
+# Rotated to behavior-v5 for the 2026-11-07 audit fixes, which change Live
+# admission: directional spend counts partial closes and reservations, and the
+# allocator charges what placement can book.
+STRATEGY_BEHAVIOR_VERSION = "behavior-v5-audit-admission-2026-11-07"
 WEEKLY_RETURN_TARGET = 0.05
 WEEKLY_GOAL_TZ = ZoneInfo("America/Los_Angeles")
 WEEKLY_GOAL_ROLLOVER = time(0, 0)
@@ -96,6 +99,7 @@ MIN_EXECUTABLE_NOTIONAL = 5.0
 # per-trade ceiling (~$30 on the $1000 bankroll). Aggregate, city, region and
 # drawdown breakers are unchanged.
 NORMAL_POSITION_CAP = 30.0
+POSITION_CAP_HALVING_DRAWDOWN = 0.10
 AGGREGATE_RISK_PCT = 0.20
 # Audit TC-6 (2026-09-07): MAIN_SLEEVE_PCT = 0.16 was DELETED, not retuned. It
 # split the aggregate cap into a "main" and a "research" sleeve, but since the
@@ -214,7 +218,7 @@ def policy_capacity(
         if profile == "research"
         else min(NORMAL_POSITION_CAP, NORMAL_POSITION_PCT * equity)
     )
-    if drawdown >= 0.10:
+    if drawdown >= POSITION_CAP_HALVING_DRAWDOWN:
         position_cap *= 0.5
     total_room = AGGREGATE_RISK_PCT * equity - aggregate
     if profile == "research":

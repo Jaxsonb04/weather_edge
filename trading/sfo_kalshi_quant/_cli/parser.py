@@ -384,7 +384,7 @@ def register_scan_commands(sub) -> None:
         action="store_true",
         help=(
             "Admit M1 market-recalibration trial paper entries into its own "
-            "$10,000 paper account. Without it the trial records every decision "
+            "$2,000 paper account. Without it the trial records every decision "
             "in shadow mode. Research profile only; paper only."
         ),
     )

@@ -146,8 +146,9 @@ def _case_replay_metrics(
         if status == _FILLED_STATUS:
             filled = True
             contracts += float(ticker.get("contracts") or 0.0)
-            dollars_at_risk += float(ticker.get("contracts") or 0.0) * float(
-                ticker.get("limit_price") or 0.0
+            dollars_at_risk += float(ticker.get("contracts") or 0.0) * (
+                float(ticker.get("limit_price") or 0.0)
+                + float(ticker.get("fee_per_contract") or 0.0)
             )
         else:
             rejections.append(status)

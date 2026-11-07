@@ -135,7 +135,8 @@ CREATE TABLE IF NOT EXISTS probability_snapshots (
 	    market_probability REAL,
 	    observed_high_f REAL,
 	    intraday_probability REAL,
-	    remaining_heat_risk REAL
+	    remaining_heat_risk REAL,
+	    risk_profile TEXT
 	);
 
 CREATE TABLE IF NOT EXISTS scan_context_snapshots (
@@ -827,6 +828,7 @@ PROBABILITY_AUDIT_COLUMNS = {
     "observed_high_f": "REAL",
     "intraday_probability": "REAL",
     "remaining_heat_risk": "REAL",
+    "risk_profile": "TEXT",
 }
 
 DECISION_AUDIT_COLUMNS = {

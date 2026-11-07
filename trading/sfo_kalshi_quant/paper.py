@@ -1219,6 +1219,11 @@ class PaperTrader:
         # settlement instead of closing one leg on an intraday take-profit /
         # stop-loss, which would convert the locked payout into naked risk.
         group_id = f"ARB-{uuid.uuid4().hex[:12]}"
+        # Legs commit one at a time, so each is booked degraded and only a
+        # complete box is promoted. A process death or a locked database between
+        # legs then leaves ordinary directional risk the monitor manages, never
+        # an unhedged leg trusted as guaranteed.
+        pending_group_id = f"DEGRADED-{group_id}"
         order_ids: list[int] = []
         try:
             for decision in normalized.decisions:
@@ -1226,7 +1231,7 @@ class PaperTrader:
                     target_date,
                     decision,
                     risk_profile=self.risk_profile,
-                    group_id=group_id,
+                    group_id=pending_group_id,
                     strategy_config=self.config,
                 )
                 # A box must record every leg or none. If the open-position guard
@@ -1241,6 +1246,7 @@ class PaperTrader:
                     )
                     return []
                 order_ids.append(order_id)
+            self.store.promote_arbitrage_group(order_ids, group_id=group_id)
         except ArbitrageContainmentError:
             raise
         except Exception:

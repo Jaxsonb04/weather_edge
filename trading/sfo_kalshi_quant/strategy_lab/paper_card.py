@@ -42,6 +42,7 @@ from ..logical_positions import (
     OPEN_STATUSES,
     group_logical_positions,
 )
+from ..monitor import RESEARCH_VETO_DOLLAR_CAPS
 from ..profile_identity import row_published_profile_key
 from ..research_m1 import M1_ACCOUNT_ID
 from ..research_policy import TARGET_POLICY
@@ -386,6 +387,17 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
             for position in journal.all_positions
             if position.valid and position.root.get("id") is not None
         }
+        # The monitor's veto dollar floor counts realized partial-exit losses.
+        partial_realized = {
+            order_id: math.fsum(
+                float(lot["realized_pnl"])
+                for lot in position.resolved_lots
+                if lot.get("parent_order_id") == order_id
+            )
+            for position in journal.all_positions
+            if position.valid
+            and (order_id := position.root.get("id")) is not None
+        }
         open_order_ids = [
             int(row["id"])
             for row in journal.open_root_rows
@@ -469,7 +481,12 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
     )
 
     open_positions = [
-        _paper_row(row, _position_mark_for(row, monitor_marks, decision_marks), monitor)
+        _paper_row(
+            row,
+            _position_mark_for(row, monitor_marks, decision_marks),
+            monitor,
+            partial_realized_pnl=partial_realized.get(row.get("id"), 0.0),
+        )
         for row in open_rows
     ]
     # Mark resting limit orders with the latest scanned bid/ask too, so the
@@ -481,6 +498,7 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
             row,
             decision_marks.get((row["market_ticker"], _side_from_row(row))),
             monitor,
+            partial_realized_pnl=partial_realized.get(row.get("id"), 0.0),
         )
         for row in pending_limit_rows
     ]
@@ -1257,6 +1275,8 @@ def _paper_row(
     row: sqlite3.Row,
     mark: dict[str, Any] | None = None,
     monitor: dict[str, Any] | None = None,
+    *,
+    partial_realized_pnl: float = 0.0,
 ) -> dict[str, Any]:
     reasons = _json_list(row["reasons_json"])
     outcome_diagnostics = _json_object(_sqlite_row_value(row, "outcome_diagnostics_json"))
@@ -1340,6 +1360,10 @@ def _paper_row(
                 )
                 / 100.0
             ),
+            model_veto_max_loss_dollars=RESEARCH_VETO_DOLLAR_CAPS.get(
+                str(_sqlite_row_value(row, "account_id") or "")
+            ),
+            position_loss_dollars=unrealized_pnl + partial_realized_pnl,
             legacy_take_profit_net=legacy_take_profit_net,
             stop_loss_pct=stop_loss_pct,
             settlement_first_no_min_cost=_settlement_first_no_min_cost_for_row(row),

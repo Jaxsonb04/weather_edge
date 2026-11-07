@@ -8,6 +8,7 @@ from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
+from urllib.error import HTTPError
 
 import pytest
 
@@ -1499,3 +1500,42 @@ def test_monitor_holds_open_position_on_transient_kalshi_unavailable():
                 (order_id,),
             ).fetchone()[0]
         assert action == "FETCH_FAILED"
+
+
+def test_monitor_auth_failure_surfaces_the_http_status():
+    class _RevokedClient:
+        def get_market(self, ticker):
+            raise HTTPError("https://exchange.test/markets", 401, "Unauthorized", None, None)
+
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store = PaperStore(db_path)
+        store.record_paper_order("2026-06-12", _cheap_yes_decision())
+        err = StringIO()
+        with patch("sfo_kalshi_quant.cli.KalshiPublicClient", _RevokedClient), redirect_stderr(err):
+            code = main(["--db-path", str(db_path), "--no-color", "paper-monitor"])
+        assert code == 1
+        assert "401" in err.getvalue()
+        assert "No active exception" not in err.getvalue()
+
+
+def test_another_profiles_snapshot_cannot_stand_in_for_this_profiles_model():
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        ticker = "KXHIGHTSFO-TEST-B82.5"
+        store.record_probabilities(
+            "2026-06-18", [_probability(ticker, 0.93)], risk_profile="research"
+        )
+        store.record_probabilities(
+            "2026-06-18", [_probability(ticker, 0.01)], risk_profile="live"
+        )
+
+        research = store.latest_model_probability_read(
+            "2026-06-18", ticker, risk_profile="research"
+        )
+        live = store.latest_model_probability_read(
+            "2026-06-18", ticker, risk_profile="live"
+        )
+
+        assert research is not None and research[1] == pytest.approx(0.93)
+        assert live is not None and live[1] == pytest.approx(0.01)

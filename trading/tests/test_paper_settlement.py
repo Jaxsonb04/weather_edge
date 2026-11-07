@@ -17,6 +17,7 @@ from sfo_kalshi_quant.config import StrategyConfig
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.fees import quadratic_fee_average_per_contract
 from sfo_kalshi_quant.models import ForecastSnapshot, IntradaySnapshot, MarketBin, TradeDecision
+from sfo_kalshi_quant.monitor import _is_guaranteed_payoff_group_row
 from sfo_kalshi_quant.paper import ArbitrageContainmentError, PaperTrader
 from sfo_kalshi_quant.store.scoring import _sample_decision_rows
 from sfo_kalshi_quant.summary import build_paper_summary
@@ -2520,3 +2521,104 @@ def test_paper_spend_excludes_expired_resting_orders():
         # After expiry the zero-capital order no longer consumes the cap: spend is
         # back to just the filled order's notional, freeing re-entry headroom.
         assert abs(store.paper_spend_for_target("2026-06-03") - filled_spend) < 1e-9
+
+
+def _yes_no_box(store):
+    trader = PaperTrader(store, risk_profile="live")
+    market = MarketBin(
+        ticker="KXHIGHTSFO-TEST-B68.5",
+        event_ticker="KXHIGHTSFO-TEST",
+        title="SFO high 68 to 69",
+        yes_sub_title="68° to 69°",
+        strike_type="between",
+        floor_strike=68,
+        cap_strike=69,
+        yes_bid=0.44,
+        yes_ask=0.45,
+        no_bid=0.47,
+        no_ask=0.48,
+        yes_bid_size=20.0,
+        yes_ask_size=20.0,
+        status="active",
+    )
+    box = next(
+        opportunity
+        for opportunity in build_arbitrage_opportunities(
+            [market],
+            config=StrategyConfig(max_event_risk_pct=0.50),
+            bankroll=1000.0,
+        )
+        if opportunity.kind == "BOX_YES_NO"
+    )
+    return trader, box
+
+
+def test_interrupted_arbitrage_leg_is_never_trusted_as_a_guaranteed_group():
+    """A signal skips compensation, so the leg must already be fail-safe."""
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        trader, box = _yes_no_box(store)
+        original_record = store.record_paper_order
+        calls = 0
+
+        def die_on_second_leg(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise KeyboardInterrupt
+            return original_record(*args, **kwargs)
+
+        with patch.object(store, "record_paper_order", side_effect=die_on_second_leg):
+            with pytest.raises(KeyboardInterrupt):
+                trader.place_arbitrage("2026-06-03", box, bankroll=1000.0)
+
+        rows = store.open_paper_orders(10)
+        assert len(rows) == 1
+        assert str(rows[0]["group_id"]).startswith("DEGRADED-ARB-")
+        assert not _is_guaranteed_payoff_group_row(rows[0])
+
+
+def test_a_leg_closed_before_promotion_stops_the_box_being_trusted():
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        trader, box = _yes_no_box(store)
+        original_promote = store.promote_arbitrage_group
+
+        def close_first_leg_then_promote(order_ids, *, group_id):
+            store.close_paper_order(order_ids[0], 0.40)
+            original_promote(order_ids, group_id=group_id)
+
+        with patch.object(store, "promote_arbitrage_group", side_effect=close_first_leg_then_promote):
+            with pytest.raises(RuntimeError):
+                trader.place_arbitrage("2026-06-03", box, bankroll=1000.0)
+
+        assert not any(_is_guaranteed_payoff_group_row(row) for row in store.open_paper_orders(10))
+
+
+def test_a_stale_monitor_read_cannot_close_a_promoted_leg():
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        trader, box = _yes_no_box(store)
+        order_ids = trader.place_arbitrage("2026-06-03", box, bankroll=1000.0)
+
+        with pytest.raises(ValueError, match="changed group"):
+            store.close_paper_order(order_ids[0], 0.40, expected_group_id="DEGRADED-old")
+
+        assert len(store.open_paper_orders(10)) == 2
+
+
+def test_complete_arbitrage_box_is_promoted_to_one_guaranteed_group():
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        trader, box = _yes_no_box(store)
+
+        order_ids = trader.place_arbitrage("2026-06-03", box, bankroll=1000.0)
+
+        assert len(order_ids) == 2
+        rows = store.open_paper_orders(10)
+        assert all(_is_guaranteed_payoff_group_row(row) for row in rows)
+        group_ids = {str(row["group_id"]) for row in rows}
+        assert len(group_ids) == 1 and next(iter(group_ids)).startswith("ARB-")
+        assert {
+            json.loads(row["diagnostics_json"])["group_id"] for row in rows
+        } == group_ids

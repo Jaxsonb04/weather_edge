@@ -358,7 +358,7 @@ def test_paired_case_record_derives_contracts_dollars_and_rejections_from_ticker
     assert record.baseline_pnl == 3.0
     assert record.baseline_filled is True
     assert record.baseline_contracts == 10.0
-    assert record.baseline_dollars_at_risk == pytest.approx(2.0)  # 10 contracts * $0.20
+    assert record.baseline_dollars_at_risk == pytest.approx(2.1)  # 10 contracts * ($0.20 + $0.01 fee)
     assert record.baseline_rejections == ("no_trade",)
 
 

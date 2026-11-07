@@ -171,14 +171,25 @@ def parse_market_resolution(
     if not status:
         raise ExchangeMarketUnreadable(f"{endpoint}/{ticker} returned no status")
     raw_value = market.get("expiration_value")
-    value = None
-    if raw_value not in (None, ""):
-        value = _optional_float(raw_value)
-        if value is None:
-            raise ExchangeMarketUnreadable(
-                f"{endpoint}/{ticker} returned unparseable expiration_value "
-                f"{raw_value!r}"
-            )
+    value = _optional_float(raw_value)
+    # Kalshi has finalized some events with the winning bracket label here
+    # ("70° to 71°") instead of the observed high. A label is no temperature, so
+    # it reads as no value and the check compares the result alone. Text naming
+    # no temperature at all, or a number that will not parse ("1e309"), is
+    # still unreadable.
+    text = str(raw_value)
+    if (
+        value is None
+        and raw_value not in (None, "")
+        and (
+            not any(character.isdigit() for character in text)
+            or re.fullmatch(r"\s*[-+]?[\d.]+(?:[eE][-+]?\d+)?\s*", text)
+        )
+    ):
+        raise ExchangeMarketUnreadable(
+            f"{endpoint}/{ticker} returned unparseable expiration_value "
+            f"{raw_value!r}"
+        )
     return {
         "market_ticker": ticker,
         "market_status": status,

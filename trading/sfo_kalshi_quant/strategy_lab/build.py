@@ -1098,7 +1098,7 @@ def _m1_trial_account(
 ) -> dict[str, Any]:
     """Publish the M1 paper trial as its own book, never merged with another.
 
-    The book is a separate $10,000 paper ledger. A missing or invalid M1
+    The book is a separate $2,000 paper ledger. A missing or invalid M1
     ledger publishes as unavailable here and never suppresses the live or
     Research V7 accounting above.
     """

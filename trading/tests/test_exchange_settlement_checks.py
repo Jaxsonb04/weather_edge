@@ -1148,3 +1148,29 @@ def test_a_sliced_backfill_resumes_where_the_last_slice_stopped():
         assert {rows[ids[ticker]]["verification_status"] for ticker, *_ in lots} == {
             EXCHANGE_CHECK_MATCH
         }
+
+
+def test_a_market_finalized_with_a_bracket_label_is_checked_on_its_result():
+    target = "2026-09-10"
+    ticker = "KXHIGHTSFO-26SEP10-B70.5"
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "paper.db"
+        store, ids = _book(db_path, target, 71.0, [(ticker, "between", 70.0, 71.0)])
+        fake = _FakeExchange(
+            {f"markets/{ticker}": _market(ticker, result="no", value="70° to 71°")}
+        )
+
+        _run_check(store, fake, intervals={SFO: (target, target)})
+
+        row = _check_rows(db_path)[ids[ticker]]
+        assert row["verification_status"] == EXCHANGE_CHECK_MISMATCH
+        assert row["mismatch_reason"] == "result"
+        assert row["kalshi_expiration_value"] is None
+
+
+@pytest.mark.parametrize("value", ["1e309", "nan-ish", "12.3.4"])
+def test_a_numeric_or_textual_non_temperature_is_unreadable_not_missing(value):
+    ticker = "KXHIGHTSFO-26SEP10-B70.5"
+    payload = {"market": _market(ticker, result="no", value=value)}
+    with pytest.raises(exchange_settlement.ExchangeMarketUnreadable):
+        exchange_settlement.parse_market_resolution(payload, ticker, "markets")

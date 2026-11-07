@@ -270,7 +270,9 @@ TARGET_POLICY_V5 = ResearchSleevePolicy(
 # not the absolute dollars, are what fund breadth. v3 raised size while holding
 # the shared caps fixed, cutting concurrent resting quotes 9.6 -> 4.3 and
 # costing $2.70/day. Every scale step must move ALL dollar knobs together so
-# aggregate/position stays 8.33 and city/position stays 2.0.
+# the ratios hold: 8.33 aggregate/position and 2.0 city/position through v6.
+# V7's $2,000 scales every percentage cap but keeps the $90 position, so its
+# pinned geometry is 16.67 and 4.0.
 #
 # target_return stays 0.05. The daily target-attained lock (db.py: "target
 # attained: new target risk is locked for the objective day") only halts new

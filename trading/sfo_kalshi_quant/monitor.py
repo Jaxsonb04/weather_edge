@@ -410,7 +410,9 @@ def _refresh_same_day_model_reads(
                 emos_mu_sigma=emos,
                 standard_timezone=intraday_timezone_for_city(city),
             )
-            store.record_probabilities(target_iso, probabilities.values())
+            store.record_probabilities(
+                target_iso, probabilities.values(), risk_profile=profile
+            )
             written += len(probabilities)
         except (ForecastDataError, ValueError, OSError) as exc:
             if held is not None and isinstance(exc, _PostPeakHold):
@@ -567,7 +569,7 @@ def run_paper_monitor(
             # unmanaged. Surface it loudly by re-raising; transient 4xx (e.g. a
             # 404 on a delisted market) stay a per-order FETCH_FAILED.
             if exc.code in (401, 403):
-                raise
+                raise exc
             reason = f"market fetch failed (HTTP {exc.code})"
             store.record_monitor_snapshot(row, side=side, action="FETCH_FAILED", reason=reason)
             print(f"HOLD order {row['id']} {row['market_ticker']} {side}: {reason}")
@@ -932,6 +934,7 @@ def run_paper_monitor(
                     "observed_at": observed_at,
                     "source": "monitor_market_lookup",
                 },
+                expected_group_id=row["group_id"],
             )
         except (ValueError, RuntimeError) as exc:
             # A concurrent settle/close can win the race for this row. Log and
