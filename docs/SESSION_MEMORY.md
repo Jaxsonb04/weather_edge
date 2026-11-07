@@ -43,7 +43,11 @@ operational claim; all production observations below are dated snapshots.
   - **Pending publication:** main has web changes that are not on Pages yet:
     #179 and the °C toggle. Publishing needs the owner's OK. The next backend
     deploy also picks up the Python bumps (certifi, cryptography, numpy, PyJWT,
-    setuptools).
+    setuptools, pandas 3.1.1, python-dateutil 4.0.0; the full suite matched on
+    the old and new lock). Dependabot ignores, with reasons in
+    `.github/dependabot.yml`: `@heroui-pro/react` (licensed), `@types/node`
+    majors (match Node 24), jsdom majors (needs Node 22.22+ or 24.15+; the Mac
+    has 23.2) and tailwind-variants majors (HeroUI pins 3.3.1).
 - **November 7 release snapshot (read first):**
   - **Deployed:** backend at `c14d1a10c` (PRs #163 to #178) and web at
     `372212b33`; #178 changed no site code. Live, V7 and

@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { getIconData } from "@iconify/utils";
 
 const root = process.cwd();
 const sourceRoot = resolve(root, "src");
@@ -28,7 +29,8 @@ const official = JSON.parse(readFileSync(iconDataPath, "utf8"));
 const info = JSON.parse(readFileSync(iconInfoPath, "utf8"));
 const icons = {};
 for (const name of [...names].sort()) {
-  const icon = official.icons[name];
+  // getIconData follows aliases (Solar renames icons) and applies their transforms.
+  const icon = getIconData(official, name);
   if (!icon) throw new Error(`Unknown Solar icon: ${name}`);
   icons[name] = icon;
 }
