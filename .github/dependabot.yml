@@ -10,6 +10,11 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
 
   - package-ecosystem: bun
     directory: "/"
@@ -18,8 +23,8 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
-    # These libraries share peer/version contracts. Review each family together
-    # rather than creating isolated updates with incompatible package versions.
+    # Minor and patch updates arrive as one PR; majors stay individual PRs.
+    # Tiptap packages share exact peer contracts, so they move together.
     groups:
       tiptap:
         patterns:
@@ -33,6 +38,10 @@ updates:
           - "react-dom"
           - "@types/react"
           - "@types/react-dom"
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
 
   - package-ecosystem: github-actions
     directory: "/"
@@ -41,3 +50,8 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
