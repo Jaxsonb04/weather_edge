@@ -14,6 +14,13 @@ from pathlib import Path
 import sys
 
 
+# Original historical cohort; later city onboarding must not change this pilot.
+PILOT_STATION_IDS = frozenset({
+    "KMIA", "KLAX", "KMDW", "KATL", "KNYC", "KDFW", "KSEA", "KPHL",
+    "KPHX", "KAUS", "KSFO", "KHOU", "KOKC", "KBOS", "KDEN",
+})
+
+
 def clock(value):
     value = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if value.tzinfo is None:
@@ -97,6 +104,7 @@ def main():
         if not finite(mu) or not finite(sigma) or sigma <= 0:
             raise ValueError("invalid canonical distribution")
         groups[(station, lead)][target] = (mu, sigma, actual)
+    groups = {key: rows for key, rows in groups.items() if key[0] in PILOT_STATION_IDS}
     stations = sorted({station for station, lead in groups})
     if len(stations) != 15 or set(groups) != {(station, lead) for station in stations for lead in (1, 2)}:
         raise ValueError("15 stations and both leads required")

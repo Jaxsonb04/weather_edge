@@ -317,12 +317,14 @@ def refresh_all_cities(
     now: datetime | None = None,
     archive_baseline: Callable[[], None] | None = None,
     priority_hints: Mapping[str, CityPriorityHint] | None = None,
+    baseline: BaselineResult | None = None,
 ) -> MulticityRefreshReport:
     """Run one budget-safe Google Weather refresh cycle for ``cities``."""
 
     fetch_instant = now if now is not None else datetime.now(timezone.utc)
 
-    baseline = _archive_baseline_first(archive_baseline)
+    if baseline is None:
+        baseline = _archive_baseline_first(archive_baseline)
     purged_rows = runtime.purge_expired(now=fetch_instant)
 
     # FC-4: a credential or entitlement failure returns 4xx for every endpoint
@@ -450,10 +452,11 @@ def run_cli(cities_arg: str) -> int:
     """The ``--cities`` CLI entry point wired from ``google_weather_cache.main``."""
 
     cities = parse_city_slugs(cities_arg)
+    baseline = _archive_baseline_first(None)
     key = api_key()
     usage = GoogleUsageLedger(DB_PATH)
     runtime = GoogleRuntimeStore(GOOGLE_RUNTIME_DB_PATH, production=GOOGLE_RUNTIME_PRODUCTION)
-    report = refresh_all_cities(cities=cities, key=key, usage=usage, runtime=runtime)
+    report = refresh_all_cities(cities=cities, key=key, usage=usage, runtime=runtime, baseline=baseline)
     write_json(CACHE_PATH, build_compatibility_status(report))
 
     attempted = sum(1 for status in report.cities if status.attempted)

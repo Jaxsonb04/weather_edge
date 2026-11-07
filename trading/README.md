@@ -13,7 +13,8 @@ deployed.
 ## Canonical operating path
 
 `portfolio-scan` is the scheduled entry path. `analyze`, `tail-basket`, `arbitrage`
-and `edge-scan` are diagnostics/research tools with separate purposes.
+and `python -m sfo_kalshi_quant.edge_scan` are diagnostics/research tools with
+separate purposes.
 `deploy/aws/run_paper_scan_profiles.sh` orchestrates the configured live and
 research profiles through the portfolio allocator.
 

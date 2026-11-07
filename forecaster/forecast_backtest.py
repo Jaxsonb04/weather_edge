@@ -9,8 +9,8 @@ if it provably lowers the miss without regressing the warm/hot tail.
 
 Design choices that keep the harness honest:
 
-* Rolling-origin: a predictor only ever sees days strictly before the day it
-  scores -- history is appended *after* the prediction is made.
+* Rolling-origin: a predictor sees only days finished before snapshot issuance
+  (D-2 and earlier for a next-day target D); D-1 is still underway.
 * CLISFO truth only: a day is scored against its CLISFO settlement; days without
   one are excluded and counted, never silently averaged against a fallback.
 * Daily resolution: the unit is one independent weather day, deduped to the last
@@ -27,6 +27,7 @@ import math
 import random
 import sqlite3
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Callable
 
@@ -593,8 +594,10 @@ def run_forecast_backtest(
     history: list[BlendRow] = []
     per_day: list[dict] = []
     for row in ordered:
-        prediction = predictor(row, history)
-        history.append(row)  # rolling-origin: only prior days were visible
+        # Clean next-day snapshots issue on D-1, before that day's final high.
+        cutoff = (date.fromisoformat(row.target_date) - timedelta(days=1)).isoformat()
+        prediction = predictor(row, [h for h in history if h.target_date < cutoff])
+        history.append(row)
         if prediction is None:
             continue
         actual = row.actual_high_f

@@ -1727,6 +1727,7 @@ def test_cli_reports_baseline_failure_after_independent_google_refresh(monkeypat
         soft_monthly_ceiling=7800,
     )
     monkeypatch.setattr(gmr, "api_key", lambda: TEST_KEY)
+    monkeypatch.setattr(gmr, "_archive_baseline_first", lambda _archive: report.baseline)
     monkeypatch.setattr(gmr, "GoogleUsageLedger", lambda _path: object())
     monkeypatch.setattr(
         gmr,
@@ -1737,6 +1738,39 @@ def test_cli_reports_baseline_failure_after_independent_google_refresh(monkeypat
     monkeypatch.setattr(gmr, "write_json", lambda *_args, **_kwargs: None)
 
     assert gmr.run_cli("sfo") == 1
+
+
+@pytest.mark.parametrize("store", ["GoogleUsageLedger", "GoogleRuntimeStore"])
+def test_cli_runs_baseline_before_optional_store_failure(monkeypatch, store):
+    baseline_calls = []
+    monkeypatch.setattr(gmr, "_default_archive_baseline", lambda: baseline_calls.append(1))
+    monkeypatch.setattr(gmr, "api_key", lambda: None)
+    monkeypatch.setattr(gmr, "GoogleUsageLedger", lambda _path: object())
+
+    def fail_store(*_args, **_kwargs):
+        raise sqlite3.OperationalError("unavailable optional store")
+
+    monkeypatch.setattr(gmr, store, fail_store)
+    with pytest.raises(sqlite3.OperationalError, match="unavailable optional store"):
+        gmr.run_cli("sfo")
+    assert baseline_calls == [1]
+
+
+def test_cli_serves_baseline_once_and_preserves_failure(monkeypatch, tmp_path):
+    baseline_calls = []
+
+    def baseline():
+        baseline_calls.append(1)
+        raise RuntimeError("baseline failed")
+
+    monkeypatch.setattr(gmr, "_default_archive_baseline", baseline)
+    monkeypatch.setattr(gmr, "api_key", lambda: None)
+    monkeypatch.setattr(gmr, "GoogleUsageLedger", lambda _path: _usage_ledger(tmp_path))
+    monkeypatch.setattr(gmr, "GoogleRuntimeStore", lambda *_args, **_kwargs: _runtime_store(tmp_path))
+    monkeypatch.setattr(gmr, "write_json", lambda *_args: None)
+
+    assert gmr.run_cli("sfo") == 1
+    assert baseline_calls == [1]
 
 
 def test_google_fetch_failure_cannot_retroactively_affect_the_already_archived_baseline(tmp_path):

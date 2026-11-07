@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import sys
 import tempfile
+from datetime import date, timedelta
 from pathlib import Path
 
 
@@ -138,6 +139,20 @@ def test_source_mos_predictor_returns_raw_blend_below_minimum_history():
     history = [_row(f"2026-04-{d:02d}", actual=75, google=65) for d in range(1, 20)]
     new_row = _row("2026-06-01", actual=70, google=66)
     assert abs(predictor(new_row, history) - 66.0) < 1e-9
+
+
+def test_backtest_source_mos_excludes_unfinished_prior_day():
+    start = date(2026, 6, 1)
+    rows = [_row((start + timedelta(days=i)).isoformat(), actual=70, google=70)
+            for i in range(32)]
+    rows[-2] = _row(rows[-2].target_date, actual=100, google=70)
+    result = fb.run_forecast_backtest(rows, fb.make_source_mos_predictor({"google": 1.0}), climatology={})
+    assert result["per_day"][-1]["predicted"] == 70.0
+
+    # Once that day has finished it may train the following next-day forecast.
+    rows.append(_row((start + timedelta(days=32)).isoformat(), actual=70, google=70))
+    result = fb.run_forecast_backtest(rows, fb.make_source_mos_predictor({"google": 1.0}), climatology={})
+    assert result["per_day"][-1]["predicted"] > 70.0
 
 
 def test_production_debias_holdout_guard_flags_tail_cohort_regression():
@@ -345,6 +360,28 @@ def test_clisfo_rescore_is_idempotent_once_on_clisfo():
                 conn, "forecast_blend_daily_high"
             )
         assert rescored == 0  # already CLISFO; nothing to do
+
+
+def test_corrected_final_clisfo_truth_rescores_persisted_forecast():
+    import city_truth
+
+    with sqlite3.connect(":memory:") as conn:
+        google_weather_cache.init_archive(conn)
+        conn.execute(
+            "INSERT INTO forecast_blend_daily_high "
+            "(fetched_at, target_date, method, predicted_high_f) "
+            "VALUES ('2026-05-03T07:30:00+00:00', '2026-05-04', 'test', 70)"
+        )
+        city_truth.upsert_settlement(conn, station_id="KSFO", local_date="2026-05-04",
+                                     max_temperature_f=70, is_final=True)
+        assert google_weather_cache.update_scores_for_table(conn, "forecast_blend_daily_high") == 1
+        city_truth.upsert_settlement(conn, station_id="KSFO", local_date="2026-05-04",
+                                     max_temperature_f=72, is_final=True)
+        assert google_weather_cache.update_scores_for_table(conn, "forecast_blend_daily_high") == 1
+        assert conn.execute(
+            "SELECT actual_high_f, abs_error_f, truth_source FROM forecast_blend_daily_high"
+        ).fetchone() == (72.0, 2.0, "clisfo")
+        assert google_weather_cache.update_scores_for_table(conn, "forecast_blend_daily_high") == 0
 
 
 def test_clisfo_nws_divergence_is_reported_not_averaged():

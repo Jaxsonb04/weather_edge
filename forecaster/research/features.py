@@ -72,9 +72,9 @@ def load_data_with_inland(db_path=DB_PATH, station_id=SFO_STATION_ID,
     SFO defines the master index; the inland series is reindexed onto it by
     absolute UTC timestamp (so a later .shift(N) is an exact N-hour lag and
     "current hour" is the same instant for both stations -- this alignment is
-    itself part of the leakage guard). Short interior gaps are bridged up to 3h;
-    longer gaps stay NaN (XGBoost tolerates NaN). Degrades gracefully to an
-    all-NaN column if the inland station has not been ingested yet.
+    itself part of the leakage guard). Carry the last observation forward up to
+    3h; further missing hours stay NaN (XGBoost tolerates NaN). Degrades gracefully
+    to an all-NaN column if the inland station has not been ingested yet.
     """
     sfo = load_data(db_path, station_id)
     try:
@@ -83,7 +83,7 @@ def load_data_with_inland(db_path=DB_PATH, station_id=SFO_STATION_ID,
         sfo["inland_temp"] = np.nan
         return sfo
     inland_temp = inland["temp_f"].reindex(sfo.index)
-    inland_temp = inland_temp.interpolate(method="time", limit=3, limit_area="inside")
+    inland_temp = inland_temp.ffill(limit=3)
     sfo["inland_temp"] = inland_temp
     return sfo
 
