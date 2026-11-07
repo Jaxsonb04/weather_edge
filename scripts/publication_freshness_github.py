@@ -51,6 +51,7 @@ from publication_freshness_core import (
 
 ApiCall = Callable[[str, str, Any], Any]
 
+MONITOR_AUTHOR = "github-actions[bot]"
 PAGE_SIZE = 100
 # A repository with more than 500 open issues would hide this monitor's own
 # issue from an unlabelled scan, and a hidden issue means a new duplicate every
@@ -176,6 +177,9 @@ def _first_issue(payload: Any, predicate: Callable[[dict[str, Any]], bool]) -> O
 
 
 def _looks_like_our_issue(entry: dict[str, Any]) -> bool:
+    author = entry.get("user")
+    if not isinstance(author, dict) or author.get("login") != MONITOR_AUTHOR:
+        return False
     body, title = entry.get("body"), entry.get("title")
     if isinstance(body, str) and MONITOR_MARKER in body:
         return True
@@ -237,6 +241,7 @@ def find_open_issue(api: ApiCall, repo: str, *, notes: Notes | None = None) -> O
             comment["body"]
             for comment in page
             if isinstance(comment, dict) and isinstance(comment.get("body"), str)
+            and isinstance(comment.get("user"), dict) and comment["user"].get("login") == MONITOR_AUTHOR
         )
     return OpenIssue(number=found.number, body=found.body, comment_bodies=tuple(bodies))
 
@@ -309,7 +314,11 @@ def _closed_by_monitor(api: ApiCall, repo: str, entry: dict[str, Any]) -> bool:
         comments = page
     last = comments[-1] if comments else None
     body = last.get("body") if isinstance(last, dict) else None
-    return isinstance(body, str) and MONITOR_MARKER in body and "Closing automatically." in body
+    author = last.get("user") if isinstance(last, dict) else None
+    return (
+        isinstance(author, dict) and author.get("login") == MONITOR_AUTHOR
+        and isinstance(body, str) and MONITOR_MARKER in body and "Closing automatically." in body
+    )
 
 
 # --- Issue prose ---

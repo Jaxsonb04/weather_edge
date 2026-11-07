@@ -60,9 +60,10 @@ function ModelProof({ diag }: { diag: Diagnostics }) {
           note={ab.significant ? "Diebold–Mariano" : "not yet significant"}
           info={
             <InfoTip label="the model proof" title="San Francisco research">
-              This is SFO residual-model research, not the universal method. In the baseline summary the LSTM's MAE
-              is {f2(models.lstm.mae)}°F versus persistence at {f2(models.persistence.mae)}°F, a {persistLift}%
-              reduction. The other cities use the shared EMOS point forecast.
+              This is SFO residual-model research, not the universal method. The cards above come from the held-out
+              A/B test. The separate baseline summary and its chart put the LSTM's MAE at {f2(models.lstm.mae)}°F
+              versus persistence at {f2(models.persistence.mae)}°F, a {persistLift}% reduction. The other cities use
+              the shared EMOS point forecast.
             </InfoTip>
           }
         />

@@ -158,6 +158,15 @@ describe("account equity series", () => {
     });
   });
 
+  it("carries a capital deposit so a balance jump is explained", () => {
+    const [before, deposited] = equitySeriesFromDays([
+      { date: "2026-11-05", cumulative_realized: 33.22, closing_equity: 1033.22 },
+      { date: "2026-11-06", cumulative_realized: 21.9, closing_equity: 2021.9, capital_deposit: 1000 },
+    ]);
+    expect(before).not.toHaveProperty("deposit");
+    expect(deposited).toHaveProperty("deposit", 1000);
+  });
+
   it("renders profile data as zero-based P&L contribution", () => {
     const series = equitySeriesFromDays(
       [{ date: "2026-07-09", cumulative_realized: -39.46 }],

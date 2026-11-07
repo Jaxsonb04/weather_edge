@@ -133,6 +133,7 @@ def test_balances_before_the_deposit_stay_on_the_capital_live_really_had(tmp_pat
     assert [row["opening_equity"] for row in rows] == [1000.0, 1000.0, 2000.0]
     assert [row["closing_equity"] for row in rows] == [1000.0, 2000.0, 2000.0]
     assert [row["cumulative_realized"] for row in rows] == [0.0, 0.0, 0.0]
+    assert [row["capital_deposit"] for row in rows] == [0.0, 1000.0, 0.0]
 
 
 def test_a_malformed_deposit_time_does_not_stop_the_build(tmp_path):

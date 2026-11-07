@@ -174,6 +174,7 @@ export function EquityCurve({
                   equity: number;
                   pnl: number;
                   dailyPnl: number;
+                  deposit?: number;
                   accountBalance?: number;
                 };
                 return (
@@ -194,6 +195,12 @@ export function EquityCurve({
                       <ChartTooltip.Label>Daily P&L</ChartTooltip.Label>
                       <ChartTooltip.Value>{money(row.dailyPnl)}</ChartTooltip.Value>
                     </ChartTooltip.Item>
+                    {row.deposit ? (
+                      <ChartTooltip.Item>
+                        <ChartTooltip.Label>Deposit</ChartTooltip.Label>
+                        <ChartTooltip.Value>{money(row.deposit)}</ChartTooltip.Value>
+                      </ChartTooltip.Item>
+                    ) : null}
                     {rendersContribution && row.accountBalance != null && (
                       <ChartTooltip.Item>
                         <ChartTooltip.Label>Account balance</ChartTooltip.Label>

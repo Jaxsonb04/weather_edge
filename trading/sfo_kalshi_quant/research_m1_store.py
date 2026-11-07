@@ -1085,6 +1085,65 @@ def m1_overdue_reconciliation_day(conn: sqlite3.Connection, *, now: datetime) ->
     return str(row[0]) if row is not None else None
 
 
+def m1_health_problems(conn: sqlite3.Connection, *, now: datetime) -> list[str]:
+    """Stale evaluations and repeated failed admissions, for host and public status.
+
+    A failed admission or an evaluation exception leaves the parent scan green
+    and still reconciles cleanly, so neither the scan stamp nor the fidelity rule
+    can show it. M1 evaluates only the next civil day's ladder, so it writes
+    nothing from about 07:00 to 15:00 UTC. Until 16:30 staleness is measured from
+    07:00, so a trial that died before the gap stays failing through it.
+    """
+
+    now = now.astimezone(UTC)
+    account = conn.execute(
+        "SELECT created_at FROM paper_accounts WHERE account_id=? AND status='ACTIVE'",
+        (M1_ACCOUNT_ID,),
+    ).fetchone()
+    newest, failures = None, []
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='m1_evaluations'"
+    ).fetchone():
+        newest = conn.execute(
+            "SELECT created_at FROM m1_evaluations ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        failures = conn.execute(
+            "SELECT utc_hour, created_at, decision FROM m1_evaluations "
+            "WHERE created_at >= ? AND decision IN (?, ?)",
+            (_iso(now - timedelta(hours=3)), DECISION_ADMISSION_ERROR, DECISION_PENDING),
+        ).fetchall()
+
+    problems = []
+    failed_hours = set()
+    for utc_hour, created_at, decision in failures:
+        moment = parse_timestamp(created_at)
+        age = now - moment if moment is not None else None
+        if age is None or age > timedelta(hours=3):
+            continue
+        if decision == DECISION_ADMISSION_ERROR or age > timedelta(hours=1):
+            failed_hours.add(utc_hour)
+    if len(failed_hours) >= 2:
+        problems.append(
+            f"M1 trial admissions failed in {len(failed_hours)} UTC hours of the last 3"
+        )
+    minute_of_day = now.hour * 60 + now.minute
+    in_gap = 7 * 60 <= minute_of_day < 16 * 60 + 30
+    reference = now.replace(hour=7, minute=0, second=0, microsecond=0) if in_gap else now
+    last = parse_timestamp(newest[0]) if newest else None
+    if account is not None and last is not None and reference - last > timedelta(minutes=90):
+        problems.append(
+            f"M1 trial has no evaluation in the last 90 minutes (newest {newest[0]})"
+        )
+    if newest is None and account is not None and not in_gap:
+        created = parse_timestamp(account[0])
+        if created is None or now - created > timedelta(hours=24):
+            problems.append(
+                "M1 trial has no evaluation since account creation "
+                "(24-hour start-up grace expired or unavailable)"
+            )
+    return problems
+
+
 def _day_bounds(day: date) -> tuple[str, str]:
     lower = datetime.combine(day, time.min, tzinfo=UTC)
     return _iso(lower), _iso(lower + timedelta(days=1))
@@ -1607,6 +1666,7 @@ def m1_trial_payload(
         settled = _settled_entries(conn)
         realized = _realized_pnl(conn)
         entries, trading_days = _entry_counts(conn)
+        health_problems = m1_health_problems(conn, now=current)
         evaluation_stats = conn.execute(
             "SELECT COUNT(*), MIN(created_at), MAX(created_at), "
             "COALESCE(SUM(placement_enabled), 0) FROM m1_evaluations"
@@ -1776,8 +1836,9 @@ def m1_trial_payload(
         ),
         "shadow_arms": shadow,
         # Derived from the journal. A scan-level exception is not stored; it
-        # shows up as a stale last_evaluation_at (the scheduler watchdog alerts).
+        # shows up as a stale last_evaluation_at.
         "health": {
+            "problems": health_problems,
             "last_evaluation_at": evaluation_stats[2],
             "stale_pending_admissions": int(stale_pending),
             "last_error": (
@@ -1829,7 +1890,7 @@ def _static_trial_fields() -> dict[str, Any]:
             "sampling": "first research-profile scan of each UTC hour, per leg",
             "edge_threshold": M1_POLICY.edge_threshold,
             "lead_days": M1_POLICY.lead_days,
-            "execution": "taker at the displayed ask; per-order Kalshi fee",
+            "execution": "taker at the displayed ask; per-order market fee",
             "exits": "hold to settlement",
             "one_entry_per_leg": True,
         },

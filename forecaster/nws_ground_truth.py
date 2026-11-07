@@ -208,7 +208,7 @@ def update_daily_high(conn, local_date, station_id=NWS_STATION_ID):
         WHERE station_id = ?
           AND local_date = ?
           AND temp_f IS NOT NULL
-        ORDER BY observed_at
+        ORDER BY +observed_at  -- the + stops a walk of the station's whole history
         """,
         (station_id, local_date),
     ).fetchall()

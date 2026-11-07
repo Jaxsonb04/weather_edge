@@ -117,6 +117,7 @@ export interface DayRow {
   opening_equity?: number | null;
   daily_realized_pnl?: number;
   closing_equity?: number | null;
+  capital_deposit?: number;
   opening_attributed_pnl?: number;
   closing_attributed_pnl?: number;
   trades_opened?: number;
@@ -562,6 +563,7 @@ export interface M1TrialPayload {
   shadow_arms?: Record<string, M1ShadowArm | undefined>;
   health?: {
     last_evaluation_at?: string | null;
+    problems?: string[];
     stale_pending_admissions?: number;
     missed_entries?: number | null;
     last_error?: { at?: string; reason?: string } | null;
@@ -887,6 +889,7 @@ export function equitySeriesFromDays(days: DayRow[] | undefined, startingBankrol
         ) / 100,
         pnl: d.cumulative_realized ?? 0,
         dailyPnl: d.realized_pnl ?? 0,
+        ...(d.capital_deposit ? { deposit: d.capital_deposit } : {}),
         ...(accountBalance == null ? {} : { accountBalance }),
       };
     });

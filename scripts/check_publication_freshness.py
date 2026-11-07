@@ -176,7 +176,7 @@ def _run(args: argparse.Namespace, notes: Notes) -> int:
             # A structural failure (404, not our document) is a dead artifact, not a blip.
             state = STATE_UNHEALTHY if strategy.structural else STATE_UNREADABLE
             verdict = replace(verdict, state=state, detail=f"Strategy Lab: {strategy.error}")
-        elif problem := strategy_problem(strategy.manifest, now):
+        elif problem := strategy_problem(strategy.manifest, verdict.reference_now or now):
             verdict = replace(verdict, state=STATE_UNHEALTHY, detail=problem)
     print(f"{verdict.state.upper()}: {verdict.detail}")
     if verdict.published_at is not None:

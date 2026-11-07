@@ -57,6 +57,23 @@ describe("M1Trial", () => {
     expect(screen.getByRole("progressbar", { name: "Entries" })).toHaveAttribute("aria-valuemax", "1500");
   });
 
+  it("never says stop rules are clear while the trial is failing", () => {
+    render(<M1Trial s={lab({
+      ...book,
+      trial: { ...book.trial, entries_enabled_by_stop_rules: true, health: { problems: ["M1 trial has no evaluation"] } },
+    })} />);
+    expect(screen.getByText("Trial failing")).toBeInTheDocument();
+    expect(screen.queryByText("Stop rules clear")).not.toBeInTheDocument();
+  });
+
+  it("shows overdue stop rules as warnings", () => {
+    render(<M1Trial s={lab({
+      ...book,
+      trial: { ...book.trial, stop_rules: [{ rule: "fidelity", label: "Daily check", status: "overdue" }] },
+    })} />);
+    expect(screen.getByText("Overdue").closest(".chip")).toHaveClass("chip--warning");
+  });
+
   it("charts only days with a published closing balance", () => {
     render(<M1Trial s={lab({
       ...book,

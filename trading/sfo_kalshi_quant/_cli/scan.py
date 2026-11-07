@@ -520,7 +520,7 @@ def _analyze_one_target(
         kalshi_client=kalshi_client,
         emos_lookup=emos_lookup,
         sizing_model=sizing_model,
-        fallback_event_title="No live Kalshi event found; probability-only fallback ladder",
+        fallback_event_title="No live market event found; probability-only fallback ladder",
     )
     city = context.city
     series_ticker = context.series_ticker
@@ -540,11 +540,11 @@ def _analyze_one_target(
         if event is None:
             entry_allowed = False
             entry_block_reason = (
-                "paper entry disabled: target date is not listed as a live Kalshi event yet"
+                "paper entry disabled: target date is not listed as a live market event yet"
             )
         elif not event.active_markets:
             entry_allowed = False
-            entry_block_reason = "paper entry disabled: Kalshi event has no active markets"
+            entry_block_reason = "paper entry disabled: market event has no active markets"
         else:
             entry_allowed, entry_block_reason = _paper_entry_gate_for_target(
                 target, forecast, intraday, city=city, risk_profile=risk_profile
@@ -1222,7 +1222,7 @@ def _portfolio_scan_one_target(
         kalshi_client=kalshi_client,
         emos_lookup=emos_lookup,
         sizing_model=sizing_model,
-        fallback_event_title="No live Kalshi event found; portfolio scan is research-only",
+        fallback_event_title="No live market event found; portfolio scan is research-only",
     )
     city = context.city
     series_ticker = context.series_ticker
@@ -1275,11 +1275,11 @@ def _portfolio_scan_one_target(
         if event is None:
             entry_allowed = False
             entry_block_reason = (
-                "paper portfolio disabled: target date is not listed as a live Kalshi event yet"
+                "paper portfolio disabled: target date is not listed as a live market event yet"
             )
         elif not event.active_markets:
             entry_allowed = False
-            entry_block_reason = "paper portfolio disabled: Kalshi event has no active markets"
+            entry_block_reason = "paper portfolio disabled: market event has no active markets"
         else:
             entry_allowed, entry_block_reason = _paper_entry_gate_for_target(
                 target, forecast, intraday, city=city, risk_profile=risk_profile
@@ -1487,7 +1487,7 @@ def _arbitrage_one_target(
         markets = fallback_bins(
             f"{series_ticker}-{format_event_date_token(target)}-PAPER", 70.0
         )
-        event_title = "No live Kalshi event found; arbitrage scan is research-only"
+        event_title = "No live market event found; arbitrage scan is research-only"
         market_available = False
 
     risk_profile = _risk_profile_name(args)
@@ -1506,11 +1506,11 @@ def _arbitrage_one_target(
         if event is None:
             entry_allowed = False
             entry_block_reason = (
-                "paper arbitrage disabled: target date is not listed as a live Kalshi event yet"
+                "paper arbitrage disabled: target date is not listed as a live market event yet"
             )
         elif not event.active_markets:
             entry_allowed = False
-            entry_block_reason = "paper arbitrage disabled: Kalshi event has no active markets"
+            entry_block_reason = "paper arbitrage disabled: market event has no active markets"
         else:
             entry_allowed, entry_block_reason = _paper_entry_gate_for_target(
                 target, None, None, city=city, risk_profile=risk_profile
@@ -1624,7 +1624,7 @@ def _tail_basket_one_target(
             f"{series_ticker}-{format_event_date_token(target)}-PAPER",
             forecast.predicted_high_f,
         )
-        event_title = "No live Kalshi event found; probability-only fallback ladder"
+        event_title = "No live market event found; probability-only fallback ladder"
 
     # lead_days=None: the live serve writes each rolling target at its TRUE lead
     # (next-day=1, 2-day-out=2), so read across leads keyed by target_date. A
@@ -1678,11 +1678,11 @@ def _tail_basket_one_target(
         if event is None:
             entry_allowed = False
             entry_block_reason = (
-                "paper entry disabled: target date is not listed as a live Kalshi event yet"
+                "paper entry disabled: target date is not listed as a live market event yet"
             )
         elif not event.active_markets:
             entry_allowed = False
-            entry_block_reason = "paper entry disabled: Kalshi event has no active markets"
+            entry_block_reason = "paper entry disabled: market event has no active markets"
         else:
             entry_allowed, entry_block_reason = _paper_entry_gate_for_target(
                 target, forecast, intraday, city=city, risk_profile=risk_profile

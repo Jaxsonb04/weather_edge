@@ -153,9 +153,14 @@ def _profile_monitor_health(
         summary = health.setdefault(profile, {
             "latest_opened_at": None,
             "latest_monitor_action_at": None,
+            "oldest_lot_inspection_at": None,
             "marked_open_positions": 0,
         })
         inspection = latest_by_order.get(int(row["id"]))
+        inspected_at = _parse_timestamp(inspection.get("created_at")) if inspection else None
+        oldest = _parse_timestamp(summary["oldest_lot_inspection_at"])
+        if inspected_at is not None and (oldest is None or inspected_at < oldest):
+            summary["oldest_lot_inspection_at"] = inspection.get("created_at")
         for key, value in (
             ("latest_opened_at", row.get("created_at")),
             ("latest_monitor_action_at", inspection.get("created_at") if inspection else None),
@@ -582,6 +587,14 @@ def _paper_payload(db_path: Path) -> dict[str, Any]:
             "latest_opened_at": open_rows[0]["created_at"] if open_rows else None,
             "latest_monitor_action_at": (
                 monitor_action_rows[0].get("time") if monitor_action_rows else None
+            ),
+            "oldest_lot_inspection_at": min(
+                filter(None, (
+                    health["oldest_lot_inspection_at"]
+                    for health in profile_monitor_health.values()
+                )),
+                key=_parse_timestamp,
+                default=None,
             ),
             "closed_positions": int(summary["orders"]),
             "realized_pnl": _round(summary["realized_pnl"], 2),

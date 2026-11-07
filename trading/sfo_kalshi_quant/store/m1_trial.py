@@ -78,6 +78,8 @@ CREATE INDEX IF NOT EXISTS idx_m1_evaluations_created
     ON m1_evaluations (created_at);
 CREATE INDEX IF NOT EXISTS idx_m1_evaluations_target_series
     ON m1_evaluations (target_date, series_ticker);
+CREATE INDEX IF NOT EXISTS idx_m1_evaluations_order
+    ON m1_evaluations (order_id) WHERE order_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS m1_shadow_entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

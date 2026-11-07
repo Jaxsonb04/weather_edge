@@ -54,3 +54,18 @@ def test_observation_daily_high_never_claims_settlement_finality():
         ).fetchone()
 
     assert row == (70.4, 0, "NWS station observations")
+
+
+def test_daily_high_read_stays_on_the_station_date_index():
+    # A bare ORDER BY observed_at picks the primary key and walks the station's
+    # whole history while this refresh holds the write lock.
+    with sqlite3.connect(":memory:") as conn:
+        nws_ground_truth.init_db(conn)
+        statements = []
+        conn.set_trace_callback(statements.append)
+        nws_ground_truth.update_daily_high(conn, "2026-11-06", "KMDW")
+        conn.set_trace_callback(None)
+
+        read = next(sql for sql in statements if "FROM nws_station_observations" in sql)
+        plan = " ".join(row[3] for row in conn.execute(f"EXPLAIN QUERY PLAN {read}"))
+        assert "idx_nws_obs_local_date" in plan, read

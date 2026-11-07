@@ -3557,6 +3557,44 @@ def test_profile_monitor_health_survives_public_activity_and_position_caps(
     assert db_path.read_bytes() == before
 
 
+def test_one_stale_lot_alerts_even_when_others_in_its_book_are_fresh(tmp_path):
+    db_path = tmp_path / "paper.db"
+    store = PaperStore(db_path)
+    now = datetime(2026, 10, 11, 18, 0, tzinfo=UTC)
+    target = "2026-10-12"
+    live_id = store.record_paper_order(target, _approved_decision(), risk_profile="live")
+    fresh_id = _seed_profile_order(
+        store, target, replace(_approved_decision(), ticker="KXHIGHTSFO-FRESH"),
+        profile="research-target",
+    )
+    stale_id = _seed_profile_order(
+        store, target, replace(_approved_decision(), ticker="KXHIGHTSFO-STALE"),
+        profile="research-target",
+    )
+    for order_id, minutes_ago in ((live_id, 0), (fresh_id, 0), (stale_id, 120)):
+        order = store.open_paper_order(order_id)
+        assert order is not None
+        snapshot_id = store.record_monitor_snapshot(
+            order, side="YES", action="HOLD", reason="inspection",
+            market_status="active", live_bid=0.6,
+        )
+        with store.connect() as conn:
+            conn.execute("UPDATE paper_monitor_snapshots SET created_at=? WHERE id=?",
+                         ((now - timedelta(minutes=minutes_ago)).isoformat(), snapshot_id))
+
+    paper = strategy_paper_card_module._paper_payload(db_path)
+    assert paper["summary"]["oldest_lot_inspection_at"] == (now - timedelta(minutes=120)).isoformat()
+    for card in (paper, strategy_profiles_module._profile_paper_payload(paper, "research-target")):
+        assert "monitor-stale" in {
+            row["code"] for row in _strategy_alerts(paper=card, entry_block_reason=None, now=now)
+        }
+    live = strategy_profiles_module._profile_paper_payload(paper, "live")
+    assert "monitor-stale" not in {
+        row["code"] for row in _strategy_alerts(paper=live, entry_block_reason=None, now=now)
+    }
+
+
+
 @pytest.mark.parametrize(
     ("quiet_inspections", "expected_monitor_code", "expected_marked"),
     [

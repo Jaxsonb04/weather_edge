@@ -69,7 +69,7 @@ export function ExitPolicyCard({ s }: { s: StrategyLab }) {
               no rule are held to settlement.
             </InfoTip>
           </div>
-          <Widget.Description>Take-profit and stop-loss, as a share of entry cost</Widget.Description>
+          <Widget.Description>Take-profit closes when the prediction market price approaches the model's estimate, falling back to a percentage of entry cost only without a fresh model read. Stop-loss is a share of entry cost.</Widget.Description>
         </div>
       </Widget.Header>
       <Widget.Content className="flex flex-col gap-4">
@@ -81,8 +81,8 @@ export function ExitPolicyCard({ s }: { s: StrategyLab }) {
         </div>
         {m.model_veto_buffer != null && (
           <p className="text-xs text-muted">
-            Model veto: a move of {Math.round(m.model_veto_buffer * 100)}pp against a position can close it early,
-            capped at a {m.model_veto_max_loss_pct ?? "—"}% loss.
+            On a NO stop, a model estimate at least {Math.round(m.model_veto_buffer * 100)} percentage points above
+            the exit value and at or above entry cost holds the position instead of selling, until the loss reaches {m.model_veto_max_loss_pct ?? "—"}%.
           </p>
         )}
       </Widget.Content>
