@@ -94,6 +94,23 @@ def test_replay_cancels_ttl_and_never_uses_future_settlement_as_fill_evidence() 
     assert result.promotion_eligible is False
 
 
+def test_replay_fills_tape_at_exact_expiry_boundary() -> None:
+    order = ReplayOrder(
+        order_id="expiry", placed_at=_at(0), target_date="2026-07-02",
+        ticker="KXHIGHTSFO-X", side="YES", limit_price=0.30,
+        contracts=5, fee_per_contract=0, queue_ahead=0, ttl_minutes=15,
+    )
+    result = run_replay([
+        ReplayEvent(_at(0), "order", order.ticker, order=order),
+        ReplayEvent(_at(15), "trade", order.ticker, side="YES", price=0.30,
+                    quantity=5, taker_book_side="ask"),
+        ReplayEvent(_at(20), "settlement", order.ticker, target_date="2026-07-02", resolved_yes=True),
+    ])
+    assert result.filled == result.settled == 1
+    assert result.cancelled == 0
+    assert result.realized_pnl == 3.5
+
+
 def test_replay_clears_better_price_queue_before_filling_below_bid() -> None:
     order = ReplayOrder(
         order_id="below-bid",

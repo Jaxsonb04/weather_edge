@@ -176,7 +176,7 @@ def archive_observations(conn, features, station_id=NWS_STATION_ID):
     before = conn.total_changes
     conn.executemany(
         """
-        INSERT OR IGNORE INTO nws_station_observations (
+        INSERT INTO nws_station_observations (
             station_id,
             noaa_station_id,
             observed_at,
@@ -188,6 +188,12 @@ def archive_observations(conn, features, station_id=NWS_STATION_ID):
             inserted_at
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(station_id, observed_at) DO UPDATE SET
+            temp_f = excluded.temp_f,
+            dewpoint_f = excluded.dewpoint_f,
+            wind_mph = excluded.wind_mph,
+            raw_json = excluded.raw_json
+        WHERE raw_json IS NOT excluded.raw_json
         """,
         rows,
     )
@@ -220,7 +226,11 @@ def update_daily_high(conn, local_date, station_id=NWS_STATION_ID):
             )
             VALUES (?, ?, ?, 0, ?, ?, ?)
             ON CONFLICT(station_id, local_date) DO UPDATE SET
+                high_f = NULL,
+                high_observed_at = NULL,
                 observation_count = 0,
+                first_observed_at = NULL,
+                last_observed_at = NULL,
                 is_complete = excluded.is_complete,
                 updated_at = excluded.updated_at
             """,
@@ -333,7 +343,7 @@ def main():
             continue
         print(
             f"fetched {result['observations_seen']} NWS observations "
-            f"({result['observations_inserted']} new) for "
+            f"({result['observations_inserted']} new or corrected) for "
             f"{result['station_id']} across {len(result['dates'])} local day(s)"
         )
 

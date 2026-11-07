@@ -2,6 +2,7 @@
 
 import math
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 from sfo_kalshi_quant.edge_scan import (
@@ -9,9 +10,12 @@ from sfo_kalshi_quant.edge_scan import (
     _load_live_emos,
     _maker_post_price,
     required_sample_size,
+    scan_city,
     summarize,
 )
-from sfo_kalshi_quant.models import MarketBin
+from sfo_kalshi_quant.cities import get_city
+from sfo_kalshi_quant.fees import quadratic_fee_average_per_contract
+from sfo_kalshi_quant.models import EventSnapshot, MarketBin
 
 
 def _bin(strike_type="between", floor=84, cap=85):
@@ -60,6 +64,25 @@ def test_bin_probability_integrates_the_gaussian_over_the_bin():
 def test_required_sample_size_matches_the_variance_math():
     assert required_sample_size(0.026, 0.33) == math.ceil((1.96 * 0.33 / 0.026) ** 2)
     assert required_sample_size(0.0, 0.33) == -1
+
+
+def test_weather_scan_uses_series_fees_for_cost_edge_and_saving():
+    market = _bin()
+
+    class Client:
+        def list_event_snapshots(self, **_kwargs):
+            return [EventSnapshot("T", "test", date(2026, 7, 8), [market])]
+
+    result = scan_city(Client(), get_city("nyc"), {"2026-07-08": (85.0, 1.5)})
+    candidate, = result["candidates"]
+    taker_fee = quadratic_fee_average_per_contract(0.74, 1.0, series_ticker="KXHIGHNY")
+    assert candidate["maker_fee"] == 0.0
+    assert candidate["maker_cost"] == 0.71
+    assert candidate["taker_cost"] == round(0.74 + taker_fee, 4)
+    assert candidate["maker_vs_taker_saving"] == round(0.74 + taker_fee - 0.71, 4)
+    assert candidate["model_edge_after_maker_fee"] == round(
+        _bin_yes_probability(market, 85.0, 1.5) - 0.71, 4
+    )
 
 
 def test_summarize_counts_and_percentiles():

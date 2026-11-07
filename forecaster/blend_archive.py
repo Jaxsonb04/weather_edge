@@ -402,15 +402,11 @@ def archive_hourly_rows(conn, payload, summary):
 def update_scores_for_table(conn, table_name):
     has_truth_source = "truth_source" in table_columns(conn, table_name)
     if has_truth_source:
-        # Re-select rows that are unscored OR were scored against a non-CLISFO
-        # fallback, so a late-arriving CLISFO settlement can correct them.
+        # Final CLI reports can be revised after an earlier final score.
         rows = conn.execute(
             f"""
             SELECT fetched_at, target_date, predicted_high_f, actual_high_f, truth_source
             FROM {table_name}
-            WHERE actual_high_f IS NULL
-               OR truth_source IS NULL
-               OR truth_source != 'clisfo'
             """
         ).fetchall()
     else:
@@ -432,7 +428,9 @@ def update_scores_for_table(conn, table_name):
             continue
 
         is_unscored = existing_actual is None
-        is_clisfo_upgrade = source == "clisfo" and existing_source != "clisfo"
+        is_clisfo_upgrade = source == "clisfo" and (
+            existing_source != "clisfo" or existing_actual != settlement_actual
+        )
         # Legacy rows predate the truth_source column. Stamp them as "legacy"
         # WITHOUT rewriting the stored value -- only a first-time score or a
         # CLISFO upgrade may change actual_high_f/abs_error_f, so a label

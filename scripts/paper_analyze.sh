@@ -2,6 +2,7 @@
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+PYTHON_BIN="${PYTHON_BIN:-${SFO_TRADING_PYTHON:-trading/.venv/bin/python}}"
 profiles_csv="${PAPER_RISK_PROFILES:-${PAPER_RISK_PROFILE:-live}}"
 IFS=',' read -r -a profiles <<< "$profiles_csv"
 for raw_profile in "${profiles[@]}"; do

@@ -1588,7 +1588,7 @@ def _verified_resolved_decision_groups(
 def _expire_orders(state: ReplayAccountState, now: datetime, audit: list[dict[str, object]]) -> None:
     for order_id, order in list(state.open_orders.items()):
         expires = as_utc(order.placed_at) + timedelta(minutes=order.ttl_minutes)
-        if expires > now:
+        if expires >= now:
             continue
         state.open_orders.pop(order_id, None)
         state.reservations.pop(order_id, None)

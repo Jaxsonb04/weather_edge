@@ -245,10 +245,13 @@ check off on the timer without a unit edit. Details:
 ## Edge Scan Diagnostic
 
 `sfo_kalshi_quant/edge_scan.py` measures the favorite-band maker opportunity
-on live order books. Its first run posted 51 quotes across 16 city-days with a
-median model edge of +0.8c and a maker-vs-taker saving of 1.45c per contract;
-roughly 619 settled trades are needed to confirm a 2.6% mean edge at 95%
-confidence.
+on live order books. Its first run reported 51 candidate quotes across 16
+city-days. The reported median model edge of +0.8c and maker-vs-taker saving of
+1.45c per contract used a superseded nonzero maker fee and understate both
+metrics. Weather series pay zero maker fee; rerun the corrected diagnostic for
+current figures. Separately, the literature priors (2.6% mean return, 33%
+standard deviation) imply roughly 619 independent settled trades at 95%
+confidence; that calculation does not use the scan's fee estimates.
 
 ## Scheduled Multi-City Refresh And Nightly Maintenance
 

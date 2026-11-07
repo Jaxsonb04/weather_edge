@@ -56,6 +56,31 @@ def test_inland_features_never_use_future_values():
             assert abs(eng.loc[t, "inland_temp_lag_24h"] - raw_inland.loc[lag_t]) < tol
 
 
+def test_inland_gap_fill_uses_only_past_observations(monkeypatch):
+    raw = _raw_with_inland()
+    inland = raw[["temp_f"]].copy()
+    inland["temp_f"] = 60.0
+    gap_start = raw.index[180]
+    inland.loc[gap_start:raw.index[184], "temp_f"] = np.nan
+    inland.loc[raw.index[185], "temp_f"] = 90.0
+
+    def load_data(_path, station):
+        return raw.copy() if station == features.SFO_STATION_ID else inland.copy()
+
+    monkeypatch.setattr(features, "load_data", load_data)
+    loaded = features.load_data_with_inland("unused")
+    assert loaded.loc[gap_start:raw.index[182], "inland_temp"].tolist() == [60.0] * 3
+    assert loaded.loc[raw.index[183]:raw.index[184], "inland_temp"].isna().all()
+    eng = features.engineer_features(loaded)
+    assert eng.loc[gap_start, "inland_high_so_far_today"] == 60.0
+    assert eng.loc[gap_start, "inland_temp_max_24h"] == 60.0
+
+    inland.loc[raw.index[185], "temp_f"] = 120.0
+    changed = features.load_data_with_inland("unused")
+    pd.testing.assert_series_equal(loaded.loc[:raw.index[184], "inland_temp"],
+                                   changed.loc[:raw.index[184], "inland_temp"])
+
+
 def test_inland_high_so_far_resets_each_settlement_day():
     raw = _raw_with_inland()
     eng = features.engineer_features(raw)

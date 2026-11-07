@@ -11,8 +11,7 @@ books and today's fees rather than trusting the paper's number.
 What a snapshot CAN measure (and this reports):
 * how many favorite-band maker posts the registry's city ladders offer right now,
 * the model edge of each post under the city's live EMOS Gaussian, after the
-  CURRENT maker fee (25% of the 0.07 quadratic taker rate, fee_multiplier 1 --
-  verified against the live series API on 2026-07-06),
+  current series-specific maker fee (zero for weather series),
 * spreads, displayed depth, and how many independent city-days that breadth
   yields per day.
 
@@ -160,9 +159,11 @@ def scan_city(
                 post = _maker_post_price(side_bid, side_ask)
                 if post is None or not (FAVORITE_MIN <= post <= FAVORITE_MAX):
                     continue
-                maker_fee = quadratic_fee_average_per_contract(post, 1.0, maker=True)
+                maker_fee = quadratic_fee_average_per_contract(
+                    post, 1.0, maker=True, series_ticker=city.series_ticker
+                )
                 taker_fee = quadratic_fee_average_per_contract(
-                    side_ask, 1.0, maker=False
+                    side_ask, 1.0, maker=False, series_ticker=city.series_ticker
                 )
                 candidate = {
                     "target_date": target.isoformat(),
@@ -315,8 +316,8 @@ def main(argv: list[str] | None = None) -> int:
         payload = {
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "fee_model": {
-                "taker": "0.07 * p * (1-p), ceil to cent",
-                "maker": "25% of taker (verified vs live series API 2026-07-06)",
+                "taker": "series multiplier * 0.07 * p * (1-p), ceil to cent",
+                "maker": "series multiplier * 0.0175 * p * (1-p), ceil to cent; zero for weather series",
                 "fee_multiplier": 1,
             },
             "favorite_band": [FAVORITE_MIN, FAVORITE_MAX],
