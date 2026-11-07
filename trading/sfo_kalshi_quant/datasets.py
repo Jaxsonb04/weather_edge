@@ -33,6 +33,9 @@ OPEN_METEO_PREVIOUS_RUNS_URL = "https://previous-runs-api.open-meteo.com/v1/fore
 OPEN_METEO_HISTORICAL_FORECAST_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
 NOAA_GLOBAL_HOURLY_BASE_URL = "https://www.ncei.noaa.gov/data/global-hourly/access"
 IEM_ASOS_URL = "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py"
+# IEM answers back-to-back requests from one IP with HTTP 429; 2-second gaps pass.
+IEM_REQUEST_GAP_SECONDS = 3.0
+IEM_RETRY_DELAYS_SECONDS = (30.0, 120.0)
 NOAA_NOMADS_BASE_URL = "https://nomads.ncep.noaa.gov/pub/data/nccf/com"
 OPEN_METEO_PREVIOUS_RUN_RESEARCH_MODELS = (
     "ncep_nbm_conus",
@@ -783,7 +786,7 @@ def backfill_iem_asos(
             "report_type": ["1", "2"],
         }
         url = f"{IEM_ASOS_URL}?{urlencode(params, doseq=True)}"
-        text = _http_text(url, timeout=timeout)
+        text = _iem_text(url, timeout=timeout)
         rows.extend(
             parse_iem_asos_csv(
                 text, source_url=url, canonical_station_id=canonical_station_id,
@@ -1581,6 +1584,18 @@ def _http_text(url: str, *, timeout: int) -> str:
     request = Request(url, headers={"accept": "text/plain", "user-agent": "weatheredge-dataset-backfill/0.1"})
     with urlopen(request, timeout=timeout) as response:
         return response.read().decode("utf-8")
+
+
+def _iem_text(url: str, *, timeout: int) -> str:
+    time.sleep(IEM_REQUEST_GAP_SECONDS)
+    for delay in IEM_RETRY_DELAYS_SECONDS:
+        try:
+            return _http_text(url, timeout=timeout)
+        except HTTPError as exc:
+            if exc.code != 429:
+                raise
+            time.sleep(delay)
+    return _http_text(url, timeout=timeout)
 
 
 def _now() -> str:
