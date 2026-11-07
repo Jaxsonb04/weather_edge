@@ -750,3 +750,32 @@ class _RateLimitedKalshiHistoryClient(_FakeKalshiHistoryClient):
             hdrs=None,
             fp=None,
         )
+
+
+def test_iem_text_waits_out_429_and_gives_up_on_other_errors(monkeypatch):
+    def http_error(code):
+        return HTTPError("https://iem", code, "error", None, None)
+
+    responses = [http_error(429), http_error(429), "ok"]
+
+    def fake_http_text(url, *, timeout):
+        response = responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    sleeps = []
+    monkeypatch.setattr(datasets_module.time, "sleep", sleeps.append)
+    monkeypatch.setattr(datasets_module, "_http_text", fake_http_text)
+
+    assert datasets_module._iem_text("https://iem", timeout=1) == "ok"
+    assert sleeps == [datasets_module.IEM_REQUEST_GAP_SECONDS, *datasets_module.IEM_RETRY_DELAYS_SECONDS]
+
+    responses[:] = [http_error(429), http_error(429), http_error(429)]
+    with pytest.raises(HTTPError):
+        datasets_module._iem_text("https://iem", timeout=1)
+
+    responses[:] = [http_error(500), "unused"]
+    with pytest.raises(HTTPError):
+        datasets_module._iem_text("https://iem", timeout=1)
+    assert responses == ["unused"]
