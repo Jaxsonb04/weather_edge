@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Sequence
@@ -54,7 +55,9 @@ from publication_freshness_core import (  # noqa: E402 - must follow the sys.pat
     DEFAULT_MAX_DEPLOY_WINDOW_MINUTES,
     DEFAULT_REPO,
     STATE_BROKEN,
+    STATE_FRESH,
     STATE_FUTURE,
+    STATE_UNHEALTHY,
     STATE_UNREADABLE,
     DeploymentRecord,
     GitHubApiError,
@@ -66,6 +69,8 @@ from publication_freshness_core import (  # noqa: E402 - must follow the sys.pat
     open_threshold,
     parse_timestamp,
     plan_action,
+    strategy_problem,
+    strategy_url,
 )
 from publication_freshness_github import (  # noqa: E402 - must follow the sys.path line
     apply_action,
@@ -164,6 +169,15 @@ def _run(args: argparse.Namespace, notes: Notes) -> int:
 
     fetch = fetch_manifest_with_retries(args.manifest_url, now, notes=notes)
     verdict = evaluate(fetch, now, fresh_within_minutes=thresholds.close_at_or_below_minutes)
+    if verdict.state == STATE_FRESH:
+        strategy = fetch_manifest_with_retries(strategy_url(args.manifest_url), now, notes=notes)
+        if strategy.manifest is None:
+            # Unknown is not healthy: staying fresh here would close an open incident.
+            # A structural failure (404, not our document) is a dead artifact, not a blip.
+            state = STATE_UNHEALTHY if strategy.structural else STATE_UNREADABLE
+            verdict = replace(verdict, state=state, detail=f"Strategy Lab: {strategy.error}")
+        elif problem := strategy_problem(strategy.manifest, now):
+            verdict = replace(verdict, state=STATE_UNHEALTHY, detail=problem)
     print(f"{verdict.state.upper()}: {verdict.detail}")
     if verdict.published_at is not None:
         print(f"  published_at   {verdict.published_at.isoformat()} (clock: {verdict.reference_source})")
@@ -179,6 +193,8 @@ def _run(args: argparse.Namespace, notes: Notes) -> int:
         return 0
     if verdict.state == STATE_BROKEN:
         print(f"::error::published manifest is unusable: {verdict.detail}")
+    if verdict.state == STATE_UNHEALTHY:
+        print(f"::error::{verdict.detail}")
     if verdict.state == STATE_FUTURE:
         # Never silent: this state files nothing below the open threshold, and
         # an unannotated green run is how an outage goes unnoticed.
@@ -214,14 +230,21 @@ def _run(args: argparse.Namespace, notes: Notes) -> int:
         # Only now is the extra read worth making: an issue closed by hand
         # minutes ago was an acknowledgement, not an invitation to file again.
         human_close_after = None
-        if verdict.published_at is not None:
+        if verdict.published_at is not None and verdict.state != STATE_UNHEALTHY:
             # Later than this, a close cannot have been the monitor's own
             # recovery close -- which only ever fires below the close threshold.
             human_close_after = verdict.published_at + timedelta(
                 minutes=thresholds.close_at_or_below_minutes
             )
         try:
-            if recently_acknowledged(api, repo, now, human_close_after=human_close_after, notes=notes):
+            if recently_acknowledged(
+                api,
+                repo,
+                now,
+                human_close_after=human_close_after,
+                check_close_comment=verdict.state == STATE_UNHEALTHY,
+                notes=notes,
+            ):
                 action = plan_action(
                     verdict,
                     issue,

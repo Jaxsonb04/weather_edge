@@ -922,6 +922,20 @@ def test_closing_by_hand_during_an_outage_is_an_acknowledgement_not_an_invitatio
     assert github.recently_acknowledged(foreign, "owner/repo", NOW) is False
 
 
+def test_relapse_after_the_monitors_own_close_is_not_suppressed_for_unhealthy():
+    issue = {
+        "number": 90,
+        "title": core.ISSUE_TITLE,
+        "body": core.MONITOR_MARKER,
+        "closed_at": (NOW - timedelta(minutes=10)).isoformat(),
+    }
+    auto = {"body": f"{core.MONITOR_MARKER}\nPublication recovered: x. Closing automatically."}
+    ack = github.recently_acknowledged
+    assert ack(FakeGitHub(closed_issues=[issue], comments=[auto]), "o/r", NOW, check_close_comment=True) is False
+    human = [{"body": "seen, on it"}]
+    assert ack(FakeGitHub(closed_issues=[issue], comments=human), "o/r", NOW, check_close_comment=True) is True
+
+
 def test_the_monitors_own_recovery_close_is_not_mistaken_for_an_acknowledgement():
     # Publication flaps: it recovers, the monitor auto-closes, and it dies again
     # an hour later. Counting that close as a human acknowledgement would
@@ -1360,3 +1374,79 @@ def test_workflow_flags_are_all_accepted_by_the_script_parser():
     assert args.close_at_or_below_minutes == 20.0
     assert args.manifest_url.endswith("publication_manifest.json")
     assert args.dry_run is False
+
+
+def test_fresh_manifest_with_a_failing_pipeline_files_one_issue_then_recovers(monkeypatch, capsys):
+    now = datetime.now(UTC)
+    manifest = _manifest(now.isoformat())
+    documents = {
+        "publication_manifest.json": manifest,
+        "strategy_research.json": {
+            "generated_at": now.isoformat(),
+            "status": {"alerts": [{"level": "critical", "title": "Entry scans are failing"}]},
+        },
+    }
+
+    def fetch(url, now, **kwargs):
+        return core.ManifestFetch(url=url, manifest=documents[url.rsplit("/", 1)[1]])
+
+    monkeypatch.setattr(cli, "fetch_manifest_with_retries", fetch)
+    api = FakeGitHub()
+    monkeypatch.setattr(cli, "make_api", lambda *args, **kwargs: api)
+    monkeypatch.setenv("GH_TOKEN", "token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+
+    assert cli.main(["--manifest-url", MANIFEST_URL]) == 0
+    assert "::error::Strategy Lab reports a critical alert: Entry scans are failing" in capsys.readouterr().out
+    created = [body for method, path, body in api.calls if method == "POST" and path.endswith("/issues")]
+    assert len(created) == 1
+    assert "Entry scans are failing" in created[0]["body"]
+
+
+def test_unreadable_strategy_lab_keeps_an_open_incident_open(monkeypatch):
+    now = datetime.now(UTC)
+
+    def fetch(url, now, **kwargs):
+        if url.endswith("strategy_research.json"):
+            return core.ManifestFetch(url=url, error="HTTP 503 Service Unavailable")
+        return core.ManifestFetch(url=url, manifest=_manifest(now.isoformat()))
+
+    monkeypatch.setattr(cli, "fetch_manifest_with_retries", fetch)
+    api = FakeGitHub()
+    monkeypatch.setattr(cli, "make_api", lambda *args, **kwargs: api)
+    monkeypatch.setenv("GH_TOKEN", "token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+
+    assert cli.main(["--manifest-url", MANIFEST_URL]) == 0
+    assert not [call for call in api.calls if call[0] != "GET"]
+
+
+def test_missing_strategy_lab_artifact_files_an_incident(monkeypatch, capsys):
+    now = datetime.now(UTC)
+
+    def fetch(url, now, **kwargs):
+        if url.endswith("strategy_research.json"):
+            return core.ManifestFetch(url=url, error="HTTP 404 Not Found", structural=True)
+        return core.ManifestFetch(url=url, manifest=_manifest(now.isoformat()))
+
+    monkeypatch.setattr(cli, "fetch_manifest_with_retries", fetch)
+    api = FakeGitHub()
+    monkeypatch.setattr(cli, "make_api", lambda *args, **kwargs: api)
+    monkeypatch.setenv("GH_TOKEN", "token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+
+    assert cli.main(["--manifest-url", MANIFEST_URL]) == 0
+    assert [1 for method, path, body in api.calls if method == "POST" and path.endswith("/issues")]
+
+
+def test_strategy_problem_reads_alerts_and_age_only():
+    now = datetime(2026, 11, 7, 8, 0, tzinfo=UTC)
+
+    fresh = "2026-11-07T07:30:00+00:00"
+    assert core.strategy_problem({"generated_at": fresh, "status": {"alerts": [{"level": "warning", "title": "x"}]}}, now) is None
+    for empty in ({}, {"generated_at": "garbled"}):  # not proof of health: never closes an incident
+        assert "generated_at" in core.strategy_problem(empty, now)
+    assert core.strategy_problem({"generated_at": "2026-11-07T07:00:00+00:00"}, now) is None
+    assert "not refreshed" in core.strategy_problem({"generated_at": "2026-11-07T06:00:00+00:00"}, now)
+    assert core.strategy_url(MANIFEST_URL).endswith("/strategy_research.json")
+

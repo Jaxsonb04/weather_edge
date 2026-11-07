@@ -55,7 +55,7 @@ def test_publication_shows_m1_as_its_own_paper_only_book(tmp_path) -> None:
         "fidelity", "loss_stop", "futility", "premise", "final_read",
     ]
     assert {rule["status"] for rule in trial["stop_rules"]} <= {
-        "ok", "not_yet_eligible", "not_yet_checked", "running",
+        "ok", "overdue", "not_yet_eligible", "not_yet_checked", "running",
     }
     assert [h["id"] for h in trial["hypotheses"]] == ["H1", "H2a", "H2b"]
     assert [h["alpha"] for h in trial["hypotheses"]] == [0.025, 0.0125, 0.0125]

@@ -4015,3 +4015,53 @@ def test_strategy_research_surfaces_market_consensus_in_signal_quality():
         assert consensus["available"] is True
         assert consensus["modal_bin_label"] == "B66.5"
         assert consensus["distribution"]
+
+
+def test_failed_scans_become_a_public_critical_alert(tmp_path, monkeypatch):
+    from sfo_kalshi_quant.strategy_lab import status_alerts
+
+    monkeypatch.setattr(status_alerts, "DEPLOY_MAINTENANCE_MARKER", tmp_path / "marker")
+    monkeypatch.delenv("PAPER_RISK_PROFILE", raising=False)
+    monkeypatch.delenv("PAPER_RISK_PROFILES", raising=False)
+    now = datetime(2026, 11, 7, 8, 0, tzinfo=UTC)
+    paper = {"available": True, "summary": {}, "duplicate_open_groups": []}
+    db_path = tmp_path / "paper.db"
+
+    def codes():
+        rows = _strategy_alerts(paper=paper, entry_block_reason=None, now=now, db_path=db_path)
+        return {row["code"]: row for row in rows}
+
+    assert "paper-scan-stale" not in codes()  # no configured profile: a dev run
+
+    monkeypatch.setenv("PAPER_RISK_PROFILES", "live,research")
+    assert "live, research" in codes()["paper-scan-stale"]["detail"]  # failing since birth
+
+    stamps = tmp_path / ".paper-scan-state"
+    stamps.mkdir()
+    (stamps / "last-success-live").write_text(str(int(now.timestamp()) - 300), encoding="ascii")
+    (stamps / "last-success-research").write_text(str(int(now.timestamp()) - 1500), encoding="ascii")
+    (stamps / "last-success-retired").write_text("1", encoding="ascii")  # no longer configured
+    alert = codes()["paper-scan-stale"]
+    assert alert["level"] == "critical"
+    assert "research" in alert["detail"] and "live" not in alert["detail"]
+    assert "retired" not in alert["detail"]
+
+    assert "kalshi" not in alert["action"].lower() and "kalshi" not in alert["detail"].lower()
+
+    (stamps / "last-success-research").write_text("garbled", encoding="ascii")
+    assert "research" in codes()["paper-scan-stale"]["detail"]
+
+    # An alias is stamped under its canonical name, so it must not read as missing.
+    monkeypatch.setenv("PAPER_RISK_PROFILES", "live,exploratory")
+    (stamps / "last-success-research").write_text(str(int(now.timestamp()) - 60), encoding="ascii")
+    assert "paper-scan-stale" not in codes()
+    monkeypatch.setenv("PAPER_RISK_PROFILES", "live,research")
+    (stamps / "last-success-research").write_text("garbled", encoding="ascii")
+
+    # A clock that stepped back must not make an old stamp look fresh forever.
+    (stamps / "last-success-research").write_text(str(int(now.timestamp()) + 86400), encoding="ascii")
+    assert "research" in codes()["paper-scan-stale"]["detail"]
+
+    (tmp_path / "marker").touch()  # a deploy stops scans on purpose
+    assert "paper-scan-stale" not in codes()
+

@@ -15,7 +15,10 @@ from pathlib import Path
 import pytest
 
 from sfo_kalshi_quant import research_m1 as m1
+from sfo_kalshi_quant import research_m1_store as engine
+from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.research_m1_store import m1_trial_payload
+from sfo_kalshi_quant.strategy_lab.status_alerts import _strategy_alerts
 
 from test_nov01_scan_age import (
     CHECK_BLOCKED,
@@ -68,6 +71,64 @@ def test_trial_payload_publishes_m1_health(tmp_path) -> None:
         "reason": "admission error: boom",
     }
     assert health["missed_entries"] is None  # nothing reconciled yet
+
+
+def test_overdue_reconciliation_is_visible_until_maintenance_recovers(tmp_path, monkeypatch) -> None:
+    db = _paper_db(tmp_path, _every_tick("live", "research"))
+    store = PaperStore(db)
+
+    def watchdog(label):
+        check_dir = tmp_path / label
+        check_dir.mkdir()
+        return _run(check_dir, db)
+
+    for profile in ("live", "research"):
+        _stamp(db, profile, 1.0)
+    assert m1_trial_payload(store, now=_at(11), resamples=10)["stop_rules"][0]["status"] == "ok"
+    _evaluation(db, _at(0) - timedelta(hours=1), m1.DECISION_SHADOW)
+    _evaluation(db, _at(0, 30), m1.DECISION_SHADOW)
+
+    for now, overdue in (
+        (_at(0, 42), False), (_at(1, 11), False), (_at(1, 12), True), (_at(11), True),
+    ):
+        trial = m1_trial_payload(store, now=now, resamples=10)
+        fidelity = trial["stop_rules"][0]
+        assert fidelity["status"] == ("overdue" if overdue else "ok")
+        assert fidelity["last_reconciled_utc_day"] is None
+        assert trial["entries_enabled_by_stop_rules"] is True and trial["halts"] == []
+        alerts = _strategy_alerts(
+            paper={"available": True, "summary": {}}, entry_block_reason=None, now=now,
+            accounting={"accounts": {"research_m1": {"status": "ACTIVE", "trial": trial}}},
+        )
+        critical = [a for a in alerts if a["code"] == "m1-reconcile-overdue"]
+        assert bool(critical) is overdue
+        if critical:
+            assert critical[0]["level"] == "critical"
+        monkeypatch.setenv("SFO_SCHEDULER_M1_NOW", now.isoformat())
+        result = watchdog(now.strftime("%H%M"))
+        assert result.returncode == (1 if overdue else 0), result.stderr
+        if overdue:
+            assert "M1 trial reconciliation overdue" in result.stderr
+
+    with store.connect() as conn:
+        conn.execute("UPDATE paper_accounts SET status='ARCHIVED' WHERE account_id=?", (m1.M1_ACCOUNT_ID,))
+    assert watchdog("archived").returncode == 0
+    assert "m1-reconcile-overdue" not in {a["code"] for a in _strategy_alerts(
+        paper={"available": True, "summary": {}}, entry_block_reason=None,
+        accounting={"accounts": {"research_m1": {"status": "ARCHIVED", "trial": trial}}},
+    )}
+    with store.connect() as conn:
+        conn.execute("UPDATE paper_accounts SET status='ACTIVE' WHERE account_id=?", (m1.M1_ACCOUNT_ID,))
+    engine.run_m1_settle_maintenance(store, now=_at(11))
+    recovered = m1_trial_payload(store, now=_at(11), resamples=10)
+    assert recovered["stop_rules"][0]["status"] == "ok"
+    assert recovered["stop_rules"][0]["last_reconciled_utc_day"] == "2026-11-02"
+    assert recovered["entries_enabled_by_stop_rules"] is True and recovered["halts"] == []
+    assert "m1-reconcile-overdue" not in {a["code"] for a in _strategy_alerts(
+        paper={"available": True, "summary": {}}, entry_block_reason=None,
+        accounting={"accounts": {"research_m1": {"status": "ACTIVE", "trial": recovered}}},
+    )}
+    assert watchdog("recovered").returncode == 0
 
 
 def _watchdog(tmp_path, monkeypatch, now: datetime, evaluations):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -12,7 +13,7 @@ from .._util import (
     _round,
     _to_float,
 )
-from ..config import StrategyConfig
+from ..config import StrategyConfig, normalize_risk_profile_name
 from ..settlement_day import settlement_today
 from . import ACTIVE_CALIBRATION_SOURCE, CHALLENGER_CALIBRATION_SOURCE
 from .readiness import _stale_analysis_readiness
@@ -20,6 +21,10 @@ from .readiness import _stale_analysis_readiness
 
 # Informational review threshold, never a trading permission or loss guarantee.
 ACCOUNT_DRAWDOWN_WARNING_PCT = 0.05
+# The window check_scheduler_health.sh uses: scans run every five minutes.
+SCAN_MAX_AGE = timedelta(minutes=20)
+# A deploy stops scans on purpose, and seeds this payload while they are stopped.
+DEPLOY_MAINTENANCE_MARKER = Path("/run/weatheredge-deploy-maintenance")
 
 
 def _status_payload(
@@ -56,6 +61,7 @@ def _status_payload(
         forecast_health=forecast_health,
         accounting=accounting,
         analysis_generated_at=analysis_generated_at,
+        db_path=db_path,
     )
     return {
         "active_calibration_source": ACTIVE_CALIBRATION_SOURCE,
@@ -72,7 +78,9 @@ def _status_payload(
         ),
         "paper_trading_status": _paper_status(paper),
         "entry_scanner_status": (
-            "Same-day entries blocked; rolling scanner is evaluating later target dates."
+            "Entry scans are failing; no successful recent scan."
+            if any(alert["code"] == "paper-scan-stale" for alert in alerts)
+            else "Same-day entries blocked; rolling scanner is evaluating later target dates."
             if entry_block_reason
             else "Entry scanner active for eligible target dates."
         ),
@@ -144,6 +152,7 @@ def _strategy_alerts(
     forecast_health: dict[str, Any] | None = None,
     accounting: dict[str, Any] | None = None,
     analysis_generated_at: str | None = None,
+    db_path: Path | None = None,
 ) -> list[dict[str, str]]:
     alerts: list[dict[str, str]] = []
     current_utc = now or datetime.now(UTC)
@@ -151,6 +160,8 @@ def _strategy_alerts(
         current_utc = current_utc.replace(tzinfo=UTC)
     else:
         current_utc = current_utc.astimezone(UTC)
+    if db_path is not None:
+        alerts.extend(_scan_failure_alerts(db_path, current_utc))
     if analysis_generated_at is not None:
         stale = _stale_analysis_readiness(analysis_generated_at, now=current_utc)
         if stale is not None:
@@ -169,6 +180,16 @@ def _strategy_alerts(
         ledgers = accounting.get("active_ledgers") or {}
         for key, label in (("live_stability", "Live Stability"), ("research_roi", "Research ROI")):
             alerts.extend(_account_drawdown_alerts(ledgers.get(key), key=key, label=label))
+        m1 = (accounting.get("accounts") or {}).get("research_m1") or {}
+        if m1.get("status") == "ACTIVE":
+            for rule in (m1.get("trial") or {}).get("stop_rules") or []:
+                if rule.get("rule") == "fidelity" and rule.get("overdue_utc_day"):
+                    alerts.append(_alert(
+                        "critical", "m1-reconcile-overdue", "M1 reconciliation overdue",
+                        f"M1 evaluations for UTC day {rule['overdue_utc_day']} remain unreconciled. "
+                        f"Last reconciled UTC day: {rule.get('last_reconciled_utc_day') or 'none'}.",
+                        "Inspect paper-settle service logs and re-run paper-m1-reconcile.",
+                    ))
     summary = paper.get("summary") or {}
     if not paper.get("available"):
         alerts.append(
@@ -275,7 +296,7 @@ def _strategy_alerts(
             )
     elif open_count and latest_monitor_dt is not None:
         monitor_age = current_utc - latest_monitor_dt
-        if monitor_age > timedelta(minutes=45):
+        if monitor_age > timedelta(minutes=45) and not DEPLOY_MAINTENANCE_MARKER.exists():
             alerts.append(
                 _alert(
                     "critical",
@@ -346,6 +367,42 @@ def _strategy_alerts(
             )
         )
     return alerts
+
+
+def _scan_failure_alerts(db_path: Path, now: datetime) -> list[dict[str, str]]:
+    """Publish what check_scheduler_health.sh sees on the host.
+
+    Alerts have no destination, so a host-only verdict is silent: scans failed
+    unnoticed from Oct 27 to Nov 1. run_paper_scan_profiles.sh writes one stamp
+    per profile, holding the epoch second that profile last exited 0.
+    """
+
+    if DEPLOY_MAINTENANCE_MARKER.exists():
+        return []
+    configured = os.getenv("PAPER_RISK_PROFILES") or os.getenv("PAPER_RISK_PROFILE") or ""
+    stale = []
+    for raw in filter(None, map(str.strip, configured.split(","))):
+        try:
+            profile = normalize_risk_profile_name(raw)
+        except ValueError:
+            profile = raw  # the scan script rejects it too, so no stamp exists: stale
+        stamp = db_path.parent / ".paper-scan-state" / f"last-success-{profile}"
+        try:
+            finished = datetime.fromtimestamp(int(stamp.read_text(encoding="ascii")), UTC)
+        except (OSError, ValueError):
+            finished = None
+        if finished is None or abs(now - finished) > SCAN_MAX_AGE:
+            stale.append(profile)
+    if not stale:
+        return []
+    return [_alert(
+        "critical",
+        "paper-scan-stale",
+        "Entry scans are failing",
+        f"No successful scan in the last {SCAN_MAX_AGE.seconds // 60} minutes for: "
+        f"{', '.join(stale)}. Entries may be missing or partial until scans recover.",
+        "Read the paper scan service logs on the host.",
+    )]
 
 
 def _account_drawdown_alerts(

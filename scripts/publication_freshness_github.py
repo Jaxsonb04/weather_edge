@@ -30,6 +30,7 @@ from publication_freshness_core import (
     SNAPSHOT_ID_PATTERN,
     SOURCE_SHA_PATTERN,
     STATE_BROKEN,
+    STATE_UNHEALTHY,
     STATE_FUTURE,
     STATE_STALE,
     USER_AGENT,
@@ -246,6 +247,7 @@ def recently_acknowledged(
     now: datetime,
     *,
     human_close_after: datetime | None = None,
+    check_close_comment: bool = False,
     within_minutes: float = ACK_AFTER_MANUAL_CLOSE_MINUTES,
     notes: Notes | None = None,
 ) -> bool:
@@ -284,6 +286,8 @@ def recently_acknowledged(
                 if human_close_after is not None and closed_at <= human_close_after:
                     # This monitor's own recovery close, not a human's.
                     continue
+                if check_close_comment and _closed_by_monitor(api, repo, entry):
+                    continue
                 if notes is not None:
                     notes.add(
                         f"issue #{entry.get('number')} was closed at {closed_at.isoformat()}; "
@@ -291,6 +295,21 @@ def recently_acknowledged(
                     )
                 return True
     return False
+
+
+def _closed_by_monitor(api: ApiCall, repo: str, entry: dict[str, Any]) -> bool:
+    """Whether the issue's last comment is the monitor's own recovery close.
+
+    For verdicts that keep a fresh publish time, the timestamp cannot tell the
+    monitor's close from a human's, so the closing comment does.
+    """
+
+    comments: list[Any] = []
+    for page in _pages(api, f"/repos/{repo}/issues/{entry.get('number')}/comments", max_pages=3):
+        comments = page
+    last = comments[-1] if comments else None
+    body = last.get("body") if isinstance(last, dict) else None
+    return isinstance(body, str) and MONITOR_MARKER in body and "Closing automatically." in body
 
 
 # --- Issue prose ---
@@ -340,6 +359,10 @@ HEADLINES = {
         "`gh-pages` branch or the manifest path may be gone. The site being *missing* "
         "is a worse outage than the site being stale."
     ),
+    STATE_UNHEALTHY: (
+        "The site is publishing, but its Strategy Lab says part of the pipeline is "
+        "failing behind it."
+    ),
     STATE_FUTURE: (
         "The published manifest is stamped in the future, so the freshness signal "
         "cannot be trusted: the publishing box's clock is wrong. The box cannot catch "
@@ -358,6 +381,11 @@ TRIAGE_LEADS = {
         "post-deploy watch says to re-verify that the manifest still loads after one.",
         "If Pages is serving but the document is not ours, the last publish wrote "
         "something unexpected: read `sfo-operational-publish` on the box.",
+    ),
+    STATE_UNHEALTHY: (
+        "Read the alert named in **Detail**, then its unit's logs on the box: "
+        "`sfo-kalshi-paper-scan`, `sfo-kalshi-paper-monitor`, `sfo-kalshi-paper-settle` "
+        "or `sfo-strategy-lab-refresh`.",
     ),
     STATE_FUTURE: (
         "Check the box's clock first: `timedatectl` on the host. The publisher "
@@ -408,7 +436,7 @@ def issue_body(
         f"- **snapshot_id**: `{_code(verdict.snapshot_id, SNAPSHOT_ID_PATTERN)}`",
         f"- **provenance.source_sha**: `{_code(verdict.source_sha, SOURCE_SHA_PATTERN)}`",
     ]
-    if verdict.state in (STATE_BROKEN, STATE_FUTURE):
+    if verdict.state in (STATE_BROKEN, STATE_FUTURE, STATE_UNHEALTHY):
         lines.append(f"- **Detail**: {_safe_text(verdict.detail)}")
     if deployment is not None:
         lines.append(

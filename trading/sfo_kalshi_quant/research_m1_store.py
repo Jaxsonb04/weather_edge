@@ -1069,6 +1069,22 @@ def m1_series_dates_missing_truth(
 # --------------------------------------------------------------------------
 
 
+def m1_overdue_reconciliation_day(conn: sqlite3.Connection, *, now: datetime) -> str | None:
+    # A pre-midnight run can suppress the :10 tick; allow 72 minutes after UTC
+    # day-end for the :40 tick, 30s random delay, 1m timer accuracy and the
+    # 30m service timeout (71m30s rounded up).
+    cutoff_day = (now.astimezone(UTC) - timedelta(minutes=72)).date()
+    cutoff, _ = _day_bounds(cutoff_day)
+    row = conn.execute(
+        "SELECT substr(e.created_at, 1, 10) FROM m1_evaluations e "
+        "WHERE e.created_at < ? AND NOT EXISTS ("
+        "SELECT 1 FROM m1_reconciliations r WHERE r.utc_day = substr(e.created_at, 1, 10)) "
+        "ORDER BY e.created_at LIMIT 1",
+        (cutoff,),
+    ).fetchone()
+    return str(row[0]) if row is not None else None
+
+
 def _day_bounds(day: date) -> tuple[str, str]:
     lower = datetime.combine(day, time.min, tzinfo=UTC)
     return _iso(lower), _iso(lower + timedelta(days=1))
@@ -1605,6 +1621,7 @@ def m1_trial_payload(
             "SELECT utc_day, failed, missed, breaches, contradictions, report_json "
             "FROM m1_reconciliations ORDER BY utc_day DESC LIMIT 1"
         ).fetchone()
+        overdue_day = m1_overdue_reconciliation_day(conn, now=current)
         shadow = {arm: _shadow_arm_summary(conn, arm) for arm in SHADOW_ARMS}
         pending_cutoff = _iso(current - timedelta(hours=1))
         stale_pending = conn.execute(
@@ -1638,7 +1655,10 @@ def m1_trial_payload(
         {
             "rule": STOP_FIDELITY,
             "label": "Fidelity halt",
-            "status": "halted" if STOP_FIDELITY in halted_rules else "ok",
+            "status": (
+                "halted" if STOP_FIDELITY in halted_rules else ("overdue" if overdue_day else "ok")
+            ),
+            "overdue_utc_day": overdue_day,
             "threshold": (
                 f">= {M1_POLICY.fidelity_weekly_failures} failed replay matches in "
                 f"{M1_POLICY.fidelity_window_days} days, or any listing-hour, wide-spread, "

@@ -460,7 +460,7 @@ def test_apply_intraday_update_uses_adapter_city_fixed_standard_time():
         target_date=date(2026, 7, 10),
         observed_high_f=68.0,
         latest_temp_f=None,
-        latest_observed_at="2026-07-10T18:00:00+00:00",
+        latest_observed_at="2026-07-10T20:00:00+00:00",
         remaining_forecast_high_f=72.0,
         forecast_fetched_at=None,
     )
@@ -472,10 +472,45 @@ def test_apply_intraday_update_uses_adapter_city_fixed_standard_time():
         forecast, intraday
     )
 
-    assert nyc.raw["intraday_update"]["intraday_weight"] == 0.65
-    assert nyc.predicted_high_f == 72.7
-    assert sfo.raw["intraday_update"]["intraday_weight"] == 0.5
-    assert sfo.predicted_high_f == 73.0
+    assert nyc.raw["intraday_update"]["intraday_weight"] == 0.8
+    assert nyc.predicted_high_f == 72.4
+    assert sfo.raw["intraday_update"]["intraday_weight"] == 0.0
+    assert sfo.predicted_high_f == 74.0
+
+
+def test_morning_high_so_far_is_a_floor_not_a_blend():
+    # Denver, 2026-11-07, 00:25 local: the overnight reading dragged 62.7F to 54.5F.
+    target = date(2026, 11, 7)
+    adapter = SfoForecasterAdapter(Path("."), city=get_city("den"))
+
+    def update(observed_high_f, observed_at, predicted_high_f=62.7):
+        forecast = ForecastSnapshot(
+            target_date=target,
+            predicted_high_f=predicted_high_f,
+            fetched_at="2026-11-07T07:00:00+00:00",
+            lead_hours=0.0,
+            method="emos_wmean",
+            google_high_f=None,
+            nws_high_f=None,
+            open_meteo_high_f=None,
+            history_high_f=None,
+            source_count=8,
+            raw={},
+        )
+        intraday = IntradaySnapshot(
+            target_date=target,
+            observed_high_f=observed_high_f,
+            latest_temp_f=observed_high_f,
+            latest_observed_at=observed_at,
+            remaining_forecast_high_f=None,
+            forecast_fetched_at=None,
+        )
+        return adapter.apply_intraday_update(forecast, intraday).predicted_high_f
+
+    assert update(39.2, "2026-11-07T07:25:00+00:00") == 62.7
+    assert update(65.0, "2026-11-07T19:30:00+00:00") == 65.0  # 12:30 local, a floor
+    # 16:00 local: the afternoon blend is unchanged, 0.8 * 58 + 0.2 * 62.7.
+    assert update(58.0, "2026-11-07T23:00:00+00:00") == 58.94
 
 
 # ---------------------------------------------------------------------------

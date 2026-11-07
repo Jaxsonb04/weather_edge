@@ -7,6 +7,8 @@ from pathlib import Path
 from threading import Barrier
 from unittest.mock import patch
 
+import pytest
+
 import city_truth
 import clisfo
 from cities import get_city
@@ -261,6 +263,38 @@ def test_backfill_iem_skips_malformed_local_date_fail_soft():
 
     assert written == 0
     assert conn.execute("SELECT COUNT(*) FROM cli_settlements").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("successful_station, expected_status", [(None, 1), ("KSFO", 0)])
+def test_main_backfill_fails_only_when_all_requests_fail(
+    successful_station, expected_status, monkeypatch, capsys
+):
+    end_year = date.today().year
+    attempted = []
+
+    def fetch(station_id, year):
+        attempted.append((station_id, year))
+        if station_id == successful_station and year == end_year:
+            return []
+        raise OSError("archive unavailable")
+
+    monkeypatch.setattr(city_truth, "_iem_rows", fetch)
+
+    status = city_truth.main([
+        "--db", ":memory:", "--backfill-iem", "--cities", "sfo,nyc",
+        "--start-year", str(end_year - 1),
+    ])
+
+    assert status == expected_status
+    assert attempted == [
+        (station, year)
+        for station in ("KSFO", "KNYC")
+        for year in (end_year - 1, end_year)
+    ]
+    output = capsys.readouterr().out
+    for station, year in attempted:
+        if station != successful_station or year != end_year:
+            assert f"! {station} {year}: archive unavailable" in output
 
 
 def test_refresh_live_is_fail_soft_per_city():
