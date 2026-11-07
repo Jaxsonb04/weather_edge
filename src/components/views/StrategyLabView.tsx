@@ -175,6 +175,7 @@ const ALERT_TABS: Record<string, LabTab> = {
   "settlement-backlog": "accounts",
   "same-day-entry-blocked": "accounts",
   "emos-live-missing": "system",
+  "open-positions-unmarked": "accounts",
 };
 
 /** Operational notices for the open tab: runtime alerts (for example positions
@@ -184,7 +185,7 @@ export function LabNotices({ s, tab }: { s: StrategyLab; tab: LabTab }) {
   const backlog = s.paper_trading?.summary as { unresolved_past_targets?: Array<{ open_orders?: number; target_date?: string }> } | undefined;
   const past = backlog?.unresolved_past_targets?.filter((row) => row?.target_date) ?? [];
   const alerts = mergedAlerts(s).filter((alert) => {
-    const home = ALERT_TABS[alert.code ?? ""];
+    const home = ALERT_TABS[alert.code ?? ""] ?? (alert.code?.endsWith("-drawdown") ? "accounts" : undefined);
     return home ? home === tab : alert.level === "critical" || alert.level === "danger" || tab === "system";
   });
   if (!alerts.length) return null;

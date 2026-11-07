@@ -17,9 +17,17 @@ const lab = (extra: Record<string, unknown> = {}) =>
 describe("OpsHealth", () => {
   it("labels the collected counts as the published window, not a total", () => {
     render(<OpsHealth s={lab()} />);
-    expect(screen.getByText(/in the window Nov 1 – Nov 7, not all-time totals/)).toBeInTheDocument();
+    expect(screen.getByText(/in the recent reporting window, not all-time totals/)).toBeInTheDocument();
+    expect(screen.queryByText(/Nov 1/)).not.toBeInTheDocument();
     expect(screen.getByText(/Window counts as of 2026-11-06/)).toBeInTheDocument();
     expect(screen.queryByText(/Historical counts/)).not.toBeInTheDocument();
+  });
+
+  it("names the window dates when the counts are current", () => {
+    const s = lab();
+    (s.daily_summary as unknown as Record<string, unknown>).decision_analytics = undefined;
+    render(<OpsHealth s={s} />);
+    expect(screen.getByText(/in the window Nov 1 – Nov 7, not all-time totals/)).toBeInTheDocument();
   });
 
   it("stays true when no window is published", () => {

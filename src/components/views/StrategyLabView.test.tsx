@@ -280,6 +280,23 @@ describe("LabNotices", () => {
     }
   });
 
+  it("keeps account drawdown and unmarked-position warnings on Accounts", () => {
+    const s = {
+      ...twoAccounts,
+      status: {
+        alerts: [
+          { code: "live-drawdown", level: "warning", title: "Live drawdown", detail: "d" },
+          { code: "open-positions-unmarked", level: "warning", title: "Positions unmarked", detail: "u" },
+        ],
+      },
+    } as unknown as StrategyLab;
+    const { rerender } = render(<LabNotices s={s} tab="accounts" />);
+    expect(screen.getByText("Live drawdown")).toBeInTheDocument();
+    expect(screen.getByText("Positions unmarked")).toBeInTheDocument();
+    rerender(<LabNotices s={s} tab="system" />);
+    expect(screen.queryByText("Live drawdown")).not.toBeInTheDocument();
+  });
+
   it("summarizes a settlement backlog on Accounts and keeps a critical unknown alert on every tab", () => {
     const s = {
       ...twoAccounts,

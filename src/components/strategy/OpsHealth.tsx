@@ -72,7 +72,8 @@ export function OpsHealth({ s }: { s: StrategyLab }) {
   const counts = decisionCountProvenance(s);
   // The counts are rows created since the summary window opened, not all-time totals.
   const { window_start: from, window_end: to } = s.daily_summary ?? {};
-  const window = from && to ? dayRange(from, to) : null;
+  // Cached counts cover an older window than the one published, so name no dates for them.
+  const window = from && to && !counts.cached ? dayRange(from, to) : null;
 
   return (
     <div className="grid min-w-0 gap-4 lg:grid-cols-2">

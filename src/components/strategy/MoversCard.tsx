@@ -28,7 +28,7 @@ function Row({ m, s }: { m: WinnerLoser; s: StrategyLab }) {
 }
 
 /** The best and worst single trades by P&L realized in the published window,
-    across every account including archived ones, each labelled with its account.
+    across every account except M1 (reported on its own tab), archived ones included, each labelled with its account.
     The date shown is the market's target date, which can be earlier than the
     window. Individual trades only; nothing here is a sum across accounts. */
 export function MoversCard({ s }: { s: StrategyLab }) {
@@ -42,7 +42,7 @@ export function MoversCard({ s }: { s: StrategyLab }) {
         <div className="flex min-w-0 flex-col gap-0.5">
           <Widget.Title>Biggest single trades</Widget.Title>
           <Widget.Description>
-            {from && to ? `P&L realized ${dayRange(from, to)}` : "P&L realized in the published window"}, all accounts; dates are the market's target day
+            {from && to ? `P&L realized ${dayRange(from, to)}` : "P&L realized in the published window"}, Live, V7 and research accounts (M1 is separate); dates are the market's target day
           </Widget.Description>
         </div>
       </Widget.Header>
