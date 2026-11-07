@@ -1,6 +1,6 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-11-07 (backend at `c14d1a10c`, web at `372212b33`; $2,000 paper accounts live)
+Last updated: 2026-11-07 (backend at `c14d1a10c`, web at `372212b33`; $2,000 paper accounts live; repository audit and cleanup)
 
 Last complete production verification: 2026-11-07 10:50 UTC (build record, 13 timers, flags, active accounts, one capital deposit, public manifest and strategy alerts)
 
@@ -13,6 +13,37 @@ operational claim; all production observations below are dated snapshots.
 
 ## Session Brief
 
+- **November 7 repository audit and cleanup (after the release):**
+  - **Security:** Claude led and GPT gave independent second opinions. No
+    exploitable code issue, and no secret in the tree, the full history or
+    `gh-pages`. The dependency advisories (25 in the bun tree, including a
+    critical DOMPurify one, 14 for PyJWT, and certifi's revoked CA) were
+    build-time, test-time or unreachable code paths, and all are cleared by the
+    dependency refresh.
+  - **Pull requests:** one consolidated dependency refresh replaced Dependabot
+    PRs #148 to #152, #160 and #161. Held: `@heroui-pro/react` beta.7 (licensed),
+    `@iconify-json/solar` 1.2.5 (1.2.14 turns the used icons into aliases and the
+    icon generator fails), and every major. Fork PR #180 (°F/°C toggle by
+    fluid-design-io) was finished on a same-repo branch, because fork CI cannot
+    read `HEROUI_KEY`: the market panel converts, Fahrenheit brackets are marked
+    in °C mode, and rounding is fixed.
+  - **GitHub settings:** the description says 20 cities, the empty wiki is off,
+    merges are squash-only, "update branch" is on, CodeQL default setup is on and
+    `SECURITY.md` points to private vulnerability reporting. Non-provider secret
+    patterns could not be enabled on this plan.
+  - **Recovered work:** this release record and the installers' dpkg-lock wait
+    had been left uncommitted in a worktree; both ship with the audit. Every
+    other leftover worktree, branch and stash was superseded or abandoned and was
+    removed after its patch was archived in `.local/cleanup-20261107/`.
+  - **Not shipped, owner go needed (retention and settlement paths):** the
+    archived `stash-0.patch` adds a run-time budget to the nightly bounded-delete
+    prune (`--max-run-seconds`, `SFO_PRUNE_MAX_RUN_SECONDS`, default 2400 s) and
+    applies cleanly to main. `stash-1.patch` is partial September hardening of
+    the exchange-settlement check and needs a hand-port.
+  - **Pending publication:** main has web changes that are not on Pages yet:
+    #179 and the °C toggle. Publishing needs the owner's OK. The next backend
+    deploy also picks up the Python bumps (certifi, cryptography, numpy, PyJWT,
+    setuptools).
 - **November 7 release snapshot (read first):**
   - **Deployed:** backend at `c14d1a10c` (PRs #163 to #178) and web at
     `372212b33`; #178 changed no site code. Live, V7 and
