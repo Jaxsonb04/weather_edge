@@ -349,7 +349,7 @@ export function CityDetail({ city, flagshipTarget, intradayLock = null }: CityDe
                   {temperature.diff(mc.model_minus_market_f, 1, true)}
                 </strong>{" "}
                 gap for the {targetLabel(flagshipTarget.target_date).toLowerCase()} high. The market's likeliest bracket is{" "}
-                <strong>{mc.modal_bin_label}</strong> at {pct(mc.modal_probability, 0)};{" "}
+                <strong>{temperature.bracket(mc.modal_bin_label)}</strong> at {pct(mc.modal_probability, 0)};{" "}
                 <strong>{approvedCount}</strong> candidate{approvedCount === 1 ? " is" : "s are"} eligible.
                 {ladder && (
                   <>

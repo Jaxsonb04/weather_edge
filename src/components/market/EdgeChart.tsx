@@ -2,13 +2,15 @@ import { BarChart } from "@heroui-pro/react/bar-chart";
 import { useChartDraw } from "../../lib/useChartDraw";
 import { ChartTooltip } from "@heroui-pro/react/chart-tooltip";
 import { Widget } from "@heroui-pro/react/widget";
-import { f1, marketModelSeries, type Target } from "../../lib/data";
+import { marketModelSeries, type Target } from "../../lib/data";
+import { useTemperature } from "../../lib/units";
 
 /** The engine's core view: where the model's bin probabilities diverge from the
     market-implied ones — i.e. where the edge (if any) lives. */
 export function EdgeChart({ target }: { target: Target }) {
   // Recharts grows series in on mount; reduced motion draws them in place.
   const draw = useChartDraw();
+  const temperature = useTemperature();
   const series = marketModelSeries(target);
   const mc = target.market_consensus;
   if (!series.length || !mc) return null;
@@ -18,7 +20,7 @@ export function EdgeChart({ target }: { target: Target }) {
         <div className="flex min-w-0 flex-col gap-0.5">
           <Widget.Title>Model vs market — bin probabilities</Widget.Title>
           <Widget.Description>
-            model high {f1(mc.model_high_f)} · market implies {f1(mc.implied_high_f)} · modal bin {mc.modal_bin_label}
+            model high {temperature.temp(mc.model_high_f)} · market implies {temperature.temp(mc.implied_high_f)} · modal bin {temperature.bracket(mc.modal_bin_label)}
           </Widget.Description>
         </div>
         <Widget.Legend className="shrink-0 flex-wrap">

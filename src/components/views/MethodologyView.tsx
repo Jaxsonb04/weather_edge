@@ -13,6 +13,7 @@ import {
   type DashboardData,
 } from "../../lib/data";
 import { useDiagnostics, type Diagnostics } from "../../lib/diagnostics";
+import { useTemperature } from "../../lib/units";
 import { PageHeader } from "../ui/PageHeader";
 import { SectionHeading } from "../ui/SectionHeading";
 import { InfoTip } from "../ui/InfoTip";
@@ -155,6 +156,7 @@ type EvidenceTab = "model" | "accuracy";
 export default function MethodologyView({ data }: { data: DashboardData }) {
   const { data: diag, error: diagError } = useDiagnostics();
   const { data: coverage } = useCitiesData();
+  const { unit } = useTemperature();
   const [tab, setTab] = useState<EvidenceTab>("model");
   const cities = coverage?.cities ?? [];
   const cityCount = coverage?.city_count ?? (cities.length || null);
@@ -168,7 +170,7 @@ export default function MethodologyView({ data }: { data: DashboardData }) {
       <PageHeader
         headingId="methodology-page-title"
         title="How the forecast works"
-        sub={`${modelSample == null ? "A multi-model" : `An ${modelSample}-member`} NWP ensemble, calibrated per station with EMOS, then settled against each city's official NWS climate report.`}
+        sub={`${modelSample == null ? "A multi-model" : `An ${modelSample}-member`} NWP ensemble, calibrated per station with EMOS, then settled against each city's official NWS climate report.${unit === "C" ? " Figures on this page stay in °F because the contracts settle in whole °F." : ""}`}
         meta={
           <>
             {cityCount != null && (

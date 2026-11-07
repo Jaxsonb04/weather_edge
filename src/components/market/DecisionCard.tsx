@@ -2,10 +2,12 @@ import { Card } from "@heroui/react/card";
 import { Chip } from "@heroui/react/chip";
 import { Separator } from "@heroui/react/separator";
 import { Icon } from "@iconify/react/offline";
-import { f1, num, pct, plainReason, qualityColor, signedPct, type Target } from "../../lib/data";
+import { num, pct, plainReason, qualityColor, signedPct, type Target } from "../../lib/data";
+import { useTemperature } from "../../lib/units";
 import { Stat } from "../ui/Stat";
 
 export function DecisionCard({ target, approvedCount }: { target: Target; approvedCount: number }) {
+  const temperature = useTemperature();
   const d = target.best_decision;
   const noTrade = d.decision !== "TRADE";
   const spread = num(target.forecast, "source_spread_f");
@@ -60,7 +62,7 @@ export function DecisionCard({ target, approvedCount }: { target: Target; approv
           ) : (
             <>
               <span className="font-medium text-foreground">0</span> approved signals —{" "}
-              {topReason ?? `published sources disagree by ${f1(spread)}`}.
+              {topReason ?? `published sources disagree by ${temperature.diff(spread)}`}.
             </>
           )}
         </p>

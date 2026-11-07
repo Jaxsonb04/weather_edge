@@ -27,7 +27,7 @@ import { SourceBlend } from "./SourceBlend";
     changes; screen readers get the settled figure once. */
 function Reading({ value: valueF, color }: { value: number | null; color?: string }) {
   const temperature = useTemperature();
-  const value = valueF == null ? null : temperature.abs(valueF);
+  const value = valueF == null ? null : temperature.round(temperature.abs(valueF), 0);
   return (
     <p
       className="tnum flex items-start text-[5rem] font-semibold leading-none tracking-tighter sm:text-[5.5rem]"
@@ -35,8 +35,8 @@ function Reading({ value: valueF, color }: { value: number | null; color?: strin
     >
       {value == null ? "—" : (
         <>
-          <span className="sr-only">{Math.round(value)}</span>
-          <span aria-hidden="true"><AnimatedNumber value={Math.round(value)} /></span>
+          <span className="sr-only">{value}</span>
+          <span aria-hidden="true"><AnimatedNumber value={value} /></span>
         </>
       )}
       <span className="mt-1.5 text-2xl font-medium tracking-normal text-muted">{temperature.symbol}</span>

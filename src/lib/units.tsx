@@ -38,9 +38,11 @@ export function TempUnitProvider({ children }: { children: ReactNode }) {
   return <TempUnitContext.Provider value={value}>{children}</TempUnitContext.Provider>;
 }
 
-const round = (n: number, digits: number) => {
+/** Round half-up on the decimal value: 67.1°F is exactly 19.5°C but computes as
+    19.4999…, so the product is trimmed to 8 places before rounding. */
+const roundTo = (n: number, digits: number) => {
   const scale = 10 ** digits;
-  return Math.round(n * scale) / scale;
+  return Math.round(Number((n * scale).toFixed(8))) / scale;
 };
 
 /** Formatters for Fahrenheit inputs in the viewer's chosen unit. `temp` converts
@@ -53,13 +55,17 @@ export function useTemperature() {
     const delta = (df: number) => (unit === "C" ? fDeltaToC(df) : df);
     const symbol = unit === "C" ? "°C" : "°F";
     const render = (n: number | null | undefined, convert: (v: number) => number, digits: number, withUnit: boolean) =>
-      n == null || Number.isNaN(n) ? "—" : `${round(convert(n), digits)}${withUnit ? symbol : "°"}`;
+      n == null || Number.isNaN(n) ? "—" : `${roundTo(convert(n), digits)}${withUnit ? symbol : "°"}`;
     return {
       unit,
       setUnit,
       symbol,
+      /** A market bracket label ("67° to 68°") is Fahrenheit contract wording, never
+          converted; in °C mode it gets an explicit °F so it can't read as Celsius. */
+      bracket: (label: string) => (unit === "C" ? (label.includes("°") ? label.replace(/°/g, "°F") : `${label}°F`) : label),
       toggle: () => setUnit(unit === "C" ? "F" : "C"),
       abs,
+      round: roundTo,
       delta,
       temp: (f: number | null | undefined, digits = 1, withUnit = false) => render(f, abs, digits, withUnit),
       diff: (df: number | null | undefined, digits = 1, withUnit = false) => render(df, delta, digits, withUnit),
