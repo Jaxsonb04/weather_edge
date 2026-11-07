@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from argparse import Namespace
 import io
 import json
 import sqlite3
@@ -14,6 +15,7 @@ import pytest
 
 from sfo_kalshi_quant.cli import main
 from sfo_kalshi_quant import report
+from sfo_kalshi_quant._cli import data as cli_data
 from sfo_kalshi_quant.cities import get_city
 from sfo_kalshi_quant.config import StrategyConfig
 from sfo_kalshi_quant.forecast import ForecastDataError, SfoForecasterAdapter
@@ -125,6 +127,35 @@ def test_report_uses_point_forecast_emos_pair_before_intraday_update(
 
     assert calibrator.bucket_probabilities.call_args.args[1] == expected_high
     assert calibrator.bucket_probabilities.call_args.kwargs["emos_mu_sigma"] == (72.0, 2.5)
+
+
+def test_daily_report_prices_on_the_emos_distribution_for_every_profile(monkeypatch):
+    """SFO's blend is retired, so the published signal must not stop on its fallback."""
+
+    seen = {}
+
+    def capture(**kwargs):
+        seen["config"] = kwargs["config"]
+        return {}
+
+    monkeypatch.setattr(cli_data, "build_daily_report", capture)
+    monkeypatch.setattr(cli_data, "_config", lambda args: StrategyConfig(emos_distribution_enabled=False))
+    args = Namespace(
+        forecaster_root=None,
+        target_date=None,
+        side="both",
+        offline_events=None,
+        observed_high=None,
+        no_ensemble=True,
+        ensemble_timeout=1.0,
+        no_live_market=True,
+        calibration_source="emos",
+        output=None,
+    )
+    monkeypatch.setattr(cli_data, "parse_target_dates", lambda value: [])
+
+    assert cli_data.cmd_daily_report(args) == 0
+    assert seen["config"].emos_distribution_enabled is True
 
 
 def _write_forecaster_fixture(root: Path, target: date) -> None:

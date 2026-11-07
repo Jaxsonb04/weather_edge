@@ -1351,8 +1351,9 @@ if os.environ['HISTORY_TEST_FAILURE'] == ('first-verify' if count == 1 else 'sec
             assert str(ROOT / 'scripts/local_compute' / name) in actions[helper_copy]
         assert actions[helper_copy].endswith('ec2.example:/opt/weatheredge/scripts/local_compute/')
         bundle_copy = _action_index(actions, lambda line: line.startswith('rsync|') and str(path) in line)
-        assert '--chmod=F600' in actions[bundle_copy]
+        assert '--chmod' not in actions[bundle_copy]
         assert '/.local/deploy-history/' in actions[bundle_copy]
+        assert any(line.startswith('ssh|') and 'chmod 600' in line and 'history.json' in line for line in actions)
         imported = _action_index(actions, lambda line: line.startswith('ssh|') and 'shadow_history_bundle.py' in line)
         assert second_verify < helper_copy < bundle_copy < imported
         assert "--db '/opt/weatheredge/forecaster/weather.db'" in actions[imported]
