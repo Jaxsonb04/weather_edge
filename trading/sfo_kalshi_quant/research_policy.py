@@ -302,13 +302,17 @@ TARGET_POLICY_V6 = ResearchSleevePolicy(
 
 
 # v7 is a correctness/evidence release, not another uniform risk increase.
-# Its independent paper ledger starts at the same declared reference capital;
-# v6 orders, realized losses, goals and unsettled positions retain their identity.
+# Its independent paper ledger starts at its own reference capital; v6 orders,
+# realized losses, goals and unsettled positions retain their identity.
 # Keep the v6 object byte-for-byte frozen so its fingerprints still resolve.
+# Owner decision 2026-11-07: V7 runs on $2,000, so its percentage limits, Kelly
+# term and daily goal scale with it. The per-position limit stays $90: 4.5% here.
 TARGET_POLICY = replace(
     TARGET_POLICY_V6,
     account_id="paper-research-roi-v7",
     policy_version="research-target-roi-v7",
+    reference_equity=2000.0,
+    max_position_risk_pct=0.045,
 )
 
 MOTION_POLICY = ResearchSleevePolicy(

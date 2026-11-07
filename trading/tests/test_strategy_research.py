@@ -1406,7 +1406,7 @@ def test_strategy_research_exposes_target_goal_and_separate_motion_book(tmp_path
 
     target = paper["research_daily_target"]
     assert target["account_id"] == TARGET_POLICY.account_id
-    assert target["days"][-1]["target_pnl"] == 50.0
+    assert target["days"][-1]["target_pnl"] == TARGET_POLICY.target_pnl
     assert target["days"][-1]["realized_pnl"] == 0.0
     profiles = {row["risk_profile"]: row for row in paper["profiles"]}
     assert set(profiles) == {"live", "research-target", "research"}
@@ -1426,7 +1426,7 @@ def test_strategy_research_exposes_target_goal_and_separate_motion_book(tmp_path
         db_path=db_path,
         calibration_min_train=40,
     )
-    assert payload["research_daily_target"]["days"][-1]["target_pnl"] == 50.0
+    assert payload["research_daily_target"]["days"][-1]["target_pnl"] == TARGET_POLICY.target_pnl
     profile_views = {row["risk_profile"]: row for row in payload["profiles"]}
     assert set(profile_views) == {
         "live",
@@ -1441,7 +1441,7 @@ def test_strategy_research_exposes_target_goal_and_separate_motion_book(tmp_path
         "research-target-v6",
         "research-motion",
     }
-    assert profile_views["research-target"]["daily_target"]["target_pnl"] == 50.0
+    assert profile_views["research-target"]["daily_target"]["target_pnl"] == TARGET_POLICY.target_pnl
     assert profile_views["research"]["excluded_from"] == [
         "active_admissions",
         "daily_target",
@@ -2860,10 +2860,10 @@ def test_strategy_research_builds_isolated_profile_views():
         # research remains an attribution-only, economically separate archive.
         b_summary = balanced["daily_summary"]
         f_summary = fast["daily_summary"]
-        assert b_summary["starting_bankroll"] == 1000.0
+        assert b_summary["starting_bankroll"] == 2000.0
         assert b_summary["current_attributed_pnl"] > 0
         assert b_summary["current_equity"] == round(
-            1000.0 + b_summary["current_attributed_pnl"], 2
+            2000.0 + b_summary["current_attributed_pnl"], 2
         )
         assert f_summary.get("starting_bankroll") is None
         assert f_summary.get("current_equity") is None
@@ -2916,7 +2916,7 @@ def test_accounting_and_attribution_curve_reconcile_all_time_pnl_before_window()
         # remains visible in its own account scope.
         assert accounting["schema_version"] == 3
         assert accounting["all_time_realized_pnl"] == 0.0
-        assert accounting["realized_equity"] == 1000.0
+        assert accounting["realized_equity"] == 2000.0
         assert accounting["accounts"]["live"]["account_id"] == LIVE_STABILITY_ACCOUNT_ID
         assert accounting["accounts"]["legacy_research"]["booked_resolved_pnl"] == -39.46
         assert accounting["goal"]["target_return"] == 0.05

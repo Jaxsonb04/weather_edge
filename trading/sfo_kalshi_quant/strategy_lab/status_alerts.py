@@ -373,6 +373,10 @@ def _account_drawdown_alerts(
     if current is None:
         return []
     balances = [current]
+    # The ledger's high water carries capital deposits; balances before one do not.
+    high_water = finite(account.get("high_water_equity"))
+    if high_water is not None:
+        balances.append(high_water)
     for day in account.get("days") or []:
         if not isinstance(day, dict):
             continue

@@ -316,9 +316,9 @@ def test_signal_threshold_is_two_cents_of_edge() -> None:
 def test_policy_fingerprint_is_pinned_and_covers_the_stake_and_loss_stop() -> None:
     assert m1.M1_POLICY.account_id == "paper-research-m1-v1"
     assert m1.M1_POLICY.policy_version == "research-m1-market-recal-v1"
-    assert m1.M1_POLICY.reference_equity == 10_000.0
+    assert m1.M1_POLICY.reference_equity == 2_000.0
     assert m1.M1_POLICY.real_money_eligible is False
-    assert m1.M1_POLICY.policy_fingerprint == "458ecd9f808b595c74356529"
+    assert m1.M1_POLICY.policy_fingerprint == "f0258953ff7eb55a1e9318b4"
     payload = m1.M1_POLICY.identity_payload()
     assert payload["stake_dollars"] == 10.0
     assert payload["cumulative_loss_stop"] == -300.0
@@ -343,13 +343,13 @@ def test_existing_policy_and_strategy_fingerprints_are_unchanged() -> None:
     assert TARGET_POLICY_V4.policy_fingerprint == "982654641249be8a63739a5c"
     assert TARGET_POLICY_V5.policy_fingerprint == "cf33c27f3f70129be1e4a9e8"
     assert TARGET_POLICY_V6.policy_fingerprint == "0fd9cc8ebf877a653806fe1a"
-    assert TARGET_POLICY.policy_fingerprint == "ed3eb0933956b67edd85eff6"
+    assert TARGET_POLICY.policy_fingerprint == "428de2dc0b33923a909d8eb3"
     assert MOTION_POLICY.policy_fingerprint == "1c50d872ce278b403a6ad80e"
     live = strategy_config_for_profile("live")
     research = strategy_config_for_profile("research")
-    assert strategy_fingerprint(live, entry_mode="limit") == "762d7dba51749e6575f66858"
-    assert strategy_fingerprint(live, entry_mode="market") == "e6faa6a7cb7a66ca20bb72f4"
-    assert strategy_fingerprint(research, entry_mode="limit") == "d9c9ade236cf6ee9550b38c9"
+    assert strategy_fingerprint(live, entry_mode="limit") == "0b3d1e7ee31ed2cfa1128c18"
+    assert strategy_fingerprint(live, entry_mode="market") == "22870c79f6d1c9b0bf3dc7a1"
+    assert strategy_fingerprint(research, entry_mode="limit") == "c76572bc02d499c334fd97b6"
 
 
 def test_pinned_risk_limits_match_the_research_profile_they_were_copied_from() -> None:
@@ -369,10 +369,10 @@ def test_pinned_risk_limits_match_the_research_profile_they_were_copied_from() -
     assert research.taker_fee_rate == policy.taker_fee_rate
     assert TARGET_POLICY.daily_loss_pause_pct == policy.daily_loss_pause_pct
     summary = m1.policy_summary()
-    assert summary["position_cap_dollars"] == 150.0
-    assert summary["event_cap_dollars"] == 300.0
-    assert summary["target_date_cap_dollars"] == 500.0
-    assert summary["daily_loss_pause_dollars"] == 1500.0
+    assert summary["position_cap_dollars"] == 30.0
+    assert summary["event_cap_dollars"] == 60.0
+    assert summary["target_date_cap_dollars"] == 100.0
+    assert summary["daily_loss_pause_dollars"] == 300.0
     assert summary["cumulative_loss_stop_dollars"] == -300.0
 
 

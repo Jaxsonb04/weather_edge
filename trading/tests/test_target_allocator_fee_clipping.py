@@ -19,7 +19,9 @@ def test_expanded_taker_clip_reprices_fees_before_comparing_budget(constraint):
     config = strategy_config_for_profile("research")
     source = prepare_research_target_decisions([_candidate()], config)[0]
     budget = source.cost_per_contract * 112
-    kwargs = {"target_available_cash": budget} if constraint == "cash" else {"realized_today": -(150.0 - budget)}
+    kwargs = {"target_available_cash": budget} if constraint == "cash" else {
+        "realized_today": -(TARGET_POLICY.reference_equity * TARGET_POLICY.daily_loss_pause_pct - budget)
+    }
     plan = allocate_research_plans(
         [ResearchOpportunity(source, "2026-09-12", 1)], motion_opportunities=[], **kwargs,
     )
@@ -53,7 +55,9 @@ def test_structural_taker_below_placeholder_size_reprices_clipped_fees(constrain
     )[0]
     assert source.recommended_contracts == 20.0
     budget = source.cost_per_contract * 19
-    kwargs = {"target_available_cash": budget} if constraint == "cash" else {"realized_today": -(150.0 - budget)}
+    kwargs = {"target_available_cash": budget} if constraint == "cash" else {
+        "realized_today": -(TARGET_POLICY.reference_equity * TARGET_POLICY.daily_loss_pause_pct - budget)
+    }
     plan = allocate_research_plans(
         [ResearchOpportunity(source, "2026-09-12", 1)], motion_opportunities=[], **kwargs,
     )
@@ -96,7 +100,7 @@ def test_exact_fee_clip_is_admitted_with_fractional_existing_risk(
     config = strategy_config_for_profile("research")
     source = prepare_research_target_decisions([_candidate(entry_ask_size=depth)], config)[0]
     budget = source.cost_per_contract * clip_quantity
-    prior_cost = 150.0 - budget
+    prior_cost = TARGET_POLICY.reference_equity * TARGET_POLICY.daily_loss_pause_pct - budget
     store = PaperStore(
         tmp_path / "rounded-fee-capacity.db",
         research_clock=lambda: datetime(2026, 7, 25, 20, tzinfo=UTC),
@@ -130,4 +134,6 @@ def test_exact_fee_clip_is_admitted_with_fractional_existing_risk(
     order = store.paper_order(result.target_order_ids[0])
     assert order["contracts"] == expected_quantity
     assert order["status"] == "PAPER_FILLED"
-    assert store.research_open_risk(account_id=TARGET_POLICY.account_id) <= 150.0
+    assert store.research_open_risk(account_id=TARGET_POLICY.account_id) <= (
+        TARGET_POLICY.reference_equity * TARGET_POLICY.daily_loss_pause_pct
+    )

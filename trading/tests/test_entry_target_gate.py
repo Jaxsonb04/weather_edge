@@ -173,7 +173,7 @@ def test_research_scan_builds_only_active_target_and_keeps_motion_read_only() ->
     allocate.assert_called_once_with(
         [(decision, "2026-07-19", 1) for decision in target_decisions],
         motion_opportunities=[],
-        target_available_cash=150.0,
+        target_available_cash=TARGET_POLICY.reference_equity * TARGET_POLICY.daily_loss_pause_pct,
         motion_available_cash=0.0,
         realized_today=12.0,
         motion_realized_today=0.0,

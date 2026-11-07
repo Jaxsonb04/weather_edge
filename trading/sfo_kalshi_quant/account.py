@@ -16,13 +16,16 @@ from .research_entry_risk import RESEARCH_ENTRY_RISK_VERSION
 
 SHARED_ACCOUNT_ID = "paper-shared"
 LIVE_STABILITY_ACCOUNT_ID = "paper-live-stability-v1"
-INITIAL_CAPITAL = 1000.0
+# Owner decision 2026-11-07: every active paper account runs on $2,000. Archived
+# ledgers keep the $1,000 they actually ran on.
+INITIAL_CAPITAL = 2000.0
+LEGACY_CAPITAL = 1000.0
 
 # Audit AC-01: historical generic research remains isolated in this archived
 # virtual ledger. New research admission requires an explicit active policy
 # account; the former shared-capital environment escape hatch is retired.
 RESEARCH_ACCOUNT_ID = "paper-research-shadow"
-RESEARCH_VIRTUAL_CAPITAL = INITIAL_CAPITAL
+RESEARCH_VIRTUAL_CAPITAL = LEGACY_CAPITAL
 ACCOUNTING_POLICY_VERSION = "acct-v4-account-scoped-2026-07-14"
 # Explicitly covers behavior outside StrategyConfig (notably exit policy). Any
 # live-account behavior change must rotate this value so readiness evidence
@@ -128,10 +131,10 @@ REGION_DAY_PCT = 0.08
 #     account_id -- ignores account. Broader row set, so it can only see at
 #     least as much loss.
 #   * Threshold: 1.0% of the passed-in `bankroll`, not 2% of realized equity.
-#     Callers pass `_clamp_sizing_equity(equity, 1000)` = clamp(equity, 500,
-#     2000), so the surviving pause fires at $5.00 below $500 of equity, at
-#     1% of equity between $500 and $2000, and at $20.00 above -- strictly
-#     tighter than 2% of equity at every level. A caller passing a far larger
+#     Callers pass `_clamp_sizing_equity(equity, 2000)` = clamp(equity, 1000,
+#     4000), so the surviving pause fires at $10.00 below $1000 of equity, at
+#     1% of equity between $1000 and $4000, and at $40.00 above -- tighter
+#     than 2% of equity down to $500 of equity. A caller passing a far larger
 #     --bankroll would invert that; nothing in production does, and
 #     `test_account_capacity_carries_no_unreachable_daily_loss_breaker` keeps
 #     the deletion a visible decision rather than a silent gap.

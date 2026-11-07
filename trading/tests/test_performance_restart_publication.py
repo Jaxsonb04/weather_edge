@@ -70,7 +70,7 @@ def _live_decision(ticker: str) -> TradeDecision:
     )
 
 
-def test_fresh_restart_publishes_exactly_two_active_thousand_dollar_ledgers(
+def test_fresh_restart_publishes_exactly_two_active_two_thousand_dollar_ledgers(
     tmp_path,
 ) -> None:
     db_path = tmp_path / "paper.db"
@@ -88,12 +88,12 @@ def test_fresh_restart_publishes_exactly_two_active_thousand_dollar_ledgers(
     research = payload["active_ledgers"]["research_roi"]
     assert live["account_id"] == LIVE_STABILITY_ACCOUNT_ID
     assert research["account_id"] == TARGET_POLICY.account_id
-    assert live["initial_equity"] == live["realized_equity"] == 1000.0
-    assert research["initial_equity"] == research["realized_equity"] == 1000.0
+    assert live["initial_equity"] == live["realized_equity"] == 2000.0
+    assert research["initial_equity"] == research["realized_equity"] == TARGET_POLICY.reference_equity
     assert live["status"] == research["status"] == "ACTIVE"
-    assert live["days"][-1]["closing_equity"] == 1000.0
-    assert research["days"][-1]["closing_equity"] == 1000.0
-    assert TARGET_POLICY.target_pnl == 50.0
+    assert live["days"][-1]["closing_equity"] == 2000.0
+    assert research["days"][-1]["closing_equity"] == TARGET_POLICY.reference_equity
+    assert TARGET_POLICY.target_pnl == 100.0
 
     archived_ids = {
         row["account_id"] for row in payload["archived_accounts"]
@@ -349,12 +349,12 @@ def test_profile_daily_history_binds_true_account_balance_without_rewriting_pnl(
     by_name = {row["risk_profile"]: row for row in bound}
 
     assert by_name["live"]["daily_summary"]["equity_basis"] == "account_equity"
-    assert by_name["live"]["daily_summary"]["starting_bankroll"] == 1000.0
-    assert by_name["live"]["daily_summary"]["current_equity"] == 1000.0
-    assert by_name["live"]["daily_summary"]["days"][-1]["closing_equity"] == 1000.0
+    assert by_name["live"]["daily_summary"]["starting_bankroll"] == 2000.0
+    assert by_name["live"]["daily_summary"]["current_equity"] == 2000.0
+    assert by_name["live"]["daily_summary"]["days"][-1]["closing_equity"] == 2000.0
     assert (
         by_name["research-target"]["daily_summary"]["days"][-1]["closing_equity"]
-        == 1000.0
+        == 2000.0
     )
     assert by_name["research-motion"]["archived"] is True
     assert by_name["research-motion"]["daily_summary"].get("current_equity") != 1000.0

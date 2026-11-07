@@ -57,14 +57,19 @@ DEFAULT_MODEL_VETO_BUFFER = 0.08
 # Bound the veto's tolerated drawdown in account dollars too: 70% of the
 # sleeve's daily target. Calibrated against the deepest recovered veto hold to
 # date (order 2098, 2026-08-05: -$33.29 trough on the way to +$35.69), which
-# stays inside the floor.
+# stays inside the floor. Never above $35: the $90 entry cap did not move when
+# V7 went to $2,000, so neither does this bound.
 MODEL_VETO_MAX_LOSS_TARGET_FRACTION = 0.70
+MODEL_VETO_MAX_LOSS_DOLLARS = 35.0
 
 # Execution-safety bound, deliberately outside the fingerprinted policy
 # identity (like the ROI catastrophic floor): per-account veto dollar caps for
 # every research TARGET sleeve with a real daily objective.
 RESEARCH_VETO_DOLLAR_CAPS: dict[str, float] = {
-    policy.account_id: policy.target_pnl * MODEL_VETO_MAX_LOSS_TARGET_FRACTION
+    policy.account_id: min(
+        policy.target_pnl * MODEL_VETO_MAX_LOSS_TARGET_FRACTION,
+        MODEL_VETO_MAX_LOSS_DOLLARS,
+    )
     for policy in ALL_RESEARCH_POLICIES
     if policy.sleeve is ResearchSleeve.TARGET and policy.target_pnl > 0
 }

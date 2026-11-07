@@ -46,16 +46,16 @@ def _scan(state, *, realized=0.0):
     return plans, store
 
 
-@pytest.mark.parametrize("open_cost,reservations", [(200.0, 0.0), (0.0, 200.0), (80.0, 120.0)])
+@pytest.mark.parametrize("open_cost,reservations", [(450.0, 0.0), (0.0, 450.0), (180.0, 270.0)])
 def test_scan_shrinks_planned_entry_to_remaining_daily_risk(open_cost, reservations):
     plans, store = _scan({
         "available_cash": 900.0,
         "open_cost_basis": open_cost,
         "reservations": reservations,
     })
-    # $200 of open/pending cost is charged at the 0.60 stop-scaled fraction,
-    # so a $90 desired entry must fit the remaining $150 - $120 = $30. A
-    # partially filled order's $80 filled + $120 pending risk counts once
+    # $450 of open/pending cost is charged at the 0.60 stop-scaled fraction,
+    # so a $90 desired entry must fit the remaining $300 - $270 = $30. A
+    # partially filled order's $180 filled + $270 pending risk counts once
     # each, exactly like the existing account-state query, and a resting
     # reservation is charged at the same rate as filled cost.
     assert len(plans.target.legs) == 1
@@ -66,18 +66,18 @@ def test_scan_shrinks_planned_entry_to_remaining_daily_risk(open_cost, reservati
 def test_planning_cash_charges_reservations_like_filled_cost_at_stop_fraction():
     assert TARGET_OPEN_RISK_CHARGE_FRACTION == 0.60
     filled = scan_module._target_planning_cash(
-        {"available_cash": 900.0, "open_cost_basis": 100.0, "reservations": 0.0},
+        {"available_cash": 900.0, "open_cost_basis": 200.0, "reservations": 0.0},
         0.0,
     )
     resting = scan_module._target_planning_cash(
-        {"available_cash": 900.0, "open_cost_basis": 0.0, "reservations": 100.0},
+        {"available_cash": 900.0, "open_cost_basis": 0.0, "reservations": 200.0},
         0.0,
     )
-    assert filled == pytest.approx(90.0)
+    assert filled == pytest.approx(180.0)
     assert resting == filled
     # The room never exceeds spendable cash.
     assert scan_module._target_planning_cash(
-        {"available_cash": 12.5, "open_cost_basis": 0.0, "reservations": 100.0},
+        {"available_cash": 12.5, "open_cost_basis": 0.0, "reservations": 200.0},
         0.0,
     ) == pytest.approx(12.5)
 
@@ -85,10 +85,10 @@ def test_planning_cash_charges_reservations_like_filled_cost_at_stop_fraction():
 def test_scan_subtracts_realized_losses_from_existing_exposure_room():
     plans, _ = _scan({
         "available_cash": 900.0,
-        "open_cost_basis": 80.0,
-        "reservations": 120.0,
+        "open_cost_basis": 180.0,
+        "reservations": 270.0,
     }, realized=-20.0)
-    # $150 - $20 realized - 0.6 * $200 = $10.
+    # $300 - $20 realized - 0.6 * $450 = $10.
     assert 9.0 < plans.target.total_spend <= 10.0
 
 
@@ -111,7 +111,7 @@ def test_scan_fails_closed_without_complete_finite_account_risk(state):
 def test_realized_profits_do_not_expand_daily_room():
     plans, _ = _scan({
         "available_cash": 940.0,
-        "open_cost_basis": 200.0,
+        "open_cost_basis": 450.0,
         "reservations": 0.0,
     }, realized=40.0)
     assert 29.0 < plans.target.total_spend <= 30.0

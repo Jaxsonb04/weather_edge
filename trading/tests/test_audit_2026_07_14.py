@@ -254,10 +254,11 @@ def test_exec_v3_partial_fill_survives_restart_and_ttl_expiry() -> None:
 def test_exec_v3_partial_fill_is_included_in_account_risk() -> None:
     with TemporaryDirectory() as tmp:
         store = PaperStore(Path(tmp) / "paper.db")
+        # Binary-exact price keeps the unchanged-equity assertion exact.
         order_id = _resting_order(
             store,
             "2026-07-14",
-            _decision(side="NO", limit_price=0.72, contracts=10.0),
+            _decision(side="NO", limit_price=0.75, contracts=10.0),
             created_at=T0,
         )
         _fill_resting_orders_against_live_book(
@@ -266,7 +267,7 @@ def test_exec_v3_partial_fill_is_included_in_account_risk() -> None:
                 [
                     _trade(
                         "T-ACCOUNT-PARTIAL",
-                        yes_price=0.28,
+                        yes_price=0.25,
                         quantity=5.0,
                         taker_book_side="bid",
                         created_time=T0 + timedelta(minutes=1),
@@ -281,7 +282,7 @@ def test_exec_v3_partial_fill_is_included_in_account_risk() -> None:
         assert state is not None
         assert state["open_cost_basis"] == order["contracts"] * order["cost_per_contract"]
         assert state["reservations"] == order["reserved_cost"]
-        assert state["realized_equity"] == 1_000.0
+        assert state["realized_equity"] == 2_000.0
 
 
 def test_exec_v3_closing_partial_fill_cancels_unfilled_reservation() -> None:

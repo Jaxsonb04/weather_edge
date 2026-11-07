@@ -41,7 +41,7 @@ def test_publication_shows_m1_as_its_own_paper_only_book(tmp_path) -> None:
     book = payload["accounts"]["research_m1"]
     assert book["available"] is True and book["account_id"] == M1
     assert book["profile_key"] == "research-m1"
-    assert book["initial_equity"] == 10_000.0
+    assert book["initial_equity"] == m1.M1_POLICY.reference_equity
     assert book["realized_pnl"] == pytest.approx(10.49)
     assert book["paper_only"] is True and book["real_money_eligible"] is False
     assert "live_readiness" in book["excluded_from"]
@@ -49,7 +49,7 @@ def test_publication_shows_m1_as_its_own_paper_only_book(tmp_path) -> None:
     assert trial["kind"] == "market_recalibration_trial"
     assert trial["counts_toward_live_readiness"] is False
     assert trial["policy_fingerprint"] == m1.M1_POLICY.policy_fingerprint
-    assert trial["caps"]["target_date_cap_dollars"] == 500.0
+    assert trial["caps"]["target_date_cap_dollars"] == 100.0
     assert trial["caps"]["cumulative_loss_stop_dollars"] == -300.0
     assert [rule["rule"] for rule in trial["stop_rules"]] == [
         "fidelity", "loss_stop", "futility", "premise", "final_read",

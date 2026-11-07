@@ -1,6 +1,6 @@
 """M1 market-recalibration paper trial: account, scan, placement, stops, evidence.
 
-Covers the separate $10,000 ledger and its startup/deploy contract, the
+Covers the separate $2,000 ledger and its startup/deploy contract, the
 research scan feeding the trial (first research scan of each UTC hour, shadow
 mode, one entry per leg, filters, sizing), hold-to-settlement through the
 monitor and the normal settle path, account isolation, every stop rule and its
@@ -364,18 +364,18 @@ def _halt_rules(store: PaperStore) -> set[str]:
 # --------------------------------------------------------------------------
 
 
-def test_fresh_store_bootstraps_the_separate_ten_thousand_dollar_ledger(tmp_path) -> None:
+def test_fresh_store_bootstraps_the_separate_two_thousand_dollar_ledger(tmp_path) -> None:
     store, _ = _store(tmp_path)
     PaperStore(tmp_path / "paper.db")
     PaperStore(tmp_path / "paper.db")
 
     state = store._account_state(M1, persist_high_water=False)
     assert state["status"] == "ACTIVE"
-    assert state["initial_capital"] == state["opening_cash"] == 10_000.0
-    assert state["available_cash"] == state["realized_equity"] == 10_000.0
+    assert state["initial_capital"] == state["opening_cash"] == m1.M1_POLICY.reference_equity
+    assert state["available_cash"] == state["realized_equity"] == m1.M1_POLICY.reference_equity
     ledger = _rows(store, "SELECT * FROM paper_account_ledger WHERE account_id=?", (M1,))
     assert [(row["event_type"], row["amount"], row["idempotency_key"]) for row in ledger] == [
-        ("OPENING_CASH", 10_000.0, f"{M1}:opening")
+        ("OPENING_CASH", m1.M1_POLICY.reference_equity, f"{M1}:opening")
     ]
     details = json.loads(ledger[0]["details_json"])
     assert details["policy_fingerprint"] == m1.M1_POLICY.policy_fingerprint
@@ -540,9 +540,9 @@ def test_placement_books_taker_fills_at_the_displayed_ask_with_per_order_fees(tm
         ("ENTRY_FILL", -5.56),
     ]
     state = store._account_state(M1, persist_high_water=False)
-    assert state["available_cash"] == pytest.approx(10_000 - 15.51)
+    assert state["available_cash"] == pytest.approx(m1.M1_POLICY.reference_equity - 15.51)
     assert state["open_cost_basis"] == pytest.approx(15.51)
-    assert state["realized_equity"] == pytest.approx(10_000)
+    assert state["realized_equity"] == pytest.approx(m1.M1_POLICY.reference_equity)
     assert store.account_order_ledger_reconciliation(M1)["status"] == "reconciled"
 
     evaluations = _rows(store, "SELECT * FROM m1_evaluations ORDER BY id")
@@ -738,21 +738,21 @@ def test_existing_risk_limits_block_m1_entries(tmp_path) -> None:
 
 def test_exposure_caps_apply_to_this_accounts_own_equity(tmp_path) -> None:
     store, _ = _store(tmp_path)
-    # $485 already open on the target date (another city): the $9.95 YES entry
-    # still fits the $500 (5% of $10,000) target-date cap, the $5.56 tail
+    # $85 already open on the target date (another city): the $9.95 YES entry
+    # still fits the $100 (5% of $2,000) target-date cap, the $5.56 tail
     # entry after it does not.
     _insert_m1_order(
         store,
         target_date=TARGET.isoformat(),
         ticker="KXHIGHNY-26OCT21-B60.5",
         created_at=(NOW - timedelta(hours=3)).isoformat(),
-        contracts=500.0,
-        entry_price=0.97,
+        contracts=100.0,
+        entry_price=0.85,
         status="PAPER_FILLED",
     )
     result = _scan(store)
     assert result.blocked == [
-        (TAIL_TICKER, "target-date exposure $500.51 would exceed $500.00")
+        (TAIL_TICKER, "target-date exposure $100.51 would exceed $100.00")
     ]
     assert [o["market_ticker"] for o in _m1_orders(store)][1:] == [YES_TICKER]
     tail = _rows(
@@ -826,7 +826,7 @@ def test_settlement_closes_m1_positions_through_the_account_scoped_settle(tmp_pa
     assert tail["realized_pnl"] == pytest.approx(6 - 5.56)  # 70 is not above 74
     state = store._account_state(M1, persist_high_water=False)
     assert state["open_cost_basis"] == 0.0
-    assert state["realized_equity"] == pytest.approx(10_000 + 10.05 + 0.44)
+    assert state["realized_equity"] == pytest.approx(m1.M1_POLICY.reference_equity + 10.05 + 0.44)
     assert store.account_order_ledger_reconciliation(M1)["status"] == "reconciled"
 
 
@@ -844,7 +844,7 @@ def test_no_cash_or_pnl_crosses_into_another_account(tmp_path) -> None:
     _scan(store)
     store.settle_paper_orders(TARGET.isoformat(), 76.0, series_ticker="KXHIGHLAX")
     m1_state = store._account_state(M1, persist_high_water=False)
-    assert m1_state["realized_equity"] == pytest.approx(10_000 - 15.51)
+    assert m1_state["realized_equity"] == pytest.approx(m1.M1_POLICY.reference_equity - 15.51)
     for account, state in before.items():
         assert store._account_state(account, persist_high_water=False) == state
     other_ledger = _rows(
@@ -895,19 +895,19 @@ def test_m1_identity_is_pinned_to_this_release_and_independent_of_its_versions(
     This release stamps orders with exec-v5 and runs strategy behavior-v4,
     which moved the live and research strategy fingerprints. M1's policy
     fingerprint hashes only its pre-registered constants, so it is the same
-    value here and in production, and a later release-wide version bump
+    value for the new capital decision, and a later release-wide version bump
     cannot orphan M1's open lots from their published book.
     """
 
     assert EXECUTION_MODEL_VERSION == "exec-v5-2026-10-05"
     assert STRATEGY_BEHAVIOR_VERSION == "behavior-v4-v7-correctness-2026-10-05"
-    assert m1.M1_POLICY.policy_fingerprint == "458ecd9f808b595c74356529"
+    assert m1.M1_POLICY.policy_fingerprint == "f0258953ff7eb55a1e9318b4"
     import sfo_kalshi_quant.account as account_module
     import sfo_kalshi_quant.maker_fills as maker_fills_module
 
     monkeypatch.setattr(account_module, "STRATEGY_BEHAVIOR_VERSION", "behavior-next")
     monkeypatch.setattr(maker_fills_module, "EXECUTION_MODEL_VERSION", "exec-next")
-    assert m1.M1_POLICY.policy_fingerprint == "458ecd9f808b595c74356529"
+    assert m1.M1_POLICY.policy_fingerprint == "f0258953ff7eb55a1e9318b4"
     monkeypatch.undo()
 
     store, _ = _store(tmp_path)

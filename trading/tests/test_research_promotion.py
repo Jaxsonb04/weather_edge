@@ -465,7 +465,7 @@ def test_log_growth_lower_bound_blocks_independently_when_equity_wiped_out() -> 
     # zero -> log_growth_delta is None for every cluster (no fabricated
     # growth over a wipeout) -- log-growth blocks even though ROI, a
     # simple linear pnl-over-equity figure, stays robustly positive.
-    folds, replays, candidates = _experiment(3, baseline_pnl=-1000.0, challenger_pnl=50.0)
+    folds, replays, candidates = _experiment(3, baseline_pnl=-TARGET_POLICY.reference_equity, challenger_pnl=50.0)
     decision = evaluate_promotion(_declaration(), folds=folds, replay_evidence=replays, candidate_evidence=candidates)
     assert REASON_ROI_LOWER_BOUND not in decision.block_reasons
     assert REASON_LOG_GROWTH_LOWER_BOUND in decision.block_reasons
@@ -491,9 +491,10 @@ def test_independent_confirmatory_days_boundary(count: int, expect_blocked: bool
 
 def _drawdown_experiment(bad_day_pnl: float):
     folds, replays, candidates = [], [], []
+    scale = TARGET_POLICY.reference_equity / 1000.0
     for i in range(30):
-        challenger_pnl = bad_day_pnl if i == 15 else 15.0
-        fold, replay, candidate = _cluster(i, baseline_pnl=10.0, challenger_pnl=challenger_pnl)
+        challenger_pnl = (bad_day_pnl if i == 15 else 15.0) * scale
+        fold, replay, candidate = _cluster(i, baseline_pnl=10.0 * scale, challenger_pnl=challenger_pnl)
         folds.append(fold)
         replays.append(replay)
         candidates.append(candidate)
@@ -501,9 +502,8 @@ def _drawdown_experiment(bad_day_pnl: float):
 
 
 def test_drawdown_tolerance_boundary_at_computed_value_passes() -> None:
-    # -20.0 on day 15 produces a hand/computation-verified
-    # challenger max_drawdown_pct of exactly 20/1225 (see the reference
-    # computation this test's tolerance is pinned to).
+    # The capital-scaled loss on day 15 keeps max_drawdown_pct at 20/1225
+    # (40/2450 at $2,000). The tolerance is pinned to that computation.
     folds, replays, candidates = _drawdown_experiment(-20.0)
     records, exclusions = build_paired_records_for_experiment(folds, replays, candidates, challenger_candidate_key=CHALLENGER_KEY)
     report = build_paired_evidence_report(records, exclusions, challenger_candidate_key=CHALLENGER_KEY)

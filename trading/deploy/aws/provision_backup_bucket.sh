@@ -43,7 +43,7 @@ fi
   '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
 "$AWS_CLI" s3api put-bucket-lifecycle-configuration --bucket "$BUCKET" \
   --lifecycle-configuration \
-  '{"Rules":[{"ID":"paper-journal-retention","Status":"Enabled","Filter":{"Prefix":"paper_trading/"},"Expiration":{"Days":90},"NoncurrentVersionExpiration":{"NoncurrentDays":30}},{"ID":"database-backup-retention","Status":"Enabled","Filter":{"Prefix":"database-snapshots/"},"Expiration":{"Days":35},"NoncurrentVersionExpiration":{"NoncurrentDays":7}}]}'
+  '{"Rules":[{"ID":"paper-journal-retention","Status":"Enabled","Filter":{"Prefix":"paper_trading/"},"Expiration":{"Days":3650},"NoncurrentVersionExpiration":{"NoncurrentDays":30}},{"ID":"database-backup-retention","Status":"Enabled","Filter":{"Prefix":"database-snapshots/"},"Expiration":{"Days":35},"NoncurrentVersionExpiration":{"NoncurrentDays":7}}]}'
 
 profile_arn="$("$AWS_CLI" ec2 describe-instances --region "$REGION" \
   --instance-ids "$INSTANCE_ID" \

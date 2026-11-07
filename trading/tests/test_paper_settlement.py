@@ -1679,7 +1679,7 @@ def test_arbitrage_compensation_contains_resting_to_filled_cancel_race_at_bid():
         # The supported live fixture must reconcile in the fresh stability
         # ledger after the compensation close.
         state = store.live_account_state()
-        assert abs(state["realized_equity"] - (1000.0 + row["realized_pnl"])) < 1e-9
+        assert abs(state["realized_equity"] - (2000.0 + row["realized_pnl"])) < 1e-9
         assert store.shared_account_state()["realized_equity"] == 1000.0
         with store.connect() as conn:
             ledger = conn.execute(

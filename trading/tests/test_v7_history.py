@@ -8,12 +8,16 @@ from sfo_kalshi_quant.research_policy import TARGET_POLICY, TARGET_POLICY_V6
 from sfo_kalshi_quant.store import schema
 
 
-def test_v7_changes_identity_without_increasing_risk_or_rewriting_v6():
+def test_v7_changes_capital_without_increasing_position_limit_or_rewriting_v6():
     assert TARGET_POLICY.policy_version == "research-target-roi-v7"
     assert TARGET_POLICY.account_id != TARGET_POLICY_V6.account_id
     assert TARGET_POLICY_V6.policy_fingerprint == "0fd9cc8ebf877a653806fe1a"
     old, new = asdict(TARGET_POLICY_V6), asdict(TARGET_POLICY)
-    for key in ("account_id", "policy_version"):
+    assert TARGET_POLICY_V6.reference_equity == 1000.0
+    assert TARGET_POLICY.reference_equity == 2000.0
+    assert TARGET_POLICY_V6.reference_equity * TARGET_POLICY_V6.max_position_risk_pct == 90.0
+    assert TARGET_POLICY.reference_equity * TARGET_POLICY.max_position_risk_pct == 90.0
+    for key in ("account_id", "policy_version", "reference_equity", "max_position_risk_pct"):
         old.pop(key)
         new.pop(key)
     assert old == new
@@ -58,7 +62,7 @@ def test_v7_migration_preserves_v6_ledger_and_order_bytes(tmp_path: Path, monkey
         assert conn.execute("SELECT * FROM paper_orders").fetchall() == before_orders
         assert conn.execute("SELECT * FROM paper_account_ledger WHERE account_id=?", (TARGET_POLICY_V6.account_id,)).fetchall() == before_ledger
         assert conn.execute("SELECT status FROM paper_accounts WHERE account_id=?", (TARGET_POLICY_V6.account_id,)).fetchone()[0] == "ARCHIVED"
-        assert conn.execute("SELECT initial_capital,opening_cash,status FROM paper_accounts WHERE account_id=?", (TARGET_POLICY.account_id,)).fetchone() == (1000.0,1000.0,"ACTIVE")
+        assert conn.execute("SELECT initial_capital,opening_cash,status FROM paper_accounts WHERE account_id=?", (TARGET_POLICY.account_id,)).fetchone() == (TARGET_POLICY.reference_equity,TARGET_POLICY.reference_equity,"ACTIVE")
         assert conn.execute("SELECT COUNT(*) FROM paper_account_ledger WHERE account_id=? AND event_type='OPENING_CASH'", (TARGET_POLICY.account_id,)).fetchone()[0] == 1
 
 

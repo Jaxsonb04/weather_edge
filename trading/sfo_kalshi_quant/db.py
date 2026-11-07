@@ -26,6 +26,7 @@ from .config import (
 from .account import (
     ACCOUNTING_POLICY_VERSION,
     INITIAL_CAPITAL,
+    LEGACY_CAPITAL,
     LIVE_STABILITY_ACCOUNT_ID,
     MIN_EXECUTABLE_NOTIONAL,
     RESEARCH_ACCOUNT_ID,
@@ -834,7 +835,7 @@ class PaperStore:
             "SELECT COALESCE(SUM(realized_pnl), 0) FROM paper_orders "
             "WHERE status IN ('PAPER_SETTLED', 'PAPER_CLOSED')"
         ).fetchone()
-        opening_cash = INITIAL_CAPITAL + float(realized[0] or 0.0)
+        opening_cash = LEGACY_CAPITAL + float(realized[0] or 0.0)
         created_at = _now()
         # INSERT OR IGNORE + the idempotent ledger key make the bootstrap safe
         # even if two initializers slip past the init lock (audit DB-01).
@@ -845,7 +846,7 @@ class PaperStore:
             (
                 SHARED_ACCOUNT_ID,
                 created_at,
-                INITIAL_CAPITAL,
+                LEGACY_CAPITAL,
                 opening_cash,
                 opening_cash,
                 "flat-book shared-account v2 cutover",
@@ -858,7 +859,7 @@ class PaperStore:
             event_type="OPENING_CASH",
             amount=opening_cash,
             idempotency_key=f"{SHARED_ACCOUNT_ID}:opening",
-            details={"initial_capital": INITIAL_CAPITAL, "legacy_realized_pnl": opening_cash - INITIAL_CAPITAL},
+            details={"initial_capital": LEGACY_CAPITAL, "legacy_realized_pnl": opening_cash - LEGACY_CAPITAL},
         )
 
     def _ensure_live_stability_account(self, conn: sqlite3.Connection) -> None:
@@ -888,6 +889,38 @@ class PaperStore:
             idempotency_key=f"{LIVE_STABILITY_ACCOUNT_ID}:opening",
             details={"initial_capital": INITIAL_CAPITAL},
         )
+        # Owner decision 2026-11-07: Live moves from $1,000 to $2,000. One audited
+        # deposit keeps its order history; the WHERE guard makes it run once.
+        deposit = INITIAL_CAPITAL - LEGACY_CAPITAL
+        deposited = conn.execute(
+            "UPDATE paper_accounts SET initial_capital=?, opening_cash=?, "
+            "high_water_equity=high_water_equity+?, "
+            "cutover_note=COALESCE(cutover_note, '') || ? "
+            "WHERE account_id=? AND status='ACTIVE' "
+            "AND initial_capital=? AND opening_cash=?",
+            (
+                INITIAL_CAPITAL,
+                INITIAL_CAPITAL,
+                deposit,
+                "; owner capital deposit 2026-11-07",
+                LIVE_STABILITY_ACCOUNT_ID,
+                LEGACY_CAPITAL,
+                LEGACY_CAPITAL,
+            ),
+        ).rowcount
+        if deposited:
+            self._record_ledger_event(
+                conn,
+                account_id=LIVE_STABILITY_ACCOUNT_ID,
+                order_id=None,
+                event_type="CAPITAL_DEPOSIT",
+                amount=deposit,
+                idempotency_key=f"{LIVE_STABILITY_ACCOUNT_ID}:deposit-2026-11-07",
+                details={
+                    "previous_capital": LEGACY_CAPITAL,
+                    "initial_capital": INITIAL_CAPITAL,
+                },
+            )
         conn.execute(
             "UPDATE paper_accounts SET status='ARCHIVED' "
             "WHERE account_id IN (?, ?) AND status!='ARCHIVED'",
@@ -1405,6 +1438,7 @@ class PaperStore:
             target_feasible=target_feasible,
             available_conservative_expected_profit=available_profit,
             feasibility_evidence=feasibility_evidence,
+            reference_equity=TARGET_POLICY.reference_equity,
             account_id=TARGET_POLICY.account_id,
             policy_version=TARGET_POLICY.policy_version,
         )
