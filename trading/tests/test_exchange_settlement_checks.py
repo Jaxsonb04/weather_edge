@@ -1166,3 +1166,11 @@ def test_a_market_finalized_with_a_bracket_label_is_checked_on_its_result():
         assert row["verification_status"] == EXCHANGE_CHECK_MISMATCH
         assert row["mismatch_reason"] == "result"
         assert row["kalshi_expiration_value"] is None
+
+
+@pytest.mark.parametrize("value", ["1e309", "nan-ish", "12.3.4"])
+def test_a_numeric_or_textual_non_temperature_is_unreadable_not_missing(value):
+    ticker = "KXHIGHTSFO-26SEP10-B70.5"
+    payload = {"market": _market(ticker, result="no", value=value)}
+    with pytest.raises(exchange_settlement.ExchangeMarketUnreadable):
+        exchange_settlement.parse_market_resolution(payload, ticker, "markets")
