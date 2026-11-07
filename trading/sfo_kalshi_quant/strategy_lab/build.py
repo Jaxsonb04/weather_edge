@@ -1463,9 +1463,8 @@ def _account_daily_balance_rows(
             amount for at, amount in deposits if at.date().isoformat() > key
         )
         prior_pnl = sum(pnl for day, pnl in pnl_by_day.items() if day < key)
-        opening = capital + prior_pnl - sum(
-            amount for at, amount in deposits if at.date().isoformat() == key
-        )
+        deposited = sum(amount for at, amount in deposits if at.date().isoformat() == key)
+        opening = capital + prior_pnl - deposited
         daily_pnl = pnl_by_day.get(key, 0.0)
         cumulative = capital + prior_pnl + daily_pnl
         output.append(
@@ -1476,6 +1475,7 @@ def _account_daily_balance_rows(
                 "realized_pnl": _round(daily_pnl, 2),
                 "closing_equity": _round(cumulative, 2),
                 "cumulative_realized": _round(cumulative - capital, 2),
+                "capital_deposit": _round(deposited, 2),
             }
         )
     return output

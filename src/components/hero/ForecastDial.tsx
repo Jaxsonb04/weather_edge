@@ -116,7 +116,7 @@ function CityForecastDial({ city }: { city: City }) {
               <Figure label="Lead">{forecast.lead_days == null ? "—" : `${forecast.lead_days}d`}</Figure>
             </dl>
             <p className="text-xs text-muted">
-              {describeMethod(forecast.method)} · last observed high{" "}
+              {describeMethod(forecast.method)} · last settled high{" "}
               <span className="tnum text-foreground">{city.latest_settlement ? `${round1(city.latest_settlement.high_f)}°F` : "—"}</span>
             </p>
           </>

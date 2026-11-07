@@ -89,6 +89,7 @@ export function DailyActivity({ s, days }: { s: StrategyLab; days?: DayRow[] }) 
       cell: (d) => (
         <span className="tnum text-muted">
           {d.closing_equity == null ? "—" : money(d.closing_equity, { sign: "negative-only" })}
+          {d.capital_deposit ? <span className="block text-xs">incl. {money(d.capital_deposit)} deposit</span> : null}
         </span>
       ),
     },

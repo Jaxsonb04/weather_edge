@@ -117,6 +117,7 @@ export interface DayRow {
   opening_equity?: number | null;
   daily_realized_pnl?: number;
   closing_equity?: number | null;
+  capital_deposit?: number;
   opening_attributed_pnl?: number;
   closing_attributed_pnl?: number;
   trades_opened?: number;
@@ -888,6 +889,7 @@ export function equitySeriesFromDays(days: DayRow[] | undefined, startingBankrol
         ) / 100,
         pnl: d.cumulative_realized ?? 0,
         dailyPnl: d.realized_pnl ?? 0,
+        ...(d.capital_deposit ? { deposit: d.capital_deposit } : {}),
         ...(accountBalance == null ? {} : { accountBalance }),
       };
     });
