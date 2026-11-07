@@ -22,13 +22,18 @@ continuous Mac use, deletion of research history or live-money trading.
 | CRPS location/scale and shallow quantile boosting comparison | Mac | Chronological holdout, original availability checks, no automatic model promotion |
 | Prospective free-provider shadow evidence | Mac, in a separate private database | Skip on resource/power/API guard; never substitute its identity for AWS paper execution |
 | Expensive full historical Strategy builder | Mac manual helper, once complete verified inputs exist | Produce private staged cache; no cloud transfer or promotion |
-| Backend V7 cutover and any later smaller instance | Guarded operator deployment | Existing backup, lineage, source, accounting and publication gates must pass |
+| Pending V7/M1 cutover on the existing `t4g.small` Spot host | AWS operator deployment | Existing backup, lineage, source, accounting and publication gates remain binding |
 
-The source supports twenty cities; the last verified old backend supported
-fifteen. The deployed app may therefore truthfully display V7 source improvements
-while the active runtime/account remains V6. Old paper losses and economically
-separate research accounts must retain their original identity. Neither a local
-ML score improvement nor a static app release starts V7 trading performance.
+Repository source covers twenty cities; the V7/M1 cutover and November 7 capital
+decision are not yet deployed. Live Stability, Research V7 and M1 each use $2,000
+in separate paper accounts. At deploy, Live keeps its ledger and order history
+with one audited +$1,000 deposit; V7 and M1 get fresh ledgers. V7's reference
+equity is $2,000, with no reserve. Never sum these accounts into one bankroll.
+Archived V6 and older accounts keep their real $1,000 history and are never
+restated. V6 monitoring and settlement continue after archival. See the
+[paper limits](aws_deployment.md#november-7-paper-capital-decision).
+Neither a local ML score improvement nor a static app release creates trading
+performance.
 
 ## Mac safeguards and schedule
 
@@ -381,9 +386,10 @@ values stay private. Diagnostic dirty-source runs require explicit
 
 FileVault was confirmed on for the Mac, but an encrypted local disk plus one
 replica receipt does **not** satisfy the existing durable S3 restore/cutover
-contract. No cloud journal history is deleted, no archive-only policy changes,
-and no backup gate is bypassed. Complete verified weather inputs, durable
-recovery integration and source-matched cache import remain separate work.
+contract. The Mac workflow does not delete cloud journal history, change the
+AWS retention policy, or bypass a backup gate. Complete verified weather inputs,
+durable recovery integration and source-matched cache import remain separate
+work.
 
 ## Validation and decision boundary
 
@@ -410,9 +416,11 @@ bounded real run before its results are called verified.
 .venv-dev/bin/python -m compileall -q scripts/local_compute
 ```
 
-October 31 is a review deadline, not automatic permission to activate real
-money. New shadow forecasts are weather evidence; they are not original AWS
+October 31, 2026 was the review deadline; it did not automatically authorize
+real money. New shadow forecasts are weather evidence; they are not original AWS
 execution vintages or proof of after-fee profitability. Bankroll selection stays
 conditional on independent edge, drawdown and liquidity evidence; live allocation
-is $0 while authorization and readiness remain absent. Existing $1,000 paper
-accounts are separate simulation ledgers, not a recommended initial investment.
+is $0 while authorization and readiness remain absent. The November 7 decision
+sets Live Stability, V7 and M1 paper capital at $2,000 each, pending deployment.
+These simulation ledgers are never summed or presented as a recommended initial
+investment.

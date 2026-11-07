@@ -1,10 +1,12 @@
 # AWS Deployment (EC2)
 
-WeatherEdge production runs on an AWS EC2 `t4g.medium` in `us-west-1`
-(migrated from `us-east-1` on 2026-07-11; the quiesced east instance awaits
-owner decommission). The host is Ubuntu 24.04 arm64 (`ubuntu`), and the
-application root is `/opt/weatheredge`. Live databases, caches, and dashboard
-artifacts on that host are authoritative after sync and refresh.
+WeatherEdge production runs on an AWS EC2 `t4g.small` Spot host in `us-west-1`,
+with an encrypted 60 GB gp3 root disk and an Elastic IP. Expected AWS cost is
+about $13–20/month: about $19.50 while the old stopped server's 64 GB disk
+remains, and about $13.40 after that disk is deleted. The host is Ubuntu 24.04
+arm64 (`ubuntu`), and the application root is `/opt/weatheredge`. Live databases,
+caches, and dashboard artifacts on that host are authoritative after sync and
+refresh.
 
 The operator connection settings belong in the ignored `.local/ec2.env`:
 
@@ -41,8 +43,10 @@ It is then transactional around scheduled work: it captures the enabled
 WeatherEdge timers, quiesces the services, creates and independently restores a
 checksummed SQLite backup, syncs the tree, runs `install_systemd_notimers.sh`
 as the install gate, and restores
-exactly the captured timer set. If transfer or installation fails, it exits
-nonzero and leaves the host quiesced for a clean retry. A new or intentionally
+the captured timer set after filtering out the retired Apple refresh timer.
+Canonical recovery restores thirteen timers, including Apple purge. If transfer
+or installation fails, it exits nonzero and leaves the host quiesced for a clean
+retry. A new or intentionally
 quiesced host has an empty captured set and remains timerless for manual checks.
 
 Both installers first read the host timezone without mutating it. The regular
@@ -61,8 +65,10 @@ captures the enabled set before it stops/disables every WeatherEdge timer plus
 its paired service ahead of any remote tree mutation or source transfer. It does
 not assume the helper already exists in the old remote source tree. A failed
 transfer or install remains safely quiesced; a successful deploy restores only
-the captured timers. The full sync does not use `--delete`. Scheduled services
-execute the exact source installed by this controlled full deploy; they never
+the captured timers, excluding the retired Apple refresh timer. The canonical
+recovery set contains thirteen timers. The full sync does not use `--delete`.
+Scheduled services execute the exact source installed by this controlled full
+deploy; they never
 fetch or replace source on their own. The former forecaster-only sync is a
 disabled compatibility tombstone because it could split the deployed revision
 across source trees. `forecaster-runtime.rsync-filter` preserves runtime
@@ -167,6 +173,28 @@ source tree; the service rejects keys that are not mode 0600.
 The dormant live-risk policy scales its pilot, daily, and per-order limits from
 `SFO_LIVE_RISK_CAPITAL`. Established hosts migrate only the historical exact
 $50/$20/$10 defaults; custom absolute overrides are retained.
+
+## November 7 Paper Capital Decision
+
+**Owner decision, November 7, 2026; NOT deployed.** This replaces the November 6
+capital decision. Live Stability, Research V7 and the M1 trial each use $2,000
+in separate paper accounts. Never sum their capital, balances or P&L into one
+bankroll. All remain paper only.
+
+At deploy, keep Live's existing ledger and order history and record one audited
++$1,000 deposit. Set `PAPER_BANKROLL=2000`. Create fresh $2,000 ledgers for V7
+and M1. There is no reserve: V7's reference equity is simply $2,000, with no
+separate ledger or opening-capital setting. Archived V6 and older accounts keep
+their real $1,000 history; never restate them.
+
+| Account | Limits at the $2,000 capital basis |
+|---|---|
+| Live Stability | Per-trade cap $30; aggregate 20% = $400; city 5% = $100; region 8% = $160 |
+| Research V7 | Fixed per-entry cap $90; city 18% = $360; region 36% = $720; aggregate 75% = $1,500; daily loss pause 15% = $300; daily goal 5% = $100 |
+| M1 trial | Stake $10 and 25-contract cap; position 1.5% = $30; event 3% = $60; target date 5% = $100; daily loss pause 15% = $300; cumulative stop −$300 |
+
+The daily goal is a paper research KPI, not a promised return. These are pending
+deployment requirements, not verified runtime settings.
 
 ## Timers
 
@@ -294,9 +322,12 @@ variables are `SFO_ARCHIVE_S3_PREFIX`, `SFO_ARCHIVE_AWS_CLI`, and
 Deployment is stricter than scheduled archive/prune: `sync_to_box.sh` fails its
 preflight before stopping services unless the bucket and instance
 role are available. The bucket must have public access blocked, versioning and
-default encryption enabled, and a lifecycle rule for both `paper_trading/` and
-`database-snapshots/`. The instance role needs bucket listing plus object
-put/get access limited to those two prefixes. The capacity preflight can remove
+default encryption enabled, and lifecycle retention of 3650 days for
+`paper_trading/` archives and 35 days for `database-snapshots/`. The
+`provision_backup_bucket.sh` script still writes 90 days for `paper_trading/`, so
+rerunning it resets the 3650-day expiry; read the lifecycle back after any run.
+The instance role
+needs bucket listing plus object put/get access limited to those two prefixes. The capacity preflight can remove
 aged local backup artifacts; it is not a read-only diagnostic. Use direct file
 size and filesystem-capacity reads for an inspection that must not mutate state.
 After preflight, the deploy gate

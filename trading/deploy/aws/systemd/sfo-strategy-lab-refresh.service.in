@@ -1,5 +1,5 @@
 [Unit]
-Description=SFO Strategy Lab trading-results refresh
+Description=WeatherEdge multi-account Strategy Lab refresh
 Wants=network-online.target
 After=network-online.target
 OnFailure=sfo-alert@%n.service
@@ -15,7 +15,7 @@ ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/run_publication_cycle.sh strategy
 Nice=10
 CPUWeight=50
 # Contain a runaway strategy-research build to this unit instead of letting
-# the kernel OOM-killer pick an arbitrary victim (4 GB box: containment).
+# the kernel OOM-killer pick an arbitrary victim (t4g.small, 2 GiB RAM: containment).
 MemoryHigh=1200M
 MemoryMax=1600M
 # The recurring public path explicitly defers the unbounded decision-journal

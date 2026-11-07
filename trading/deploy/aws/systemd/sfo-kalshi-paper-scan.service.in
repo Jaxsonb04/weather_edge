@@ -1,5 +1,5 @@
 [Unit]
-Description=SFO Kalshi paper trading scan
+Description=WeatherEdge multi-city paper-account scan
 Wants=network-online.target
 After=network-online.target
 OnFailure=sfo-alert@%n.service
@@ -10,12 +10,13 @@ User=__APP_USER__
 WorkingDirectory=__TRADING_DIR__
 EnvironmentFile=__ENV_FILE__
 # The retired aggregate switch must not leak into the scheduled scanner. Each
-# live/target/motion paper account is controlled by its own default-off flag.
+# live/target/M1 paper account is controlled by its own default-off flag.
+# Motion is archived; its placement flag is ignored.
 UnsetEnvironment=SFO_PAPER_PLACE_ORDERS
 ExecStart=/usr/bin/env bash __TRADING_DIR__/deploy/aws/run_paper_scan_profiles.sh
 Nice=0
 # Contain a runaway process to this unit instead of letting the kernel
-# OOM-killer pick an arbitrary victim (4 GB box: containment, not
+# OOM-killer pick an arbitrary victim (t4g.small, 2 GiB RAM: containment, not
 # thrash-protection).
 MemoryHigh=400M
 MemoryMax=512M

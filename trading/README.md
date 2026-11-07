@@ -5,9 +5,10 @@ compares them with real Kalshi public orderbooks, applies exact fees and bounded
 risk, and records simulated execution in separate paper ledgers. The root
 `pyproject.toml` is the sole install manifest and owns the `sfo-kalshi` command.
 
-The current source registry has twenty cities; the October 5, 2026 production
-snapshot had fifteen on the September 4 backend. Always inspect the artifact's
-source revision and policy version before treating source behavior as deployed.
+The current source registry has twenty cities; the historical October 5, 2026
+production snapshot had fifteen on the September 4 backend. Always inspect the
+artifact's source revision and policy version before treating source behavior as
+deployed.
 
 ## Canonical operating path
 
@@ -23,10 +24,12 @@ residual law. The market ladder is a useful prior and diagnostic; model-market
 agreement alone does not prove independent weather skill or economic edge.
 
 Entry, monitoring and settlement follow the original economic account identity.
-Archive histories remain visible, including zero-trade policies. v7 begins a
-separate paper research account and freezes v6 admission; existing v6 positions
-continue their monitoring/settlement lifecycle. Past results are not relabeled
-as v7 results.
+Archive histories remain visible, including zero-trade policies. V6 is archived with
+admission closed and monitoring/settlement preserved. By the November 7 owner
+decision, Live Stability, Research ROI V7 and M1 are each to run on $2,000
+initial paper capital in separate accounts, with no reserve. That is not
+deployed yet; the running backend still has its earlier capital. The three
+accounts are economically separate and never summed into one bankroll. Past results are not relabeled as V7 or M1 results.
 
 ## Evidence and objectives
 

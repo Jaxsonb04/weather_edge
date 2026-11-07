@@ -24,7 +24,7 @@ reach `main`:
 
 | Gate | What it enforces |
 |---|---|
-| **2,843 Python tests** plus **178 frontend tests** at the current verified branch | Behavioral coverage across 141 Python test files and 40 frontend spec files; exact release evidence is recorded in `SESSION_MEMORY.md` |
+| **Python and frontend test suites** | Behavioral regression coverage; release-specific results are recorded in CI and `SESSION_MEMORY.md` |
 | **Two Python versions** in CI | Production runs 3.12, development runs 3.13; both must pass |
 | **Semgrep** with project-specific rules | Blocks committed secrets, private local paths and identity metadata, and `shell=True`/`os.system` in committed Python |
 | **Bytecode compile gate** | Catches syntax-level breakage in files no test imports |

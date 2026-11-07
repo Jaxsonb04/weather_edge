@@ -10,9 +10,9 @@ User=__APP_USER__
 WorkingDirectory=__FORECASTER_DIR__
 EnvironmentFile=__ENV_FILE__
 # T8-1 (Task 6 review, HIGH): a naive flip of the existing 38x/day
-# sfo-forecaster-refresh unit to `--cities all` would spend 61 events/cycle
-# and exhaust the 260/day hard cap by the 5th cycle, starving SFO for the
-# rest of the day. Resolution: SFO stays on the frequent unit at
+# sfo-forecaster-refresh unit to `--cities all` would spend 81 events/cycle
+# for twenty cities and exhaust the 260/day hard cap by the 4th cycle, starving
+# SFO for the rest of the day. Resolution: SFO stays on the frequent unit at
 # `--cities sfo` (3 hourly pages + daily + current = 5 events/cycle x
 # 38 cycles/day = 190 events/day, 5,890/31-day month -- unchanged from
 # before this unit existed); this unit refreshes the 14 non-SFO cities
@@ -23,8 +23,9 @@ EnvironmentFile=__ENV_FILE__
 # cap and the 7,800/month soft scheduling ceiling (spec section 7.4).
 #
 # The city list below is a static ExecStart argument (this unit cannot
-# import forecaster/cities.py); it must be every CITIES slug except sfo, in
-# CITIES' own declared order. trading/tests/test_aws_deploy.py's
+# import forecaster/cities.py); it contains the fourteen original non-SFO
+# CITIES slugs in declared order, retaining the five budget exclusions below.
+# trading/tests/test_aws_deploy.py's
 # test_google_nonsfo_refresh_unit_covers_every_configured_non_sfo_city_once_daily
 # fails if this list and cities.py ever drift apart.
 #
