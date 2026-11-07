@@ -129,7 +129,7 @@ function ForecastPanel({ city, intradayLock }: { city: City; intradayLock: Intra
 
             {leads.length > 0 && (
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[22rem] text-sm">
+                <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-separator text-left text-xs text-muted">
                       <th className="py-2 pr-3 font-medium">Target</th>

@@ -1,5 +1,6 @@
 import { Chip } from "@heroui/react/chip";
 import { Widget } from "@heroui-pro/react/widget";
+import { dayRange } from "../../lib/incidents";
 import { decisionCountProvenance, type StrategyLab } from "../../lib/strategy";
 import { InfoTip } from "../ui/InfoTip";
 import { Stat } from "../ui/Stat";
@@ -35,7 +36,8 @@ function freshnessRows(s: StrategyLab): FreshnessRow[] {
   if (n?.available) {
     rows.push({
       name: "NWS observations",
-      detail: `latest ${n.latest_date ?? "—"} · ${n.lag_days ?? "?"}d lag`,
+      // The observation date can be ahead of the reference day; that is current, not -1d.
+      detail: `latest ${n.latest_date ?? "—"} · ${n.lag_days == null ? "lag unknown" : n.lag_days <= 0 ? "current" : `${n.lag_days}d lag`}`,
       ok: (n.lag_days ?? 99) <= 1,
     });
   }
@@ -68,6 +70,10 @@ export function OpsHealth({ s }: { s: StrategyLab }) {
   const rows = freshnessRows(s);
   const mvm = s.daily_summary?.model_vs_market;
   const counts = decisionCountProvenance(s);
+  // The counts are rows created since the summary window opened, not all-time totals.
+  const { window_start: from, window_end: to } = s.daily_summary ?? {};
+  // Cached counts cover an older window than the one published, so name no dates for them.
+  const window = from && to && !counts.cached ? dayRange(from, to) : null;
 
   return (
     <div className="grid min-w-0 gap-4 lg:grid-cols-2">
@@ -110,7 +116,9 @@ export function OpsHealth({ s }: { s: StrategyLab }) {
         <Widget.Header>
           <div className="flex min-w-0 flex-col gap-0.5">
             <Widget.Title>Data collected</Widget.Title>
-            <Widget.Description>Snapshots the runtime has journaled</Widget.Description>
+            <Widget.Description>
+              Rows journaled {window ? `in the window ${window}` : "in the recent reporting window"}, not all-time totals
+            </Widget.Description>
           </div>
         </Widget.Header>
         <Widget.Content className="flex flex-col gap-4">
@@ -118,7 +126,7 @@ export function OpsHealth({ s }: { s: StrategyLab }) {
             <>
               {counts.cached && (
                 <p role="status" className="text-xs font-medium text-warning">
-                  Historical counts as of {counts.asOf}; feed status is current.
+                  Window counts as of {counts.asOf}; feed status is current.
                 </p>
               )}
               <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3">

@@ -13,7 +13,7 @@ import {
   useStrategyLab,
   type StrategyLab,
 } from "../../lib/strategy";
-import { dayRange, incidentsInWindow, trailingNoEntryRun } from "../../lib/incidents";
+import { dayRange } from "../../lib/incidents";
 import { PageHeader } from "../ui/PageHeader";
 import { SectionHeading } from "../ui/SectionHeading";
 import { InfoTip } from "../ui/InfoTip";
@@ -34,7 +34,7 @@ import { M1Trial } from "../strategy/M1Trial";
 import { mergedAlerts, policyMarker } from "../../lib/lab-format";
 import { useHashSub } from "../../lib/useHashRoute";
 
-type LabTab = "accounts" | "m1" | "research" | "archive" | "system";
+export type LabTab = "accounts" | "m1" | "research" | "archive" | "system";
 const LAB_TABS: { id: LabTab; label: string }[] = [
   { id: "accounts", label: "Accounts" },
   { id: "m1", label: "M1 trial" },
@@ -168,66 +168,66 @@ function Notice({ tone, icon, title, children, info }: {
   );
 }
 
-/** Operational notices worth reading before any number: runtime alerts (for
-    example positions stuck past settlement) and dated outages that explain a
-    gap in the activity. Silent when there is nothing to say. */
-export function LabNotices({ s }: { s: StrategyLab }) {
-  const alerts = mergedAlerts(s);
+/** Which tab each known alert affects. An alert not listed here is a System
+    matter, except a critical one, which shows on every tab. */
+const ALERT_TABS: Record<string, LabTab> = {
+  "settlement-pending": "accounts",
+  "settlement-backlog": "accounts",
+  "same-day-entry-blocked": "accounts",
+  "emos-live-missing": "system",
+  "open-positions-unmarked": "accounts",
+};
+
+/** Operational notices for the open tab: runtime alerts (for example positions
+    stuck past settlement), each shown only where it applies. Silent when there
+    is nothing to say. */
+export function LabNotices({ s, tab }: { s: StrategyLab; tab: LabTab }) {
   const backlog = s.paper_trading?.summary as { unresolved_past_targets?: Array<{ open_orders?: number; target_date?: string }> } | undefined;
   const past = backlog?.unresolved_past_targets?.filter((row) => row?.target_date) ?? [];
-  const books = activeProfiles(s);
-  const windowStart = books.map((book) => book.daily_summary?.window_start).filter(Boolean).sort()[0];
-  const windowEnd = books.map((book) => book.daily_summary?.window_end).filter(Boolean).sort().at(-1);
-  const incidents = incidentsInWindow(windowStart, windowEnd);
-  // The no-entry run must hold for every active account to be shown as one.
-  const runs = books.map((book) => trailingNoEntryRun(book.daily_summary?.days));
-  const sharedRun = runs.length && runs.every(Boolean)
-    ? runs.reduce((acc, run) => (acc && run && run.start > acc.start ? run : acc))
-    : null;
-  if (!alerts.length && !incidents.length) return null;
+  const alerts = mergedAlerts(s).filter((alert) => {
+    const home = ALERT_TABS[alert.code ?? ""] ?? (alert.code?.endsWith("-drawdown") ? "accounts" : undefined);
+    return home ? home === tab : alert.level === "critical" || alert.level === "danger" || tab === "system";
+  });
+  if (!alerts.length) return null;
+  // mergedAlerts keeps one alert per code; name every station that is missing.
+  const stations = [...new Set(
+    [...(s.forecast_health?.warnings ?? []), ...(s.status?.alerts ?? [])]
+      .filter((alert) => alert.code === "emos-live-missing")
+      .map((alert) => alert.detail?.match(/^(\w+) has no live/)?.[1])
+      .filter(Boolean),
+  )];
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2 pt-4">
       {alerts.map((alert) => {
-        const isBacklog = alert.code === "settlement-backlog" && past.length > 0;
         const count = past.reduce((sum, row) => sum + (row.open_orders ?? 0), 0);
         const dates = past.map((row) => dayRange(row.target_date!, row.target_date!)).join(", ");
+        const plain: { title: string; text: string } | null =
+          alert.code === "settlement-backlog" && past.length > 0
+            ? { title: alert.title, text: `${count} open position${count === 1 ? "" : "s"} from ${dates} ${count === 1 ? "has" : "have"} not settled. Their marks are stale.` }
+            : alert.code === "same-day-entry-blocked"
+              ? { title: "Next-day entries only", text: "Live and V7 only enter next-day markets, so same-day signals are research-only." }
+              : alert.code === "emos-live-missing"
+                ? { title: "Live forecast missing", text: `${stations.length ? stations.join(", ") : "Some stations"} ${stations.length === 1 ? "has" : "have"} no live forecast distribution yet and use a simpler fallback.` }
+                : null;
         return (
           <Notice
             key={alert.code ?? alert.title}
-            tone={alert.level === "critical" || alert.level === "danger" ? "danger" : "warning"}
-            icon="solar:danger-triangle-linear"
-            title={alert.title}
+            tone={alert.level === "critical" || alert.level === "danger" ? "danger" : alert.level === "info" ? "neutral" : "warning"}
+            icon={alert.level === "info" ? "solar:info-circle-linear" : "solar:danger-triangle-linear"}
+            title={plain?.title ?? alert.title}
             info={
-              (alert.detail || alert.action) && (
+              !plain && (alert.detail || alert.action) ? (
                 <InfoTip label={alert.title} title={alert.title} placement="bottom">
                   {alert.detail} {alert.action}
                 </InfoTip>
-              )
+              ) : undefined
             }
           >
-            {isBacklog
-              ? `${count} open position${count === 1 ? "" : "s"} from ${dates} ${count === 1 ? "has" : "have"} not settled. Their marks are stale.`
-              : alert.detail}
+            {plain?.text ?? alert.detail}
           </Notice>
         );
       })}
-      {incidents.map((incident) => (
-        <Notice
-          key={incident.id}
-          tone="warning"
-          icon="solar:clock-circle-linear"
-          title={incident.title}
-          info={
-            <InfoTip label={incident.title} title={incident.title} placement="bottom">
-              {incident.detail} The flat stretch in each account's chart is this outage, not a quiet market.
-            </InfoTip>
-          }
-        >
-          {sharedRun ? `No new entries ${dayRange(sharedRun.start, sharedRun.end)}. ` : ""}
-          Scans were down {dayRange(incident.start, incident.end)}; fixed {dayRange(incident.end, incident.end)}.
-        </Notice>
-      ))}
     </div>
   );
 }
@@ -404,7 +404,6 @@ export default function StrategyLabView() {
         )}
         {s?.available && (
           <div className="fade-in flex min-w-0 flex-col gap-6">
-            <LabNotices s={s} />
             <Tabs selectedKey={tab} onSelectionChange={(key) => selectTab(String(key) as LabTab)} className="min-w-0">
               <Tabs.ListContainer className="max-w-full self-start">
                 <Tabs.List aria-label="Strategy Lab sections">
@@ -416,6 +415,7 @@ export default function StrategyLabView() {
                   ))}
                 </Tabs.List>
               </Tabs.ListContainer>
+              <LabNotices s={s} tab={tab} />
 
               <Tabs.Panel id="accounts" className="pt-4">
                 <div className="fade-in">

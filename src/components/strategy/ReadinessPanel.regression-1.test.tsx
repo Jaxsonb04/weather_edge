@@ -65,6 +65,28 @@ describe("ReadinessPanel progressive detail", () => {
     ).toBeInTheDocument();
   });
 
+  it("states the kill-switch limit once, then what is left", () => {
+    const strategy = (remaining: number) =>
+      ({
+        real_money_readiness: {
+          available: true,
+          ready: false,
+          verdict: "NOT READY",
+          checks: [],
+          pilot_loss_remaining: remaining,
+          live_policy: { enabled: false, dry_run: true, pilot_max_loss_pct: 0.05, pilot_max_loss: 50 },
+        },
+      }) as unknown as StrategyLab;
+
+    const { container, unmount } = render(<ReadinessPanel s={strategy(50)} />);
+    expect(container.textContent).toContain("5% of the configured risk capital ($50.00); none used yet.");
+    expect(container.textContent?.match(/\$50\.00/g)).toHaveLength(1);
+    unmount();
+
+    const used = render(<ReadinessPanel s={strategy(35)} />);
+    expect(used.container.textContent).toContain("($50.00); $35.00 remaining.");
+  });
+
   it("labels stale deploy-time analysis without implying newly failed checks", () => {
     const strategy = {
       real_money_readiness: {

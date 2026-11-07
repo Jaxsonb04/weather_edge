@@ -28,6 +28,8 @@ interface EquityCurveProps {
   className?: string;
   /** Dated outages shaded on the plot, so a flat stretch reads as downtime. */
   incidents?: PaperIncident[];
+  /** Quiet caption under the plot, e.g. what a shaded outage was. */
+  note?: string;
 }
 
 const EMPHASIS_HEIGHT: Record<Emphasis, number> = { headline: 280, secondary: 168, normal: 236 };
@@ -49,6 +51,7 @@ export function EquityCurve({
   height,
   className,
   incidents = [],
+  note,
 }: EquityCurveProps) {
   // Unique gradient id per instance: several curves can share a page, and a
   // duplicated SVG id would make later charts inherit the first chart's fill.
@@ -119,9 +122,9 @@ export function EquityCurve({
     .map((incident) => {
       const x1 = incident.start.slice(5) < (firstDate ?? "") ? firstDate : incident.start.slice(5);
       const x2 = incident.end.slice(5) > (lastDate ?? "") ? lastDate : incident.end.slice(5);
-      return x1 && x2 && x1 <= x2 ? { id: incident.id, x1, x2, label: incident.short } : null;
+      return x1 && x2 && x1 <= x2 ? { id: incident.id, x1, x2 } : null;
     })
-    .filter((band): band is { id: string; x1: string; x2: string; label: string } => band != null);
+    .filter((band): band is { id: string; x1: string; x2: string } => band != null);
   const incidentNote = bands.length
     ? ` Shaded: ${incidents.map((incident) => incident.title.toLowerCase()).join(", ")}.`
     : "";
@@ -148,7 +151,6 @@ export function EquityCurve({
                 fillOpacity={0.09}
                 stroke="none"
                 ifOverflow="extendDomain"
-                label={{ value: band.label, position: "insideTop", fill: "var(--color-muted)", fontSize: 12 }}
               />
             ))}
             <LineChart.XAxis dataKey="date" tickMargin={8} />
@@ -206,6 +208,7 @@ export function EquityCurve({
             />
           </LineChart>
         </div>
+        {note && <p className="mt-2 text-xs text-muted">{note}</p>}
       </Widget.Content>
     </Widget>
   );

@@ -10,6 +10,8 @@ import {
   histogramSeries,
   marketModelSeries,
   monthlySeries,
+  pct,
+  plainReason,
   predictedHigh,
   targetLabel,
   type CityForecast,
@@ -114,6 +116,28 @@ describe("describeMethod", () => {
     ["", "Published forecast"],
   ])("reads %s as plain English", (raw, expected) => {
     expect(describeMethod(raw)).toBe(expected);
+  });
+});
+
+describe("plainReason", () => {
+  it("drops the internal audit tag and check name", () => {
+    expect(
+      plainReason(
+        "nonfinal-certainty gate: NO probability 0.995 >= 0.99 rests on a raw nonfinal station observation; the official integer report can settle a degree away (audit MD-01)",
+      ),
+    ).toBe(
+      "Certainty check: NO probability 0.995 >= 0.99 rests on a raw not-yet-final station observation; the official integer report can settle a degree away",
+    );
+    expect(plainReason("edge -0.011 below min 0.012")).toBe("edge -0.011 below min 0.012");
+  });
+});
+
+describe("pct", () => {
+  it("rounds the decimal value, so 0.2945 reads 29.5% everywhere", () => {
+    expect(pct(0.2945, 1)).toBe("29.5%");
+    expect(pct(0.295, 0)).toBe("30%");
+    expect(pct(-0.05, 0)).toBe("-5%");
+    expect(pct(null)).toBe("—");
   });
 });
 

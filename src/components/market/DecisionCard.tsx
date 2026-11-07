@@ -2,14 +2,14 @@ import { Card } from "@heroui/react/card";
 import { Chip } from "@heroui/react/chip";
 import { Separator } from "@heroui/react/separator";
 import { Icon } from "@iconify/react/offline";
-import { f1, num, pct, qualityColor, signedPct, type Target } from "../../lib/data";
+import { f1, num, pct, plainReason, qualityColor, signedPct, type Target } from "../../lib/data";
 import { Stat } from "../ui/Stat";
 
 export function DecisionCard({ target, approvedCount }: { target: Target; approvedCount: number }) {
   const d = target.best_decision;
   const noTrade = d.decision !== "TRADE";
   const spread = num(target.forecast, "source_spread_f");
-  const topReason = d.reasons?.[0]?.replace(/\.$/, "");
+  const topReason = d.reasons?.[0] && plainReason(d.reasons[0]).replace(/\.$/, "");
   const decisionLabel = noTrade ? "No signal" : "Eligible";
   return (
     <Card className="h-full rounded-3xl">
@@ -45,7 +45,7 @@ export function DecisionCard({ target, approvedCount }: { target: Target; approv
             {d.reasons.slice(0, 3).map((r, i) => (
               <li key={i} className="flex gap-2 text-xs text-muted">
                 <Icon icon="solar:shield-warning-linear" className="mt-0.5 size-3.5 shrink-0 text-warning" />
-                <span>{r}</span>
+                <span>{plainReason(r)}</span>
               </li>
             ))}
           </ul>

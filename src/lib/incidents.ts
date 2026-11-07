@@ -44,10 +44,17 @@ export function incidentsForDays(days: DayRow[] | undefined): PaperIncident[] {
 }
 
 /** The trailing run of days on which a book opened nothing, read from the
-    published series. Returns null when the last published day had entries, or
-    when the series does not publish entry counts at all. */
-export function trailingNoEntryRun(days: DayRow[] | undefined): { start: string; end: string; count: number } | null {
-  const rows = [...(days ?? [])].filter((day) => day?.date).sort((a, b) => a.date.localeCompare(b.date));
+    published series. Days on or after `today` are still in progress, so they
+    never count: a zero so far is normal until the day is over. Returns null
+    when the last finished day had entries, or when the series does not publish
+    entry counts at all. */
+export function trailingNoEntryRun(
+  days: DayRow[] | undefined,
+  today?: string | null,
+): { start: string; end: string; count: number } | null {
+  const rows = [...(days ?? [])]
+    .filter((day) => day?.date && (!today || day.date.slice(0, 10) < today.slice(0, 10)))
+    .sort((a, b) => a.date.localeCompare(b.date));
   const opened = (day: DayRow) => day.opened ?? day.trades_opened;
   if (!rows.length || rows.every((day) => opened(day) == null)) return null;
   let index = rows.length - 1;

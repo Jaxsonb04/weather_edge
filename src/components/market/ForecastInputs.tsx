@@ -1,14 +1,14 @@
 import { Card } from "@heroui/react/card";
 import { HoverCard } from "@heroui-pro/react/hover-card";
 import { Icon } from "@iconify/react/offline";
-import { f1, num, predictedHigh, targetLabel, type Target } from "../../lib/data";
+import { describeMethod, f1, num, predictedHigh, targetLabel, type Target } from "../../lib/data";
 
 export function ForecastInputs({ target }: { target: Target }) {
   const e = target.ensemble ?? {};
   const f = target.forecast ?? {};
   const rows: { k: string; v: string; hint?: string }[] = [
     { k: "Published high", v: f1(predictedHigh(target)) },
-    { k: "Current method", v: String(f.method ?? "—").replace(/_/g, " ").replace(/\s+/g, " ").trim() || "—" },
+    { k: "Current method", v: describeMethod(f.method) },
     { k: "NWP members", v: `${f.source_count ?? "—"}` },
   ];
   if (e.member_count != null) {
