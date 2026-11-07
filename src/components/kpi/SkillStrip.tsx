@@ -4,6 +4,7 @@ import { AnimatedNumber } from "../ui/AnimatedNumber";
 import { InfoTip } from "../ui/InfoTip";
 import { SectionHeading } from "../ui/SectionHeading";
 import { fixtureCoverage, skillStatus, type ForecastData, type TradingSignal } from "../../lib/data";
+import { useTemperature } from "../../lib/units";
 
 interface Metric {
   title: string;
@@ -16,6 +17,7 @@ interface Metric {
 }
 
 export function SkillStrip({ forecast, signal }: { forecast: ForecastData; signal: TradingSignal }) {
+  const temperature = useTemperature();
   const c = signal.calibration;
   // History and the LSTM sigma come from the committed `forecast_data.json`
   // study fixture, not the running pipeline; the sigma is the held-out LSTM
@@ -37,9 +39,9 @@ export function SkillStrip({ forecast, signal }: { forecast: ForecastData; signa
     },
     {
       title: "LSTM study σ",
-      value: forecast.lstm_sigma ?? null,
+      value: forecast.lstm_sigma == null ? null : temperature.delta(forecast.lstm_sigma),
       kind: "temp",
-      unit: "°F",
+      unit: temperature.symbol,
       hint: forecast.lstm_sigma_days
         ? `SFO held-out residual · ${forecast.lstm_sigma_days} days · ${fixtureHint}`
         : `SFO held-out residual · ${fixtureHint}`,

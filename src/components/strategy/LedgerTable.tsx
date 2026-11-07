@@ -1,6 +1,7 @@
 import { Chip } from "@heroui/react/chip";
 import { DataGrid, type DataGridColumn } from "@heroui-pro/react/data-grid";
 import { cityForTicker, pct, qualityColor, signedPct } from "../../lib/data";
+import { useTemperature } from "../../lib/units";
 import {
   cents,
   closedLedger,
@@ -80,6 +81,7 @@ interface LedgerTableProps {
 /** The closed-positions ledger. Compact (recent trades) or detailed (trading
     desk) via props, one source of truth for both. */
 export function LedgerTable({ s, limit, detailed = false, rows: rowsProp, hideProfile = false, emptyNote }: LedgerTableProps) {
+  const temperature = useTemperature();
   const mobile = useSyncExternalStore(subscribeMobile, getMobileSnapshot, () => false);
   const [showDetails, setShowDetails] = useState(false);
   const root = useRef<HTMLDivElement>(null);
@@ -152,7 +154,7 @@ export function LedgerTable({ s, limit, detailed = false, rows: rowsProp, hidePr
                       {detailed && <>
                         <div><dt>Edge at entry</dt><dd>{d.edge == null ? "—" : signedPct(d.edge, 1)}</dd></div>
                         <div><dt>Quality</dt><dd>{d.quality_score == null ? "—" : Math.round(d.quality_score)}</dd></div>
-                        <div><dt>Settled high</dt><dd>{d.settlement_high_f == null ? "—" : `${d.settlement_high_f}°F`}</dd></div>
+                        <div><dt>Settled high</dt><dd>{temperature.temp(d.settlement_high_f, 1, true)}</dd></div>
                       </>}
                     </dl>
                     <p className="mt-3 text-xs leading-relaxed text-muted">{d.outcome_reason ?? d.position_status_label ?? "Resolution details not published."}</p>
@@ -273,7 +275,7 @@ export function LedgerTable({ s, limit, detailed = false, rows: rowsProp, hidePr
             align: "end",
             headerClassName: HEAD,
             cell: (d) => (
-              <span className="tnum text-xs text-muted">{d.settlement_high_f == null ? "—" : `${d.settlement_high_f}°`}</span>
+              <span className="tnum text-xs text-muted">{temperature.temp(d.settlement_high_f)}</span>
             ),
           },
         ] as DataGridColumn<ClosedPosition>[])

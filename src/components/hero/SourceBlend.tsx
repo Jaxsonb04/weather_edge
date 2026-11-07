@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { InfoTip } from "../ui/InfoTip";
-import { f1, num, type Target } from "../../lib/data";
+import { num, type Target } from "../../lib/data";
+import { useTemperature } from "../../lib/units";
 
 const SOURCE_META: Record<string, { label: string; color: string }> = {
   google_high_f: { label: "Google", color: "var(--temp-warm)" },
@@ -22,6 +23,7 @@ const SOURCE_SPREAD_GATE_F = 7.3;
 /** Each live source plotted on a shared min–max temperature axis, so the
     spread between providers reads instantly (the gate's core input). */
 export function SourceBlend({ target }: { target: Target }) {
+  const temperature = useTemperature();
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
     const id = requestAnimationFrame(() => setMounted(true));
@@ -52,16 +54,16 @@ export function SourceBlend({ target }: { target: Target }) {
                 style={{ left: `${left}%`, marginLeft: "-5px", background: meta.color, transitionDelay: `${0.1 + i * 0.08}s` }}
               />
             </div>
-            <span className="tnum w-12 shrink-0 text-right text-xs font-medium">{f1(v)}</span>
+            <span className="tnum w-12 shrink-0 text-right text-xs font-medium">{temperature.temp(v)}</span>
           </div>
         );
       })}
       <div className={`flex w-fit items-center gap-1 pt-1 text-xs ${wide ? "text-warning" : "text-muted"}`}>
-        <span className="tnum font-medium">Source spread {f1(spread)}</span>
-        {wide && <span>· over the {SOURCE_SPREAD_GATE_F}° gate</span>}
+        <span className="tnum font-medium">Source spread {temperature.diff(spread)}</span>
+        {wide && <span>· over the {temperature.diff(SOURCE_SPREAD_GATE_F)} gate</span>}
         <InfoTip label="the source spread gate">
           Disagreement is measured after each source's known standing offset is removed. When what is left exceeds{" "}
-          {SOURCE_SPREAD_GATE_F}°F, the paper engine refuses to size a new position.
+          {temperature.diff(SOURCE_SPREAD_GATE_F, 1, true)}, the paper engine refuses to size a new position.
         </InfoTip>
       </div>
     </div>
