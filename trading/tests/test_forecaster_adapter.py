@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from sfo_kalshi_quant import _sqlite
 from sfo_kalshi_quant.cli import _enforce_live_forecast_freshness
 from sfo_kalshi_quant.cities import get_city
 from sfo_kalshi_quant.config import SFO_TZ, StrategyConfig
@@ -680,3 +681,48 @@ def test_latest_google_challenger_baseline_reads_the_freshest_matching_row(tmp_p
     assert row["baseline_mu"] == 81.0
     assert row["station_id"] == "KSFO"
     assert row["action"] == "forecast"
+
+
+def test_intraday_reads_stay_on_the_station_date_index(monkeypatch):
+    # The primary key also starts with station_id, so a read ordered by bare
+    # observed_at can walk the station's whole history on every scan.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        db_path = root / "weather.db"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE nws_station_observations (
+                    station_id TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    local_date TEXT NOT NULL,
+                    temp_f REAL,
+                    PRIMARY KEY (station_id, observed_at)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX idx_nws_obs_local_date "
+                "ON nws_station_observations(station_id, local_date)"
+            )
+            conn.execute(
+                "INSERT INTO nws_station_observations VALUES "
+                "('KMDW', '2026-11-06T20:00:00+00:00', '2026-11-06', 48.0)"
+            )
+        statements: list[str] = []
+        real_connect = _sqlite.connect
+
+        def traced(*args, **kwargs):
+            conn = real_connect(*args, **kwargs)
+            conn.set_trace_callback(statements.append)
+            return conn
+
+        monkeypatch.setattr(_sqlite, "connect", traced)
+        SfoForecasterAdapter(root, get_city("chi")).intraday_snapshot(date(2026, 11, 6))
+
+        reads = [sql for sql in statements if "FROM nws_station_observations" in sql]
+        assert len(reads) == 3
+        with sqlite3.connect(db_path) as conn:
+            for sql in reads:
+                plan = " ".join(row[3] for row in conn.execute(f"EXPLAIN QUERY PLAN {sql}"))
+                assert "idx_nws_obs_local_date" in plan, sql

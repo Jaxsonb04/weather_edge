@@ -365,9 +365,12 @@ class SfoForecasterAdapter:
                     """,
                     (self.station_id, target.isoformat()),
                 ).fetchone()
+                # The unary + keeps both reads below on (station_id, local_date).
+                # Ordering by bare observed_at picks the primary key instead and
+                # walks the station's whole history, about 35,000 cold rows.
                 high_at_row = conn.execute(
                     """
-                    SELECT MIN(observed_at)
+                    SELECT MIN(+observed_at)
                     FROM nws_station_observations
                     WHERE station_id = ? AND local_date = ? AND temp_f = ?
                     """,
@@ -378,7 +381,7 @@ class SfoForecasterAdapter:
                     SELECT observed_at, temp_f
                     FROM nws_station_observations
                     WHERE station_id = ? AND local_date = ? AND temp_f IS NOT NULL
-                    ORDER BY observed_at DESC
+                    ORDER BY +observed_at DESC
                     LIMIT 1
                     """,
                     (self.station_id, target.isoformat()),
