@@ -8,9 +8,7 @@ import {
   cityFreshness,
   cityNextForecast,
   describeMethod,
-  f1,
   predictedHigh,
-  round1,
   selectCurrentTargets,
   shortDateUTC,
   targetLabel,
@@ -20,13 +18,16 @@ import {
   type Target,
 } from "../../lib/data";
 import { usePublication } from "../../lib/publication";
+import { useTemperature } from "../../lib/units";
 import { AnimatedNumber } from "../ui/AnimatedNumber";
 import { DialScale } from "./DialScale";
 import { SourceBlend } from "./SourceBlend";
 
 /** The big temperature. Its digits roll to the new value when the day or city
     changes; screen readers get the settled figure once. */
-function Reading({ value, color }: { value: number | null; color?: string }) {
+function Reading({ value: valueF, color }: { value: number | null; color?: string }) {
+  const temperature = useTemperature();
+  const value = valueF == null ? null : temperature.round(temperature.abs(valueF), 0);
   return (
     <p
       className="tnum flex items-start text-[5rem] font-semibold leading-none tracking-tighter sm:text-[5.5rem]"
@@ -34,11 +35,11 @@ function Reading({ value, color }: { value: number | null; color?: string }) {
     >
       {value == null ? "—" : (
         <>
-          <span className="sr-only">{Math.round(value)}</span>
-          <span aria-hidden="true"><AnimatedNumber value={Math.round(value)} /></span>
+          <span className="sr-only">{value}</span>
+          <span aria-hidden="true"><AnimatedNumber value={value} /></span>
         </>
       )}
-      <span className="mt-1.5 text-2xl font-medium tracking-normal text-muted">°F</span>
+      <span className="mt-1.5 text-2xl font-medium tracking-normal text-muted">{temperature.symbol}</span>
     </p>
   );
 }
@@ -70,6 +71,7 @@ function CityForecastDial({ city }: { city: City }) {
   // the readout *and* in the control.
   const activeIdx = idx < forecasts.length ? idx : initialIndex;
   const forecast = forecasts[activeIdx] ?? lead ?? forecasts[0];
+  const temperature = useTemperature();
   const freshness = cityFreshness(city.forecasts);
   const freshnessColor = freshness.tone === "danger" ? "danger" : freshness.tone === "warning" ? "warning" : "success";
 
@@ -110,14 +112,14 @@ function CityForecastDial({ city }: { city: City }) {
             </div>
             <DialScale value={forecast.predicted_high_f} />
             <dl className="grid grid-cols-4 gap-3 border-t border-separator pt-4">
-              <Figure label="Uncertainty">{forecast.sigma_f == null ? "—" : `±${round1(forecast.sigma_f)}°`}</Figure>
+              <Figure label="Uncertainty">{forecast.sigma_f == null ? "—" : `±${temperature.diff(forecast.sigma_f)}`}</Figure>
               <Figure label="Models">{forecast.n_models ?? "—"}</Figure>
-              <Figure label="Spread">{forecast.model_spread_f == null ? "—" : `${round1(forecast.model_spread_f)}°`}</Figure>
+              <Figure label="Spread">{temperature.diff(forecast.model_spread_f)}</Figure>
               <Figure label="Lead">{forecast.lead_days == null ? "—" : `${forecast.lead_days}d`}</Figure>
             </dl>
             <p className="text-xs text-muted">
               {describeMethod(forecast.method)} · last settled high{" "}
-              <span className="tnum text-foreground">{city.latest_settlement ? `${round1(city.latest_settlement.high_f)}°F` : "—"}</span>
+              <span className="tnum text-foreground">{temperature.temp(city.latest_settlement?.high_f, 1, true)}</span>
             </p>
           </>
         ) : (
@@ -132,6 +134,7 @@ function CityForecastDial({ city }: { city: City }) {
 
 export function ForecastDial({ targets, city }: { targets: Target[]; city?: City | null }) {
   const { signal } = usePublication();
+  const temperature = useTemperature();
   const currentStateAvailable = signal.state === "fresh";
   const [idx, setIdx] = useState(0);
   const displayTargets = useMemo(() => selectCurrentTargets(targets), [targets]);
@@ -209,12 +212,12 @@ export function ForecastDial({ targets, city }: { targets: Target[]; city?: City
           {currentStateAvailable && delta != null && mc && (
             <div className="mb-1 text-right">
               <TrendChip trend={delta > 0.2 ? "up" : delta < -0.2 ? "down" : "neutral"} size="sm">
-                {delta > 0 ? "+" : ""}{f1(delta)}
+                {delta > 0 ? "+" : ""}{temperature.diff(delta)}
                 <TrendChip.Suffix>vs market</TrendChip.Suffix>
               </TrendChip>
               <p className="mt-1.5 flex items-center justify-end gap-1.5 text-xs text-muted">
                 <span className="h-3 w-0.5 rounded-full bg-[color:var(--series-market)]" aria-hidden="true" />
-                <span>market implies <span className="tnum font-medium text-foreground">{f1(mc.implied_high_f)}</span></span>
+                <span>market implies <span className="tnum font-medium text-foreground">{temperature.temp(mc.implied_high_f)}</span></span>
               </p>
             </div>
           )}
@@ -234,11 +237,11 @@ export function ForecastDial({ targets, city }: { targets: Target[]; city?: City
             <dl className="mt-2 grid grid-cols-2 gap-3">
               <div>
                 <dt className="text-xs text-muted">Now</dt>
-                <dd className="tnum text-sm font-semibold text-foreground">{f1(intraday.latest_temp_f)}</dd>
+                <dd className="tnum text-sm font-semibold text-foreground">{temperature.temp(intraday.latest_temp_f)}</dd>
               </div>
               <div>
                 <dt className="text-xs text-muted">High so far</dt>
-                <dd className="tnum text-sm font-semibold text-foreground">{f1(intraday.observed_high_f)}</dd>
+                <dd className="tnum text-sm font-semibold text-foreground">{temperature.temp(intraday.observed_high_f)}</dd>
               </div>
             </dl>
           </div>

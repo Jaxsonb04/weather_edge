@@ -5,9 +5,7 @@ import {
   cityFreshness,
   cityNextForecast,
   describeMethod,
-  f1,
   pct,
-  round1,
   shortDateUTC,
   targetLabel,
   tempColor,
@@ -17,6 +15,7 @@ import {
   type Target,
 } from "../../lib/data";
 import { usePublication } from "../../lib/publication";
+import { useTemperature } from "../../lib/units";
 import { money } from "../../lib/strategy";
 import { Finding } from "../ui/Finding";
 import { Reveal } from "../ui/Reveal";
@@ -58,6 +57,7 @@ function ladderBalance(overround: number | undefined) {
 
 /** The lead the header foregrounds + a small table of the 1–3 published dates. */
 function ForecastPanel({ city, intradayLock }: { city: City; intradayLock: IntradayLock | null }) {
+  const temperature = useTemperature();
   const lead = cityNextForecast(city);
   const leads = [...(city.forecasts ?? [])]
     .filter((f) => typeof f?.predicted_high_f === "number" && !!f?.target_date)
@@ -91,17 +91,17 @@ function ForecastPanel({ city, intradayLock }: { city: City; intradayLock: Intra
                   className="tnum text-5xl font-semibold leading-none tracking-tight"
                   style={{ color: tempColor(display.highF) }}
                 >
-                  {Math.round(display.highF)}°
+                  {temperature.temp(display.highF, 0)}
                 </p>
               </div>
               <dl className="flex flex-wrap gap-x-6 gap-y-2 text-sm">
                 <div>
                   <dt className="text-xs text-muted">± sigma</dt>
-                  <dd className="tnum font-medium">{lead.sigma_f == null ? "—" : `${round1(lead.sigma_f)}°`}</dd>
+                  <dd className="tnum font-medium">{temperature.diff(lead.sigma_f)}</dd>
                 </div>
                 <div>
                   <dt className="text-xs text-muted">Model spread</dt>
-                  <dd className="tnum font-medium">{lead.model_spread_f == null ? "—" : `${round1(lead.model_spread_f)}°`}</dd>
+                  <dd className="tnum font-medium">{temperature.diff(lead.model_spread_f)}</dd>
                 </div>
                 <div>
                   <dt className="text-xs text-muted">Members</dt>
@@ -120,9 +120,9 @@ function ForecastPanel({ city, intradayLock }: { city: City; intradayLock: Intra
                   ? "the flagship market signal republishes this high after folding in the day's observed high so far"
                   : "the coverage forecast folds the day's observed high so far into the published high"}
                 , so it reads{" "}
-                <span className="tnum font-medium text-foreground">{round1(display.highF)}°</span>{" "}
+                <span className="tnum font-medium text-foreground">{temperature.temp(display.highF)}</span>{" "}
                 rather than the{" "}
-                <span className="tnum font-medium text-foreground">{round1(display.baselineF)}°</span>{" "}
+                <span className="tnum font-medium text-foreground">{temperature.temp(display.baselineF)}</span>{" "}
                 EMOS issue. The sigma, spread and member count above describe that EMOS issue.
               </p>
             )}
@@ -158,10 +158,10 @@ function ForecastPanel({ city, intradayLock }: { city: City; intradayLock: Intra
                                 the column of numbers already carries the
                                 comparison the colour would have added. */}
                             <span className="tnum font-medium text-foreground">
-                              {round1(row.highF)}°
+                              {temperature.temp(row.highF)}
                             </span>
                           </td>
-                          <td className="tnum py-2 pr-3 text-right text-muted">{f.sigma_f == null ? "—" : `${round1(f.sigma_f)}°`}</td>
+                          <td className="tnum py-2 pr-3 text-right text-muted">{temperature.diff(f.sigma_f)}</td>
                           <td className="tnum py-2 text-right text-muted">
                             {f.lead_days == null ? "—" : `${f.lead_days}d`}
                           </td>
@@ -183,6 +183,7 @@ function ForecastPanel({ city, intradayLock }: { city: City; intradayLock: Intra
 
 /** Settlement + provenance + paper-book activity for one city. */
 function BookPanel({ city, currentStateAvailable }: { city: City; currentStateAvailable: boolean }) {
+  const temperature = useTemperature();
   const fresh = cityFreshness(city.forecasts);
   const tone = FRESH_TONE[fresh.tone] ?? FRESH_TONE.danger;
   const settled = city.latest_settlement;
@@ -240,7 +241,7 @@ function BookPanel({ city, currentStateAvailable }: { city: City; currentStateAv
         <div className="grid grid-cols-2 gap-x-6 gap-y-4">
           <Stat
             label={`Last settlement · ${shortDateUTC(settled?.local_date)}`}
-            value={settled ? `${round1(settled.high_f)}°` : "—"}
+            value={temperature.temp(settled?.high_f)}
           />
           <Stat label="Eligible decisions · 24h" value={currentStateAvailable ? String(books.approved_24h ?? 0) : "Unavailable"} />
         </div>
@@ -295,6 +296,7 @@ interface CityDetailProps {
     publishes the full bracket-level market microstructure. */
 export function CityDetail({ city, flagshipTarget, intradayLock = null }: CityDetailProps) {
   const { operational } = usePublication();
+  const temperature = useTemperature();
   const currentStateAvailable = operational.state === "fresh";
   // The bracket-level signal artifact is San-Francisco-only, so gate on the
   // flagship blend AND the SFO slug — never attach SF's book to another city.
@@ -341,13 +343,13 @@ export function CityDetail({ city, flagshipTarget, intradayLock = null }: CityDe
             <EdgeChart target={flagshipTarget} />
             {mc?.available && (
               <Finding label="Model versus market">
-                Model <strong>{f1(mc.model_high_f)}</strong>, market <strong>{f1(mc.implied_high_f)}</strong>: a{" "}
+                Model <strong>{temperature.temp(mc.model_high_f)}</strong>, market <strong>{temperature.temp(mc.implied_high_f)}</strong>: a{" "}
                 <strong>
                   {mc.model_minus_market_f > 0 ? "+" : ""}
-                  {round1(mc.model_minus_market_f)}°F
+                  {temperature.diff(mc.model_minus_market_f, 1, true)}
                 </strong>{" "}
                 gap for the {targetLabel(flagshipTarget.target_date).toLowerCase()} high. The market's likeliest bracket is{" "}
-                <strong>{mc.modal_bin_label}</strong> at {pct(mc.modal_probability, 0)};{" "}
+                <strong>{temperature.bracket(mc.modal_bin_label)}</strong> at {pct(mc.modal_probability, 0)};{" "}
                 <strong>{approvedCount}</strong> candidate{approvedCount === 1 ? " is" : "s are"} eligible.
                 {ladder && (
                   <>

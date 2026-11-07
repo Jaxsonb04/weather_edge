@@ -3,9 +3,11 @@ import { Button } from "@heroui/react/button";
 import { Modal } from "@heroui/react/modal";
 import { Tooltip } from "@heroui/react/tooltip";
 import { buttonVariants } from "@heroui/styles";
+import { Segment } from "@heroui-pro/react/segment";
 import { Icon } from "@iconify/react/offline";
 import { ROUTES, type Route } from "../../lib/useHashRoute";
 import type { ThemeMode } from "../../lib/theme";
+import { useTemperature, type TempUnit } from "../../lib/units";
 
 interface TopBarProps {
   mode: ThemeMode;
@@ -92,6 +94,24 @@ function PrimaryNav({ route }: { route: Route }) {
   );
 }
 
+/** °F / °C switch. Every published figure is Fahrenheit; this only changes how
+    temperatures are displayed, and the choice persists per browser. */
+function UnitToggle() {
+  const { unit, setUnit } = useTemperature();
+  return (
+    <Segment
+      aria-label="Temperature unit"
+      size="sm"
+      selectedKey={unit}
+      onSelectionChange={(key) => setUnit(key as TempUnit)}
+      className="shrink-0"
+    >
+      <Segment.Item id="F" aria-label="Fahrenheit">°F</Segment.Item>
+      <Segment.Item id="C" aria-label="Celsius">°C</Segment.Item>
+    </Segment>
+  );
+}
+
 export function TopBar({ mode, onToggleTheme, onOpenCommand, menuOpen, onMenuOpenChange, route, repoUrl }: TopBarProps) {
   // The menu is a phone affordance; close it if the window grows to the
   // width where the inline navigation appears.
@@ -155,6 +175,7 @@ export function TopBar({ mode, onToggleTheme, onOpenCommand, menuOpen, onMenuOpe
             </Button>
             <Tooltip.Content>Search</Tooltip.Content>
           </Tooltip>
+          <UnitToggle />
           <Tooltip delay={600}>
             <Button isIconOnly variant="ghost" aria-label={themeLabel} onPress={onToggleTheme}>
               <Icon icon={mode === "dark" ? "solar:sun-2-linear" : "solar:moon-linear"} aria-hidden="true" />

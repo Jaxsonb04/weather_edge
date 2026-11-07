@@ -1,6 +1,7 @@
 import { DataGrid, type DataGridColumn } from "@heroui-pro/react/data-grid";
 import { gateDeferred, money, type DayRow, type StrategyLab } from "../../lib/strategy";
 import { PAPER_INCIDENTS } from "../../lib/incidents";
+import { useTemperature } from "../../lib/units";
 
 const HEAD = "text-xs font-medium text-muted";
 
@@ -11,6 +12,7 @@ const incidentFor = (date: string) =>
     how the forecast verified. Pass that account's own `days`; the combined
     series sums separate accounts and is never rendered here. */
 export function DailyActivity({ s, days }: { s: StrategyLab; days?: DayRow[] }) {
+  const temperature = useTemperature();
   const rows = [...(days ?? [])].sort((a, b) => b.date.localeCompare(a.date));
   if (!rows.length) return null;
   // The per-day scan/approval counters come from the decision-journal replay
@@ -105,10 +107,10 @@ export function DailyActivity({ s, days }: { s: StrategyLab; days?: DayRow[] }) 
               const err = d.forecast_error_f;
               return (
                 <span className="tnum text-xs text-muted">
-                  {Math.round(d.forecast_predicted_high_f * 10) / 10}° →{" "}
-                  {d.forecast_actual_high_f == null ? "—" : `${Math.round(d.forecast_actual_high_f * 10) / 10}°`}
+                  {temperature.temp(d.forecast_predicted_high_f)} →{" "}
+                  {temperature.temp(d.forecast_actual_high_f)}
                   {err != null && (
-                    <span className={Math.abs(err) <= 2 ? "text-success" : "text-warning"}> ({err > 0 ? "+" : ""}{Math.round(err * 10) / 10}°)</span>
+                    <span className={Math.abs(err) <= 2 ? "text-success" : "text-warning"}> ({err > 0 ? "+" : ""}{temperature.diff(err)})</span>
                   )}
                 </span>
               );

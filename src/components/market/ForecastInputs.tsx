@@ -1,13 +1,15 @@
 import { Card } from "@heroui/react/card";
 import { HoverCard } from "@heroui-pro/react/hover-card";
 import { Icon } from "@iconify/react/offline";
-import { describeMethod, f1, num, predictedHigh, targetLabel, type Target } from "../../lib/data";
+import { useTemperature } from "../../lib/units";
+import { describeMethod, num, predictedHigh, targetLabel, type Target } from "../../lib/data";
 
 export function ForecastInputs({ target }: { target: Target }) {
+  const temperature = useTemperature();
   const e = target.ensemble ?? {};
   const f = target.forecast ?? {};
   const rows: { k: string; v: string; hint?: string }[] = [
-    { k: "Published high", v: f1(predictedHigh(target)) },
+    { k: "Published high", v: temperature.temp(predictedHigh(target)) },
     { k: "Current method", v: describeMethod(f.method) },
     { k: "NWP members", v: `${f.source_count ?? "—"}` },
   ];
@@ -15,7 +17,7 @@ export function ForecastInputs({ target }: { target: Target }) {
     rows.push({
       k: "GFS ensemble",
       v: `${e.member_count} members`,
-      hint: `μ ${f1(num(e, "station_mean_high_f"))} · σ ${f1(num(e, "station_std_high_f"))} · bias ${f1(num(e, "station_bias_f"))}`,
+      hint: `μ ${temperature.temp(num(e, "station_mean_high_f"))} · σ ${temperature.diff(num(e, "station_std_high_f"))} · bias ${temperature.diff(num(e, "station_bias_f"))}`,
     });
   }
   if (typeof f.calls_used_today === "number" && typeof f.max_calls_per_day === "number") {
