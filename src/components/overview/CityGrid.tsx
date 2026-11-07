@@ -3,7 +3,6 @@ import {
   cityFreshness,
   cityNextForecast,
   predictedHigh,
-  round1,
   shortDateUTC,
   tempColor,
   type City,
@@ -12,6 +11,7 @@ import {
   type Target,
 } from "../../lib/data";
 import { usePublication } from "../../lib/publication";
+import { useTemperature } from "../../lib/units";
 
 const GRID = "grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5";
 const DOT_TONE: Record<string, string> = {
@@ -97,6 +97,7 @@ function CityCard({
   currentStateAvailable: boolean;
   intradayLock: IntradayLock | null;
 }) {
+  const temperature = useTemperature();
   const fc = cityNextForecast(city);
   const display = fc ? lockedHigh(city.slug ?? city.series_ticker, fc, intradayLock) : null;
   const preLockHighF = display?.baselineF ?? null;
@@ -150,12 +151,12 @@ function CityCard({
                   className="tnum text-3xl font-semibold leading-none tracking-tight"
                   style={{ color: tempColor(display.highF) }}
                 >
-                  {Math.round(display.highF)}°
+                  {temperature.temp(display.highF, 0)}
                 </span>
                 {/* Sigma belongs to the EMOS issue, so it moves to the line
                     below whenever the intraday update has replaced the high. */}
                 {preLockHighF == null && typeof fc.sigma_f === "number" && (
-                  <span className="tnum text-xs text-muted">±{round1(fc.sigma_f)}°</span>
+                  <span className="tnum text-xs text-muted">±{temperature.diff(fc.sigma_f)}</span>
                 )}
               </>
             ) : (
@@ -173,7 +174,7 @@ function CityCard({
           </p>
           {fc && preLockHighF != null && (
             <p className="tnum text-xs text-muted">
-              {`EMOS issue ${round1(preLockHighF)}°${typeof fc.sigma_f === "number" ? ` ±${round1(fc.sigma_f)}°` : ""}`}
+              {`EMOS issue ${temperature.temp(preLockHighF)}${typeof fc.sigma_f === "number" ? ` ±${temperature.diff(fc.sigma_f)}` : ""}`}
             </p>
           )}
         </div>
@@ -183,7 +184,7 @@ function CityCard({
             {settled ? (
               <>
                 Settled {shortDateUTC(settled.local_date)}:{" "}
-                <span className="tnum font-medium text-foreground">{round1(settled.high_f)}°</span>
+                <span className="tnum font-medium text-foreground">{temperature.temp(settled.high_f)}</span>
               </>
             ) : (
               "No settlement yet"

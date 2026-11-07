@@ -3,6 +3,7 @@ import { Command } from "@heroui-pro/react/command";
 import { Icon } from "@iconify/react/offline";
 import { ROUTES, type Route } from "../../lib/useHashRoute";
 import { copyText } from "../../lib/clipboard";
+import { useTemperature } from "../../lib/units";
 import "../../styles/pro-command.css";
 
 export interface CommandPaletteProps {
@@ -17,6 +18,8 @@ export interface CommandPaletteProps {
 /** ⌘K / Ctrl-K command palette. Renders into a portal via Command.Backdrop. */
 export function CommandPalette({ open, onOpenChange, onToggleTheme, onNavigate, repoUrl, liveUrl }: CommandPaletteProps) {
   const [copyError, setCopyError] = useState(false);
+  const temperature = useTemperature();
+  const otherUnit = temperature.unit === "C" ? "°F" : "°C";
   // ⌘K is owned by App, which holds the open state and now keeps this palette
   // mounted so React Aria can restore focus on close. A second listener here
   // would fire on the same press.
@@ -39,7 +42,7 @@ export function CommandPalette({ open, onOpenChange, onToggleTheme, onNavigate, 
               <Command.InputGroup.Prefix>
                 <Icon icon="solar:magnifer-linear" className="size-4 text-muted" aria-hidden="true" />
               </Command.InputGroup.Prefix>
-              <Command.InputGroup.Input placeholder="Go to a view, open links, toggle theme…" />
+              <Command.InputGroup.Input placeholder="Go to a view, open links, toggle theme or units…" />
               <Command.InputGroup.ClearButton />
             </Command.InputGroup>
             <Command.List>
@@ -62,6 +65,13 @@ export function CommandPalette({ open, onOpenChange, onToggleTheme, onNavigate, 
                 <Command.Item textValue="Toggle theme" onAction={() => { onToggleTheme(); onOpenChange(false); }}>
                   <Icon icon="solar:moon-stars-linear" className="size-4 text-muted" aria-hidden="true" />
                   <span>Toggle light / dark</span>
+                </Command.Item>
+                <Command.Item
+                  textValue={`Show temperatures in ${otherUnit} Celsius Fahrenheit units`}
+                  onAction={() => { temperature.toggle(); onOpenChange(false); }}
+                >
+                  <Icon icon="solar:temperature-linear" className="size-4 text-muted" aria-hidden="true" />
+                  <span>Show temperatures in {otherUnit}</span>
                 </Command.Item>
                 <Command.Item
                   textValue="Copy flagship SFO market ticker"
