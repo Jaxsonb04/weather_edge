@@ -128,6 +128,7 @@ def test_overdue_reconciliation_is_visible_until_maintenance_recovers(tmp_path, 
         paper={"available": True, "summary": {}}, entry_block_reason=None,
         accounting={"accounts": {"research_m1": {"status": "ACTIVE", "trial": recovered}}},
     )}
+    _evaluation(db, _at(6, 50), m1.DECISION_SHADOW)
     assert watchdog("recovered").returncode == 0
 
 
@@ -211,7 +212,7 @@ def test_watchdog_alerts_on_repeated_admission_failures_even_inside_the_gap(
     for name, evaluations in {
         "orphan": [(90, m1.DECISION_PENDING)],
         "one-lock-hour": [(10, m1.DECISION_ADMISSION_ERROR), (15, m1.DECISION_ADMISSION_ERROR)],
-        "old": [(300, m1.DECISION_ADMISSION_ERROR), (400, m1.DECISION_PENDING)],
+        "old": [(300, m1.DECISION_ADMISSION_ERROR), (400, m1.DECISION_PENDING), (240, m1.DECISION_SHADOW)],
         "in-flight": [(90, m1.DECISION_ADMISSION_ERROR), (5, m1.DECISION_PENDING)],
     }.items():
         quiet = _watchdog(tmp_path / name, monkeypatch, _at(11), evaluations)
@@ -259,7 +260,10 @@ def test_m1_failures_reach_public_status_after_a_clean_reconcile(tmp_path) -> No
     assert [a["level"] for a in critical] == ["critical"]
     assert "no evaluation in the last 90 minutes" in critical[0]["detail"]
     assert "m1-health" not in {a["code"] for a in archived}
-    assert public(_at(22).replace(hour=12))[1] == []  # the listing gap is normal
+    # Dead before the listing gap stays failing through it; a normal gap stays quiet.
+    assert public(_at(20) + timedelta(hours=16))[1]
+    _evaluation(db, _at(20) + timedelta(hours=11), m1.DECISION_SHADOW)
+    assert public(_at(20) + timedelta(hours=16))[1] == []
 
     _evaluation(db, _at(23), m1.DECISION_ADMISSION_ERROR, "boom")
     _evaluation(db, _at(23) + timedelta(hours=1, minutes=10), m1.DECISION_ADMISSION_ERROR, "boom")

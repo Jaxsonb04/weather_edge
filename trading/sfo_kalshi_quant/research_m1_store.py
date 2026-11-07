@@ -1091,7 +1091,8 @@ def m1_health_problems(conn: sqlite3.Connection, *, now: datetime) -> list[str]:
     A failed admission or an evaluation exception leaves the parent scan green
     and still reconciles cleanly, so neither the scan stamp nor the fidelity rule
     can show it. M1 evaluates only the next civil day's ladder, so it writes
-    nothing from about 07:00 to 15:00 UTC; staleness is skipped until 16:30.
+    nothing from about 07:00 to 15:00 UTC. Until 16:30 staleness is measured from
+    07:00, so a trial that died before the gap stays failing through it.
     """
 
     now = now.astimezone(UTC)
@@ -1126,19 +1127,20 @@ def m1_health_problems(conn: sqlite3.Connection, *, now: datetime) -> list[str]:
             f"M1 trial admissions failed in {len(failed_hours)} UTC hours of the last 3"
         )
     minute_of_day = now.hour * 60 + now.minute
-    if not 7 * 60 <= minute_of_day < 16 * 60 + 30:
-        last = parse_timestamp(newest[0]) if newest else None
-        if last is not None and now - last > timedelta(minutes=90):
+    in_gap = 7 * 60 <= minute_of_day < 16 * 60 + 30
+    reference = now.replace(hour=7, minute=0, second=0, microsecond=0) if in_gap else now
+    last = parse_timestamp(newest[0]) if newest else None
+    if account is not None and last is not None and reference - last > timedelta(minutes=90):
+        problems.append(
+            f"M1 trial has no evaluation in the last 90 minutes (newest {newest[0]})"
+        )
+    if newest is None and account is not None and not in_gap:
+        created = parse_timestamp(account[0])
+        if created is None or now - created > timedelta(hours=24):
             problems.append(
-                f"M1 trial has no evaluation in the last 90 minutes (newest {newest[0]})"
+                "M1 trial has no evaluation since account creation "
+                "(24-hour start-up grace expired or unavailable)"
             )
-        if newest is None and account is not None:
-            created = parse_timestamp(account[0])
-            if created is None or now - created > timedelta(hours=24):
-                problems.append(
-                    "M1 trial has no evaluation since account creation "
-                    "(24-hour start-up grace expired or unavailable)"
-                )
     return problems
 
 
