@@ -965,9 +965,9 @@ keep the recovered catalog and raw partitions together. `features/` contains
 the separate feature-store mirror, not the restore catalog.
 
 If the nightly gate stops because a never-uploaded partition is missing and no
-copy survives, delete that partition's `archive_files` row in `manifest.db` and
-rerun `paper-archive`. It re-exports the rows still in the journal, and the gate
-then passes.
+copy survives, leave the gate blocked and escalate to the owner. Do not delete
+its `archive_files` row: that erases the record that the rows ever existed, and
+a re-export of the survivors would then pass the gate with history missing.
 
 ## Publication Health
 
