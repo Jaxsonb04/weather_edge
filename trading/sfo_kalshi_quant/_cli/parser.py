@@ -825,13 +825,16 @@ def register_paper_commands(sub) -> None:
 
     resettle = sub.add_parser(
         "paper-resettle",
-        help="Verify booked paper settlements against final CLI truth without rewriting P&L",
+        help=(
+            "Verify booked paper settlements against final CLI truth; rewrites "
+            "P&L only for one approved lot with --restate --apply"
+        ),
     )
     resettle.add_argument(
         "--verify",
         action="store_true",
         required=True,
-        help="Record MATCH/MISMATCH audit results; never mutate settled orders",
+        help="Record MATCH/MISMATCH audit results; only --apply mutates a settled order",
     )
     resettle.add_argument("--days", type=int, default=14, help="Recent target days to verify")
     resettle_exchange = resettle.add_mutually_exclusive_group()
@@ -862,6 +865,22 @@ def register_paper_commands(sub) -> None:
             "exchange; restating booked P&L needs the owner's approval."
         ),
     )
+    resettle.add_argument(
+        "--apply",
+        action="store_true",
+        help=(
+            "With --restate: rebook the one lot named by --order-id on its final "
+            "truth, in that lot's archived ledger. Needs --expected-delta and "
+            "--reason, ignores --days, and refuses on any disagreement."
+        ),
+    )
+    resettle.add_argument("--order-id", type=int, help="The lot --apply restates")
+    resettle.add_argument(
+        "--expected-delta",
+        type=float,
+        help="Owner-approved P&L change in dollars; --apply refuses any other",
+    )
+    resettle.add_argument("--reason", help="Why, kept in the ledger audit record")
     resettle.add_argument(
         "--exchange-max-fetches",
         type=int,

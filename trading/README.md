@@ -85,6 +85,18 @@ grace window. Prefer `paper-auto-settle` and the durable truth path. Manual
 station, target date, series and admissible official final high. A pending
 preliminary report must remain pending.
 
+A final corrected after settlement is flagged, never re-booked automatically.
+`paper-resettle --verify --restate --days N` previews every such lot and writes
+nothing. Adding `--apply --order-id ID --expected-delta D --reason TEXT` rebooks
+that one lot on its final truth, after the owner approves it. It works only on an
+archived ledger, in one transaction, and a second run changes nothing. It refuses
+when the delta differs, the final is missing or preliminary, a cached exchange
+result disagrees, the lot is not settled, or the ledger would stop reconciling.
+The `SETTLEMENT_RESTATEMENT` ledger event holds the before, after, reason and
+truth source. No active book's cash moves, but the corrected outcome does reach
+the cross-book sizing inputs: research sizing equity, posterior-Kelly and the
+research pause window read every non-M1 lot.
+
 Live Stability contributes to readiness. Research ROI and all archives do not.
 The `live` profile name is a paper-readiness role: real-money execution remains
 unimplemented and rejects non-dry orders.

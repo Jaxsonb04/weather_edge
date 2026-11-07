@@ -238,6 +238,7 @@ def _traded_market_days(
     *,
     series_ticker: str | None = None,
     target_date: str | None = None,
+    market_ticker: str | None = None,
 ) -> list[sqlite3.Row]:
     query = _TRADED_MARKET_DAY_SQL
     params: list[Any] = list(TRADED_STATUSES)
@@ -247,6 +248,9 @@ def _traded_market_days(
     if series_ticker:
         query += " AND market_ticker LIKE ?"
         params.append(f"{series_ticker}-%")
+    if market_ticker:
+        query += " AND market_ticker = ?"
+        params.append(market_ticker)
     query += " GROUP BY market_ticker, target_date ORDER BY target_date, market_ticker"
     previous_factory = conn.row_factory
     conn.row_factory = sqlite3.Row
@@ -293,6 +297,7 @@ def record_market_day_settlements(
     recorded_at: str,
     series_ticker: str,
     truth_source: str = TRUTH_SOURCE_SETTLEMENT_PATH,
+    market_ticker: str | None = None,
 ) -> dict[str, Any]:
     """Record the outcome of every market-day traded on ``target_date``.
 
@@ -322,7 +327,10 @@ def record_market_day_settlements(
     rank = TRUTH_SOURCE_RANKS[truth_source]
     high = integer_settlement_high_f(settlement_high_f)
     rows = _traded_market_days(
-        conn, series_ticker=series_scope, target_date=target_date
+        conn,
+        series_ticker=series_scope,
+        target_date=target_date,
+        market_ticker=market_ticker,
     )
     existing = _existing_outcomes(conn, target_date=target_date)
     written = 0
