@@ -68,7 +68,7 @@ export function DailyActivity({ s, days }: { s: StrategyLab; days?: DayRow[] }) 
       header: "W–L",
       align: "end",
       headerClassName: HEAD,
-      cell: (d) => <span className="tnum text-muted">{d.wins != null && d.losses != null ? `${d.wins}–${d.losses}` : "—"}</span>,
+      cell: (d) => <span className="tnum whitespace-nowrap text-muted">{d.wins != null && d.losses != null ? `${d.wins}–${d.losses}` : "—"}</span>,
     },
     {
       id: "pnl",
@@ -76,7 +76,7 @@ export function DailyActivity({ s, days }: { s: StrategyLab; days?: DayRow[] }) 
       align: "end",
       headerClassName: HEAD,
       cell: (d) => (
-        <span className={`tnum font-medium ${(d.realized_pnl ?? 0) > 0 ? "text-success" : (d.realized_pnl ?? 0) < 0 ? "text-danger" : "text-muted"}`}>
+        <span className={`tnum whitespace-nowrap font-medium ${(d.realized_pnl ?? 0) > 0 ? "text-success" : (d.realized_pnl ?? 0) < 0 ? "text-danger" : "text-muted"}`}>
           {d.realized_pnl == null ? "—" : money(d.realized_pnl)}
         </span>
       ),
