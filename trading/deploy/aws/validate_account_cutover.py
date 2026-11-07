@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Initialize and validate the active paper ledgers.
 
-Live Stability and Research V7 are the two post-restart ledgers ($1,000 each);
+Live Stability and Research V7 are the two post-restart ledgers ($2,000 each);
 the M1 market-recalibration trial is a third, separately capitalized paper
-ledger ($10,000) that never pools with either.
+ledger ($2,000) that never pools with either.
 """
 
 from __future__ import annotations

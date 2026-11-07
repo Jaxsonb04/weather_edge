@@ -67,7 +67,7 @@ class StrategyConfig:
     default can collect more examples without changing these baseline gates.
     """
 
-    paper_bankroll: float = float(os.getenv("PAPER_BANKROLL", "1000"))
+    paper_bankroll: float = float(os.getenv("PAPER_BANKROLL", "2000"))
     min_edge: float = 0.03
     min_edge_lcb: float = 0.00
     max_spread: float = 0.06

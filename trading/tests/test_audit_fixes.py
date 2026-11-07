@@ -296,8 +296,8 @@ def test_paper_equity_tracks_realized_pnl_and_sizing_flag():
         order_id = store.record_paper_order("2026-06-12", _yes_decision())
         closed = store.close_paper_order(order_id, 0.20)  # a winning exit
 
-        equity = store.paper_equity(1000.0)
-        assert abs(equity - (1000.0 + closed["realized_pnl"])) < 1e-9
+        equity = store.paper_equity(2000.0)
+        assert abs(equity - (2000.0 + closed["realized_pnl"])) < 1e-9
 
         notional_cfg = StrategyConfig(size_against_live_equity=False)
         equity_cfg = StrategyConfig(size_against_live_equity=True)
@@ -331,11 +331,11 @@ def test_live_sizing_bankroll_excludes_archived_shared_account_pnl():
             )
 
         expected = store.paper_equity(
-            1000.0,
+            2000.0,
             risk_profile="live",
             account_id=LIVE_STABILITY_ACCOUNT_ID,
         )
-        contaminated = store.paper_equity(1000.0, risk_profile="live")
+        contaminated = store.paper_equity(2000.0, risk_profile="live")
 
         assert contaminated != expected
         assert _sizing_bankroll(

@@ -250,8 +250,8 @@ def test_research_sleeve_policies_are_immutable_and_fingerprinted() -> None:
     # v4 (both sub-steps past 3.0x have bootstrap 95% lower bounds of $0.00),
     # so this pin also marks where scaling stops being evidence-led.
     assert TARGET_POLICY_V6.policy_fingerprint == "0fd9cc8ebf877a653806fe1a"
-    # v7 preserves frozen v6 but opens its own correctness/evidence era.
-    assert TARGET_POLICY.policy_fingerprint == "ed3eb0933956b67edd85eff6"
+    # V7 preserves frozen V6; its capital decision keeps the position cap at $90.
+    assert TARGET_POLICY.policy_fingerprint == "428de2dc0b33923a909d8eb3"
     assert MOTION_POLICY.policy_fingerprint == "1c50d872ce278b403a6ad80e"
 
 
@@ -313,8 +313,9 @@ def test_live_account_cutover_preserves_strategy_fingerprints() -> None:
     # cdfaeb3c0be77f5b9dcb1270. Re-pin at integration if a sibling track adds
     # a StrategyConfig field.
     # v7 rotates behavior again for forecast validity and shared exit depth.
-    assert strategy_fingerprint(config, entry_mode="limit") == "762d7dba51749e6575f66858"
-    assert strategy_fingerprint(config, entry_mode="market") == "e6faa6a7cb7a66ca20bb72f4"
+    # The November 7 capital decision changes only paper_bankroll in these pins.
+    assert strategy_fingerprint(config, entry_mode="limit") == "0b3d1e7ee31ed2cfa1128c18"
+    assert strategy_fingerprint(config, entry_mode="market") == "22870c79f6d1c9b0bf3dc7a1"
     # Production stamps rows PER CITY: strategy_lab/build.py keys live readiness
     # by strategy_fingerprint(config_for_city(live_config, city)), and
     # config_for_city leaves SFO alone but changes the other cities. So the 19
@@ -326,14 +327,14 @@ def test_live_account_cutover_preserves_strategy_fingerprints() -> None:
         city.slug: strategy_fingerprint(config_for_city(config, city), entry_mode="limit")
         for city in CITIES
     }
-    assert live_by_city.pop("sfo") == "762d7dba51749e6575f66858"
+    assert live_by_city.pop("sfo") == "0b3d1e7ee31ed2cfa1128c18"
     assert len(live_by_city) == 19
-    assert set(live_by_city.values()) == {"78f1881a23ed21329235cb7e"}
+    assert set(live_by_city.values()) == {"e32c4d5c3f99c86ce9ef3af9"}
     research = strategy_config_for_profile("research")
     assert {
         strategy_fingerprint(config_for_city(research, city), entry_mode="limit")
         for city in CITIES
-    } == {"d9c9ade236cf6ee9550b38c9"}
+    } == {"c76572bc02d499c334fd97b6"}
 
 
 def test_target_attainment_locks_only_target_allocation_while_motion_continues() -> None:
@@ -343,7 +344,7 @@ def test_target_attainment_locks_only_target_allocation_while_motion_continues()
         lead_days=2,
     )
 
-    plans = allocate_research_plans([opportunity], realized_today=50.0)
+    plans = allocate_research_plans([opportunity], realized_today=TARGET_POLICY.target_pnl)
 
     assert plans.target.legs == []
     assert plans.target.dispositions[0].status == "capacity_blocked"
@@ -436,11 +437,11 @@ def test_init_bootstraps_research_accounts_without_rewriting_legacy(
     assert legacy_after == legacy_before
     assert research_accounts == [
         (MOTION_POLICY.account_id, 1000.0, 1000.0, 1000.0, "ARCHIVED"),
-        (TARGET_POLICY.account_id, 1000.0, 1000.0, 1000.0, "ACTIVE"),
+        (TARGET_POLICY.account_id, 2000.0, 2000.0, 2000.0, "ACTIVE"),
     ]
     assert openings == [
         (MOTION_POLICY.account_id, 1, 1000.0),
-        (TARGET_POLICY.account_id, 1, 1000.0),
+        (TARGET_POLICY.account_id, 1, 2000.0),
     ]
     assert goal_sql is not None
     normalized_goal_sql = " ".join(str(goal_sql[0]).split()).upper()
@@ -972,17 +973,18 @@ def test_target_daily_full_loss_reservation_persists_after_reopen_and_loss(tmp_p
     config = strategy_config_for_profile("research")
     order_ids = []
     # Each crossing order costs $20.83 (fees included) and is charged at the
-    # 0.60 stop-scaled fraction ($12.50). Eleven fit in $150 ($137.48
-    # charged, $12.52 room < $20.83); another city or target date cannot
+    # 0.60 stop-scaled fraction ($12.50). Twenty-three fit in $300 ($287.45
+    # charged, $12.55 room < $20.83); another city or target date cannot
     # bypass the account-wide reservation.
-    for index in range(12):
-        target = f"2026-07-{19 + index:02d}"
-        decision = _atomic_decision(f"KXHIGHDEN-26JUL{19 + index}-B80.5", contracts=25, resting=False)
+    for index in range(24):
+        target_day = date(2026, 7, 19) + timedelta(days=index)
+        target = target_day.isoformat()
+        decision = _atomic_decision(f"KXHIGHDEN-{target_day:%y%b%d}-B80.5".upper(), contracts=25, resting=False)
         admission = _linked_admission(store, TARGET_POLICY, str(index), decision, target_date=target)
         result = store.record_research_order_atomic(
             target, decision, admission=admission, strategy_config=config,
         )
-        if index < 11:
+        if index < 23:
             assert result is not None
             order_ids.append(result)
         else:
@@ -994,7 +996,7 @@ def test_target_daily_full_loss_reservation_persists_after_reopen_and_loss(tmp_p
     )
     assert before["allowed_spend"] < 20.0
     # Closing one order at a ~$20 loss frees its $12.50 charge but adds the
-    # realized loss: $150 - $20.3 - 0.6 * $208.3 = $4.7, still under $20.
+    # realized loss: $300 - $20.3 - 0.6 * $458.26 = $4.7, still under $20.
     store.close_paper_order(order_ids[0], 0.01)
     after = store.account_policy_capacity(
         target_date="2026-07-30", market_ticker="KXHIGHMIA-26JUL30-B80.5",
@@ -1012,13 +1014,14 @@ def test_concurrent_research_entries_cannot_overreserve_projected_daily_budget(t
     store = PaperStore(db_path, research_clock=_fixed_research_clock)
     config = strategy_config_for_profile("research")
     attempts = []
-    # Ten $20.83 orders charge 0.6 * $208.3 = $125, leaving $25 of room:
-    # exactly one more $20.83 order fits, never two.
-    for index in range(12):
-        target = f"2026-07-{19 + index:02d}"
-        decision = _atomic_decision(f"KXHIGHDEN-26JUL{19 + index}-B80.5", contracts=25, resting=False)
+    # Twenty-two $20.83 orders charge 0.6 * $458.26 = $274.96, leaving
+    # $25.04: exactly one more $20.83 order fits, never two.
+    for index in range(24):
+        target_day = date(2026, 7, 19) + timedelta(days=index)
+        target = target_day.isoformat()
+        decision = _atomic_decision(f"KXHIGHDEN-{target_day:%y%b%d}-B80.5".upper(), contracts=25, resting=False)
         admission = _linked_admission(store, TARGET_POLICY, str(index), decision, target_date=target)
-        if index < 10:
+        if index < 22:
             assert store.record_research_order_atomic(
                 target, decision, admission=admission, strategy_config=config,
             ) is not None
@@ -1036,9 +1039,9 @@ def test_concurrent_research_entries_cannot_overreserve_projected_daily_budget(t
         results = list(pool.map(admit, range(2)))
     assert sum(result is not None for result in results) == 1
     open_risk = store.research_open_risk(account_id=TARGET_POLICY.account_id)
-    # Eleven ~$20.8 orders are open: more than the old 100%-charge bound.
-    assert 150.0 < open_risk < 12 * 20.83
-    assert TARGET_OPEN_RISK_CHARGE_FRACTION * open_risk <= 150.0
+    # Twenty-three ~$20.8 orders are open: more than the old 100%-charge bound.
+    assert 300.0 < open_risk < 24 * 20.83
+    assert TARGET_OPEN_RISK_CHARGE_FRACTION * open_risk <= 300.0
 
 
 def test_research_admission_is_immutable() -> None:
@@ -1142,7 +1145,7 @@ def test_concurrent_atomic_admissions_cannot_overreserve_account_cash(
 
     db_path = tmp_path / "concurrent.db"
     setup = PaperStore(db_path, research_clock=_fixed_research_clock)
-    # Leave $30 available while preserving the fixed $1,000 policy reference.
+    # Leave $30 available while preserving the fixed $2,000 policy reference.
     # Each candidate needs $20; a check-then-write race would admit both.
     with setup.connect() as conn:
         conn.execute(
@@ -1152,7 +1155,7 @@ def test_concurrent_atomic_admissions_cannot_overreserve_account_cash(
                 idempotency_key, details_json
             ) VALUES (
                 '2026-07-18T08:00:00+00:00', ?, NULL, 'TEST_WITHDRAWAL',
-                -970, 'test:target:withdrawal', '{}'
+                -1970, 'test:target:withdrawal', '{}'
             )
             """,
             (TARGET_POLICY.account_id,),
@@ -1221,7 +1224,7 @@ def test_research_reservations_are_isolated_by_account(tmp_path: Path) -> None:
     motion = store.research_account_state(account_id=MOTION_POLICY.account_id)
     assert target is not None and motion is not None
     assert target["reservations"] == pytest.approx(8.0)
-    assert target["available_cash"] == pytest.approx(992.0)
+    assert target["available_cash"] == pytest.approx(TARGET_POLICY.reference_equity - 8.0)
     assert motion["reservations"] == 0.0
     assert motion["available_cash"] == 1000.0
 
@@ -1388,7 +1391,7 @@ def test_live_recording_uses_fresh_account_and_preserves_fingerprints(
     # Rotated 2026-09-07 with STRATEGY_BEHAVIOR_VERSION and moved again on
     # 2026-09-13 by the `limit_taker_cross_max_levels` config field; see
     # test_live_account_cutover_preserves_strategy_fingerprints.
-    assert row["strategy_fingerprint"] == "e6faa6a7cb7a66ca20bb72f4"
+    assert row["strategy_fingerprint"] == "22870c79f6d1c9b0bf3dc7a1"
 
 
 def test_atomic_admission_rejects_objective_day_pause_bypass(tmp_path: Path) -> None:
@@ -1580,9 +1583,9 @@ def test_atomic_admission_writes_one_exact_fill_debit_and_reconciles(
     assert ledger[0]["amount"] == pytest.approx(-expected_cost)
     state = store.research_account_state(account_id=TARGET_POLICY.account_id)
     assert state is not None
-    assert state["available_cash"] == pytest.approx(1000.0 - expected_cost)
+    assert state["available_cash"] == pytest.approx(TARGET_POLICY.reference_equity - expected_cost)
     assert state["open_cost_basis"] == pytest.approx(expected_cost)
-    assert state["realized_equity"] == pytest.approx(1000.0)
+    assert state["realized_equity"] == pytest.approx(TARGET_POLICY.reference_equity)
 
 
 def test_atomic_admission_links_supplied_target_evidence_not_newer_motion(

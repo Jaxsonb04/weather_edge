@@ -49,13 +49,13 @@ def test_target_roi_v3_becomes_active_without_rewriting_prior_identities() -> No
     assert TARGET_POLICY_V2.daily_loss_pause_pct == 0.10
     assert TARGET_POLICY_V2.allocator_version == "policy-sized-v2"
 
-    # V7 preserves the existing geometry while isolating corrected behavior.
+    # V7 keeps the $90 position limit and uses its own $2,000 capital.
     assert TARGET_POLICY.account_id == "paper-research-roi-v7"
     assert TARGET_POLICY.policy_version == "research-target-roi-v7"
-    assert TARGET_POLICY.reference_equity == 1000.0
+    assert TARGET_POLICY.reference_equity == 2000.0
     assert TARGET_POLICY.target_return == 0.05
-    assert TARGET_POLICY.target_pnl == 50.0
-    assert TARGET_POLICY.max_position_risk_pct == 0.09
+    assert TARGET_POLICY.target_pnl == 100.0
+    assert TARGET_POLICY.max_position_risk_pct == 0.045
     assert TARGET_POLICY.max_city_target_risk_pct == 0.18
     assert TARGET_POLICY.max_region_day_risk_pct == 0.36
     assert TARGET_POLICY.max_aggregate_risk_pct == 0.75
@@ -445,8 +445,14 @@ def test_fresh_store_bootstraps_every_research_policy_account(tmp_path) -> None:
         "paper-research-motion-v1",
     }
     assert all(state is not None for state in states.values())
-    assert all(state["realized_equity"] == 1000.0 for state in states.values())
-    assert all(state["available_cash"] == 1000.0 for state in states.values())
+    assert all(
+        states[policy.account_id]["realized_equity"] == policy.reference_equity
+        for policy in ALL_RESEARCH_POLICIES
+    )
+    assert all(
+        states[policy.account_id]["available_cash"] == policy.reference_equity
+        for policy in ALL_RESEARCH_POLICIES
+    )
 
 
 def test_upgrade_preserves_v1_goal_and_creates_a_separate_v3_goal(tmp_path) -> None:
@@ -485,7 +491,7 @@ def test_upgrade_preserves_v1_goal_and_creates_a_separate_v3_goal(tmp_path) -> N
             "FROM research_daily_goals ORDER BY account_id"
         ).fetchall()
 
-    assert active.target_pnl == 50.0
+    assert active.target_pnl == TARGET_POLICY.target_pnl
     assert report["account_id"] == TARGET_POLICY.account_id
     assert report["policy_version"] == TARGET_POLICY.policy_version
     assert rows == [
@@ -493,7 +499,7 @@ def test_upgrade_preserves_v1_goal_and_creates_a_separate_v3_goal(tmp_path) -> N
             TARGET_POLICY.account_id,
             TARGET_POLICY.policy_version,
             TARGET_POLICY.policy_fingerprint,
-            50.0,
+            TARGET_POLICY.target_pnl,
         ),
         (
             TARGET_POLICY_V1.account_id,

@@ -1324,6 +1324,7 @@ def _account_snapshot(
         "pending_limit_orders": pending_count,
         "pending_limit_risk": _round(pending_risk, 2),
         "realized_equity": _round(realized_equity, 2),
+        "high_water_equity": _round(state["high_water_equity"], 2),
         "realized_pnl": _round(realized_pnl, 2),
         "booked_resolved_pnl": _round(resolved_pnl, 2),
         "unrealized_pnl": _round(unrealized, 2) if unrealized is not None else None,
@@ -1361,6 +1362,27 @@ def _account_snapshot(
             day_rows=list(daily_summary.get("days") or []),
         )
     return snapshot
+
+
+def _capital_deposits(store: PaperStore, account_id: str) -> list[tuple[datetime, float]]:
+    """Return an account's capital deposits as (local time, amount)."""
+
+    with store.connect() as conn:
+        rows = conn.execute(
+            "SELECT created_at, amount FROM paper_account_ledger "
+            "WHERE account_id=? AND event_type='CAPITAL_DEPOSIT'",
+            (account_id,),
+        ).fetchall()
+    deposits: list[tuple[datetime, float]] = []
+    for created_at, amount in rows:
+        try:
+            deposited = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+        except ValueError:
+            continue  # the closing-balance guard then fails publication closed
+        if deposited.tzinfo is None:
+            deposited = deposited.replace(tzinfo=UTC)
+        deposits.append((deposited.astimezone(WEEKLY_GOAL_TZ), float(amount)))
+    return deposits
 
 
 def _account_daily_balance_rows(
@@ -1418,6 +1440,7 @@ def _account_daily_balance_rows(
         key = resolved.astimezone(WEEKLY_GOAL_TZ).date().isoformat()
         pnl_by_day[key] = pnl_by_day.get(key, 0.0) + float(realized_pnl or 0.0)
 
+    deposits = _capital_deposits(store, account_id)
     output: list[dict[str, Any]] = []
     for key in day_keys:
         if created_day is not None and key < created_day:
@@ -1434,11 +1457,17 @@ def _account_daily_balance_rows(
             continue
         # Count P&L on days the shared summary does not list (M1 trades on
         # days Live and V7 may not), so the running balance stays exact.
-        opening = float(initial_equity) + sum(
-            pnl for day, pnl in pnl_by_day.items() if day < key
+        # Capital as of this day's close: a deposit lifts the closing balance
+        # on its own day, and is never realized P&L.
+        capital = float(initial_equity) - sum(
+            amount for at, amount in deposits if at.date().isoformat() > key
+        )
+        prior_pnl = sum(pnl for day, pnl in pnl_by_day.items() if day < key)
+        opening = capital + prior_pnl - sum(
+            amount for at, amount in deposits if at.date().isoformat() == key
         )
         daily_pnl = pnl_by_day.get(key, 0.0)
-        cumulative = opening + daily_pnl
+        cumulative = capital + prior_pnl + daily_pnl
         output.append(
             {
                 "date": key,
@@ -1446,7 +1475,7 @@ def _account_daily_balance_rows(
                 "daily_realized_pnl": _round(daily_pnl, 2),
                 "realized_pnl": _round(daily_pnl, 2),
                 "closing_equity": _round(cumulative, 2),
-                "cumulative_realized": _round(cumulative - initial_equity, 2),
+                "cumulative_realized": _round(cumulative - capital, 2),
             }
         )
     return output
@@ -1734,8 +1763,19 @@ def _weekly_goal_payload(store: PaperStore, live: dict[str, Any]) -> dict[str, A
             realized_pnl or 0.0
         )
 
+    deposit_by_week: dict[datetime, float] = {}
+    for deposited_at, amount in _capital_deposits(store, live_account_id):
+        week_start = (deposited_at - timedelta(days=deposited_at.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        deposit_by_week[week_start] = deposit_by_week.get(week_start, 0.0) + amount
+
     weekly_pnl = pnl_by_week.get(start_local, 0.0)
-    starting_equity = _to_float(live["realized_equity"]) - weekly_pnl
+    starting_equity = (
+        _to_float(live["realized_equity"])
+        - weekly_pnl
+        - deposit_by_week.get(start_local, 0.0)
+    )
     target_pnl = starting_equity * WEEKLY_RETURN_TARGET
     weekly_return = weekly_pnl / starting_equity if starting_equity > 0 else None
 
@@ -1751,7 +1791,7 @@ def _weekly_goal_payload(store: PaperStore, live: dict[str, Any]) -> dict[str, A
         and cursor in pnl_by_week
     ):
         completed_pnl = pnl_by_week[cursor]
-        opening_equity = ending_equity - completed_pnl
+        opening_equity = ending_equity - completed_pnl - deposit_by_week.get(cursor, 0.0)
         completed_return = (
             completed_pnl / opening_equity if opening_equity > 0 else None
         )

@@ -323,9 +323,8 @@ Deployment is stricter than scheduled archive/prune: `sync_to_box.sh` fails its
 preflight before stopping services unless the bucket and instance
 role are available. The bucket must have public access blocked, versioning and
 default encryption enabled, and lifecycle retention of 3650 days for
-`paper_trading/` archives and 35 days for `database-snapshots/`. The
-`provision_backup_bucket.sh` script still writes 90 days for `paper_trading/`, so
-rerunning it resets the 3650-day expiry; read the lifecycle back after any run.
+`paper_trading/` archives and 35 days for `database-snapshots/`, which is what
+`provision_backup_bucket.sh` writes; read the lifecycle back after any run.
 The instance role
 needs bucket listing plus object put/get access limited to those two prefixes. The capacity preflight can remove
 aged local backup artifacts; it is not a read-only diagnostic. Use direct file

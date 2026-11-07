@@ -72,14 +72,14 @@ def test_fresh_store_activates_exact_live_bankroll_and_archives_legacy_accounts(
     assert account_for_profile("live") == LIVE_STABILITY_ACCOUNT_ID
     assert store.live_account_state() == {
         "account_id": LIVE_STABILITY_ACCOUNT_ID,
-        "initial_capital": 1000.0,
-        "opening_cash": 1000.0,
-        "cash_balance": 1000.0,
+        "initial_capital": 2000.0,
+        "opening_cash": 2000.0,
+        "cash_balance": 2000.0,
         "open_cost_basis": 0.0,
         "reservations": 0.0,
-        "available_cash": 1000.0,
-        "realized_equity": 1000.0,
-        "high_water_equity": 1000.0,
+        "available_cash": 2000.0,
+        "realized_equity": 2000.0,
+        "high_water_equity": 2000.0,
         "drawdown": 0.0,
         "status": "ACTIVE",
     }
@@ -98,7 +98,7 @@ def test_fresh_store_activates_exact_live_bankroll_and_archives_legacy_accounts(
         if row["event_type"] == "OPENING_CASH"
     ]
     assert len(opening_events) == 1
-    assert opening_events[0]["amount"] == 1000.0
+    assert opening_events[0]["amount"] == 2000.0
 
 
 def test_target_v2_is_frozen_and_v7_is_the_only_active_target_policy() -> None:
@@ -107,13 +107,13 @@ def test_target_v2_is_frozen_and_v7_is_the_only_active_target_policy() -> None:
     assert TARGET_POLICY_V2.target_return == 0.016
     assert TARGET_POLICY_V2.allocator_version == "policy-sized-v2"
 
-    # V7 starts a separate correctness era without increasing V6 risk knobs.
+    # V7 uses $2,000 and keeps the $90 position limit at 4.5%.
     assert TARGET_POLICY.account_id == "paper-research-roi-v7"
     assert TARGET_POLICY.policy_version == "research-target-roi-v7"
-    assert TARGET_POLICY.reference_equity == 1000.0
+    assert TARGET_POLICY.reference_equity == 2000.0
     assert TARGET_POLICY.target_return == 0.05
-    assert TARGET_POLICY.target_pnl == 50.0
-    assert TARGET_POLICY.max_position_risk_pct == 0.09
+    assert TARGET_POLICY.target_pnl == 100.0
+    assert TARGET_POLICY.max_position_risk_pct == 0.045
     assert TARGET_POLICY.max_city_target_risk_pct == 0.18
     assert TARGET_POLICY.max_region_day_risk_pct == 0.36
     assert TARGET_POLICY.max_aggregate_risk_pct == 0.75
@@ -252,7 +252,7 @@ def test_live_capacity_reads_the_active_live_ledger_not_legacy_shared(tmp_path) 
             account_id=LIVE_STABILITY_ACCOUNT_ID,
             order_id=None,
             event_type="TEST_LOSS",
-            amount=-996.0,
+            amount=-1996.0,
             idempotency_key="test:live-loss",
         )
 
@@ -273,7 +273,7 @@ def test_live_capacity_still_counts_unassigned_legacy_open_risk(tmp_path) -> Non
     store = PaperStore(tmp_path / "legacy-open-risk-cutover-v3.db")
     order_id = store.record_paper_order(
         "2026-07-30",
-        replace(_decision(), recommended_contracts=600.0),
+        replace(_decision(), recommended_contracts=1200.0),
         risk_profile="live",
     )
     assert order_id is not None
@@ -435,23 +435,23 @@ def test_target_geometry_invariants_prevent_a_v3_style_breadth_collapse() -> Non
     fills come from public tape trading through a resting price, so breadth in
     front of the tape - not size per quote - is what buys volume.
 
-    Any future scale step must therefore move EVERY dollar knob together. This
-    guard is scoped to the active target policy on purpose: v2/v3 and the
-    one-contract motion sleeve are archived evidence and legitimately violate it.
+    The November 7 capital decision doubles the shared budgets while keeping
+    the $90 position limit, so the active policy now funds twice the breadth.
+    Archived v2/v3 and the motion sleeve retain their historical geometry.
     """
 
     concurrency = (
         TARGET_POLICY.max_aggregate_risk_pct / TARGET_POLICY.max_position_risk_pct
     )
-    assert concurrency == pytest.approx(8.33, abs=0.01), (
+    assert concurrency == pytest.approx(16.67, abs=0.01), (
         "aggregate/position sets how many quotes can rest at once; "
-        f"got {concurrency:.2f}, expected the v1/v4 geometry's 8.33"
+        f"got {concurrency:.2f}, expected the $2,000 geometry's 16.67"
     )
     per_city = (
         TARGET_POLICY.max_city_target_risk_pct / TARGET_POLICY.max_position_risk_pct
     )
-    assert per_city == pytest.approx(2.0, abs=0.01), (
-        f"city/position must allow two quotes per city; got {per_city:.2f}"
+    assert per_city == pytest.approx(4.0, abs=0.01), (
+        f"city/position must allow four quotes per city; got {per_city:.2f}"
     )
     assert (
         TARGET_POLICY.max_region_day_risk_pct

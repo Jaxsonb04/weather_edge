@@ -1264,33 +1264,31 @@ def test_db01_concurrent_fresh_init_bootstraps_exactly_one_account(tmp_path: Pat
                 "WHERE event_type='OPENING_CASH' GROUP BY account_id"
             ).fetchall()
             integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
-        # Legacy shared/shadow, the immutable v1 target control, and both
-        # active isolated research sleeves are each bootstrapped exactly once
-        # at the unchanged $1,000 opening capital; the separate M1 trial
-        # ledger exactly once at its $10,000.
+        # Archived accounts retain $1,000; each active account opens once
+        # at its separate $2,000 capital.
         assert sorted(accounts) == [
-            ("paper-live-stability-v1", 1, 1000.0, 1000.0, 1000.0),
-            ("paper-research-m1-v1", 1, 10000.0, 10000.0, 10000.0),
+            ("paper-live-stability-v1", 1, 2000.0, 2000.0, 2000.0),
+            ("paper-research-m1-v1", 1, 2000.0, 2000.0, 2000.0),
             ("paper-research-motion-v1", 1, 1000.0, 1000.0, 1000.0),
             ("paper-research-roi-v3", 1, 1000.0, 1000.0, 1000.0),
             ("paper-research-roi-v4", 1, 1000.0, 1000.0, 1000.0),
             ("paper-research-roi-v5", 1, 1000.0, 1000.0, 1000.0),
             ("paper-research-roi-v6", 1, 1000.0, 1000.0, 1000.0),
-            ("paper-research-roi-v7", 1, 1000.0, 1000.0, 1000.0),
+            ("paper-research-roi-v7", 1, 2000.0, 2000.0, 2000.0),
             ("paper-research-shadow", 1, 1000.0, 1000.0, 1000.0),
             ("paper-research-target-v1", 1, 1000.0, 1000.0, 1000.0),
             ("paper-research-target-v2", 1, 1000.0, 1000.0, 1000.0),
             ("paper-shared", 1, 1000.0, 1000.0, 1000.0),
         ], f"attempt {attempt}: unexpected account rows {accounts}"
         assert sorted(openings) == [
-            ("paper-live-stability-v1", 1, 1000.0),
-            ("paper-research-m1-v1", 1, 10000.0),
+            ("paper-live-stability-v1", 1, 2000.0),
+            ("paper-research-m1-v1", 1, 2000.0),
             ("paper-research-motion-v1", 1, 1000.0),
             ("paper-research-roi-v3", 1, 1000.0),
             ("paper-research-roi-v4", 1, 1000.0),
             ("paper-research-roi-v5", 1, 1000.0),
             ("paper-research-roi-v6", 1, 1000.0),
-            ("paper-research-roi-v7", 1, 1000.0),
+            ("paper-research-roi-v7", 1, 2000.0),
             ("paper-research-shadow", 1, 1000.0),
             ("paper-research-target-v1", 1, 1000.0),
             ("paper-research-target-v2", 1, 1000.0),

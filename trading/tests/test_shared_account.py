@@ -233,18 +233,18 @@ def test_ledger_reserves_fills_and_settles_cash_idempotently() -> None:
         reserved = store.live_account_state()
         assert reserved is not None
         assert reserved["reservations"] > 0
-        assert reserved["available_cash"] < 1000
+        assert reserved["available_cash"] < 2000
 
         filled = store.fill_resting_limit_order(order_id, evidence={"trade_id": "T1"})
         assert filled["filled_at"] is not None
         assert filled["reserved_cost"] == 0
         after_fill = store.live_account_state()
         assert after_fill["reservations"] == 0
-        assert round(after_fill["realized_equity"], 2) == 1000.0
+        assert round(after_fill["realized_equity"], 2) == 2000.0
 
         assert store.settle_paper_orders("2026-07-10", 68.0) == 1
         settled = store.live_account_state()
-        assert settled["realized_equity"] > 1000
+        assert settled["realized_equity"] > 2000
         cash_once = settled["cash_balance"]
         assert store.settle_paper_orders("2026-07-10", 68.0) == 0
         assert store.live_account_state()["cash_balance"] == cash_once
@@ -321,7 +321,7 @@ def test_resting_ttl_releases_reservation() -> None:
         expired = store.paper_order(ids[0])
         assert expired["status"] == "PAPER_EXPIRED"
         assert expired["cancelled_at"] is not None
-        assert store.live_account_state()["available_cash"] == 1000.0
+        assert store.live_account_state()["available_cash"] == 2000.0
 
 
 def test_monitor_applies_delayed_pre_expiry_tape_before_expiring_remainder() -> None:
@@ -470,11 +470,11 @@ def test_daily_loss_and_drawdown_breakers_fail_closed() -> None:
         # the 15% drawdown pause does not already cover, and was deleted.
         daily_store = PaperStore(Path(tmp) / "daily.db")
         daily_id = daily_store.record_paper_order(
-            "2026-07-10", _decision(recommended_contracts=60.0), status="PAPER_FILLED"
+            "2026-07-10", _decision(recommended_contracts=120.0), status="PAPER_FILLED"
         )
         daily_store.close_paper_order(daily_id, 0.01)
         daily_reason = daily_store.paper_entry_pause_reason(
-            "live", bankroll=1000.0, target_date="2026-07-11"
+            "live", bankroll=2000.0, target_date="2026-07-11"
         )
         assert daily_reason is not None
         assert "daily loss" in daily_reason
@@ -482,12 +482,12 @@ def test_daily_loss_and_drawdown_breakers_fail_closed() -> None:
             daily_store, strategy_config_for_profile("live"), risk_profile="live"
         )
         assert daily_trader.place_approved(
-            "2026-07-11", [_decision()], bankroll=1000.0
+            "2026-07-11", [_decision()], bankroll=2000.0
         ) == []
 
         drawdown_store = PaperStore(Path(tmp) / "drawdown.db")
         drawdown_id = drawdown_store.record_paper_order(
-            "2026-07-01", _decision(recommended_contracts=270.0), status="PAPER_FILLED"
+            "2026-07-01", _decision(recommended_contracts=540.0), status="PAPER_FILLED"
         )
         drawdown_store.close_paper_order(drawdown_id, 0.01)
         old = (datetime.now(UTC) - timedelta(days=2)).isoformat()
@@ -499,13 +499,13 @@ def test_daily_loss_and_drawdown_breakers_fail_closed() -> None:
             risk_profile="live",
             requested_spend=20.0,
         )
-        # Half of min($30, 3% of drawn-down equity) under the 10% drawdown
-        # haircut: ~13.4 on ~$892 equity (was ~8.9 under the $20/2% cap).
-        assert 5.0 <= capacity["allowed_spend"] < 15.0
+        # Half of the fixed $30 cap under the 10% drawdown haircut,
+        # at about $1,784 of equity.
+        assert capacity["allowed_spend"] == 15.0
 
         paused_store = PaperStore(Path(tmp) / "paused.db")
         paused_id = paused_store.record_paper_order(
-            "2026-07-01", _decision(recommended_contracts=400.0), status="PAPER_FILLED"
+            "2026-07-01", _decision(recommended_contracts=800.0), status="PAPER_FILLED"
         )
         paused_store.close_paper_order(paused_id, 0.01)
         with paused_store.connect() as conn:

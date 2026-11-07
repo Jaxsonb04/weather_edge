@@ -30,7 +30,7 @@ is a test that can catch failure, not a validated edge.
 | Item | Value |
 |---|---|
 | Paper account | `paper-research-m1-v1` (new, separate, never pooled with Live Stability, Research V6 or Research V7) |
-| Initial capital | $10,000.00 (reference equity 10,000) |
+| Initial capital | $2,000.00 (reference equity 2,000) |
 | Policy version | `research-m1-market-recal-v1` |
 | Coefficient set | `m1-deploy-coefs-2026-10-28` |
 | Published profile key | `research-m1` |
@@ -105,17 +105,17 @@ has no daylight time), taken at the evaluating scan.
 For this account only, the M1 edge gate replaces the model-based signal gates
 (the model point-edge floor, the posterior lower-bound floors and the target
 sleeve's lower-bound rule). Every risk limit stays. Percentages apply to this
-account's own $10,000 reference equity.
+account's own $2,000 reference equity.
 
 | Limit | Value |
 |---|---|
 | Stake per entry | $10.00 including the order fee |
 | Contracts per market | 25 |
-| Position cap (1.5%) | $150 per market and side |
-| Event cap (3%) | $300 per city ladder and target date |
-| Target-date cap (5%) | $500 per target date across all cities |
-| Account capacity | available cash (starts at $10,000.00) |
-| Daily-loss pause (15%, the active research sleeve's percentage) | $1,500 of realized loss in one Pacific objective day |
+| Position cap (1.5%) | $30 per market and side |
+| Event cap (3%) | $60 per city ladder and target date |
+| Target-date cap (5%) | $100 per target date across all cities |
+| Account capacity | available cash (starts at $2,000.00) |
+| Daily-loss pause (15%, the active research sleeve's percentage) | $300 of realized loss in one Pacific objective day |
 | Cumulative loss stop | -$300.00 of realized P&L (stop rule 2) |
 | Max spread | 10 cents (the 0.10 research limit, compared in integer cents) |
 | Bid size minimum | 1 contract |
@@ -125,10 +125,9 @@ account's own $10,000 reference equity.
 | Corroborated forecast | entries blocked on a single-source forecast, as for every research entry |
 | Duplicate entry | one active position per market and side, and one M1 entry per leg ever |
 
-With $10 stakes the percentage caps and the daily-loss pause do not bind in
-practice; the -$300 cumulative stop is the binding loss control. The stake and
-the loss stop were calibrated to $10 entries; the larger capital only stops the
-percentage caps from throttling the trial.
+With $10 stakes the -$300 cumulative stop is the binding loss control, and the
+$100 target-date cap limits exposure on each target date. The stake and the loss
+stop were calibrated to $10 entries.
 
 Research-profile gates not applied to this account: the model point-edge and
 lower-bound floors, the posterior floor and the nonfinal-certainty gate (all
@@ -221,8 +220,11 @@ that production prunes after about a day:
   clamp; the gate keeps the one-contract fee that the threshold was chosen with.
 - The existing research risk limits in section 5 stay binding (the model/market
   gap alone removes about 2 to 9% of entries).
-- Initial capital is $10,000 rather than the decision's $1,000, by owner decision,
-  so the percentage caps do not throttle the trial.
+- Initial capital is $2,000 rather than the decision's $1,000, by owner decision on
+  Nov 7, 2026, before the first entry. Every active paper account uses the same
+  capital. The $100 target-date cap trims the expected $110-170 a day of entries, so
+  the 60-target-date stop in section 7 is likely to arrive with fewer entries than the
+  original estimate. The stopping rules themselves do not change.
 - The daily fidelity check (section 7.1) replays M1's own recorded evaluations,
   not the research decision journal the decision named, because production
   prunes that journal after about a day. It catches admission errors (wrong
@@ -237,7 +239,7 @@ that production prunes after about a day:
 Added after the implementation was written; it records how the code realizes
 sections 1 to 10 and changes none of them.
 
-- Policy fingerprint `458ecd9f808b595c74356529` (pinned in
+- Policy fingerprint `f0258953ff7eb55a1e9318b4` (pinned in
   `trading/tests/test_research_m1_math.py`). It hashes only the constants above,
   so release-wide version changes (execution model, strategy behavior) never
   rotate the trial's identity; M1 lots record the release's execution model

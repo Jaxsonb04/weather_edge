@@ -99,7 +99,7 @@ def _record_target_fixture_order(
     return order_id
 
 
-def test_daily_goal_is_frozen_at_50_from_original_equity_on_pacific_day(
+def test_daily_goal_is_frozen_at_100_from_original_equity_on_pacific_day(
     tmp_path,
 ) -> None:
     current = [datetime(2026, 7, 18, 6, 59, tzinfo=UTC)]
@@ -111,9 +111,9 @@ def test_daily_goal_is_frozen_at_50_from_original_equity_on_pacific_day(
     state = store.research_daily_goal_state()
 
     assert state.objective_day == date(2026, 7, 17)
-    assert state.target_pnl == 50.0
+    assert state.target_pnl == TARGET_POLICY.target_pnl
     assert state.realized_pnl == 0.0
-    assert state.remaining_pnl == 50.0
+    assert state.remaining_pnl == TARGET_POLICY.target_pnl
     assert state.achieved is False
     assert state.locked is False
 
@@ -121,14 +121,14 @@ def test_daily_goal_is_frozen_at_50_from_original_equity_on_pacific_day(
     # and the journal rejects attempts to rewrite the historical target.
     with store.connect() as conn:
         conn.execute(
-            "UPDATE paper_accounts SET high_water_equity=1250 "
+            "UPDATE paper_accounts SET high_water_equity=2500 "
             "WHERE account_id=?",
             (TARGET_POLICY.account_id,),
         )
         with pytest.raises(sqlite3.IntegrityError, match="immutable"):
             conn.execute(
-                "UPDATE research_daily_goals SET reference_equity=1250, "
-                "target_return=0.05, target_pnl=62.5 "
+                "UPDATE research_daily_goals SET reference_equity=2500, "
+                "target_return=0.05, target_pnl=125 "
                 "WHERE objective_day=? AND account_id=? AND policy_version=?",
                 (
                     state.objective_day.isoformat(),
@@ -138,8 +138,8 @@ def test_daily_goal_is_frozen_at_50_from_original_equity_on_pacific_day(
             )
 
     again = store.research_daily_goal_state(objective_day=state.objective_day)
-    assert again.target_pnl == 50.0
-    assert again.remaining_pnl == 50.0
+    assert again.target_pnl == TARGET_POLICY.target_pnl
+    assert again.remaining_pnl == TARGET_POLICY.target_pnl
 
 
 def test_malformed_persisted_goal_fails_closed(tmp_path) -> None:
@@ -175,7 +175,7 @@ def test_self_consistent_non_policy_goal_fails_closed(tmp_path) -> None:
             "INSERT INTO research_daily_goals "
             "(objective_day, account_id, policy_version, policy_fingerprint, created_at, "
             "reference_equity, target_return, target_pnl) "
-            "VALUES ('2026-07-18', ?, ?, ?, ?, 2000, 0.05, 100)",
+            "VALUES ('2026-07-18', ?, ?, ?, ?, 4000, 0.05, 200)",
             (
                 TARGET_POLICY.account_id,
                 TARGET_POLICY.policy_version,
@@ -224,7 +224,9 @@ def test_first_target_scan_read_freezes_the_daily_goal(tmp_path) -> None:
             "AND account_id=? AND policy_version=?",
             (TARGET_POLICY.account_id, TARGET_POLICY.policy_version),
         ).fetchone()
-    assert frozen == (1000.0, 0.05, 50.0)
+    assert frozen == (
+        TARGET_POLICY.reference_equity, TARGET_POLICY.target_return, TARGET_POLICY.target_pnl
+    )
 
 
 def test_crossed_research_identity_is_unknown_and_cannot_contaminate_kpis(
@@ -401,7 +403,7 @@ def test_upgrade_backfills_exact_legacy_daily_goal_without_bricking_report(
         through_day=date(2026, 7, 18),
         window_days=1,
     )
-    assert report["target_pnl"] == 50.0
+    assert report["target_pnl"] == TARGET_POLICY.target_pnl
     assert report["realized_pnl"] == 0.0
 
 
@@ -685,7 +687,7 @@ def test_daily_goal_summary_reports_day_clustered_statistics_without_a_guarantee
     assert "guaranteed" in report["disclaimer"]
 
 
-def test_target_locks_after_50_and_archived_motion_stays_fail_closed(tmp_path) -> None:
+def test_target_locks_after_100_and_archived_motion_stays_fail_closed(tmp_path) -> None:
     objective_day = date(2026, 7, 18)
     store = PaperStore(
         tmp_path / "paper.db",
@@ -701,12 +703,13 @@ def test_target_locks_after_50_and_archived_motion_stays_fail_closed(tmp_path) -
             "research_policy_version=?, policy_fingerprint=?, "
             "objective_day=?, lead_bucket='day-ahead', "
             "scan_run_id='lock-test', reentry_fingerprint='lock-test-entry', "
-            "status='PAPER_CLOSED', realized_pnl=50, closed_at=? WHERE id=?",
+            "status='PAPER_CLOSED', realized_pnl=?, closed_at=? WHERE id=?",
             (
                 TARGET_POLICY.account_id,
                 TARGET_POLICY.policy_version,
                 TARGET_POLICY.policy_fingerprint,
                 objective_day.isoformat(),
+                TARGET_POLICY.target_pnl,
                 _pacific_noon(objective_day),
                 root_id,
             ),
@@ -766,7 +769,7 @@ def test_report_does_not_infer_feasibility_from_decision_rows(tmp_path) -> None:
     report = store.research_daily_goal_report(through_day=objective_day)
 
     assert report["available_conservative_expected_profit"] is None
-    assert report["remaining_pnl"] == 50.0
+    assert report["remaining_pnl"] == TARGET_POLICY.target_pnl
     assert report["target_feasible"] is None
     assert report["feasibility_evidence"] == "unavailable"
 

@@ -42,7 +42,7 @@ DB_PATH="${SFO_KALSHI_DB:-$TRADING_DIR/data/paper_trading.db}"
 # error, a placement or admission error) still leaves fresh rows behind.
 # Deploys never sync the data directory, so the stamps survive a release.
 SCAN_STATE_DIR="$(dirname "$DB_PATH")/.paper-scan-state"
-BANKROLL="${PAPER_BANKROLL:-1000}"
+BANKROLL="${PAPER_BANKROLL:-2000}"
 PROFILES_CSV="${PAPER_RISK_PROFILES:-${PAPER_RISK_PROFILE:-live}}"
 CALIBRATION_SOURCE="${SFO_TRADING_SIGNAL_CALIBRATION_SOURCE:-lstm}"
 PAPER_ENTRY_MODE="${PAPER_ENTRY_MODE:-market}"
