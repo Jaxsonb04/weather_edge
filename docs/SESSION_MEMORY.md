@@ -269,7 +269,7 @@ operational claim; all production observations below are dated snapshots.
     (central about +1%). Trades where the model agrees with M1 are the strongest
     lead and are pre-registered as a co-primary.
   - **Owner and implementation decisions:**
-    - $2,000 capital in a fresh ledger (November 7 decision; not deployed).
+    - $2,000 capital in a fresh ledger (November 7 decision; deployed November 7).
     - $10 per entry and a −$300 cumulative loss stop. Both were calibrated to $10
       stakes, and the 25-contract and displayed-size clamps bind first.
     - Daily-loss pause at 15% = $300 at the $2,000 capital basis; the cumulative
@@ -293,8 +293,8 @@ operational claim; all production observations below are dated snapshots.
       without a read, as before.
 
     F3/F4, the stop veto design, were refuted. F9 remains open. The PR was
-    reviewed per fix, by an integration panel and by ChatGPT, and is not deployed.
-  - **M1 (PR #163, merged as `10e58c270`; not deployed):** built (a new research
+    reviewed per fix, by an integration panel and by ChatGPT, and was deployed November 7 with V7.
+  - **M1 (PR #163, merged as `10e58c270`; deployed November 7):** built (a new research
     sleeve, its own ledger, stop rules, daily reconciliation and published book).
     Its review confirmed 12 findings
     and a focused re-review five more (Nov 3), all fixed: M1 never feeds Live or
