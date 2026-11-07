@@ -343,6 +343,112 @@ def test_archive_pending_is_idempotent(tmp_path: Path) -> None:
     assert second == 0
 
 
+@pytest.mark.parametrize("damage", ["missing", "changed"])
+def test_gate_rejects_lost_or_changed_unuploaded_partition(tmp_path: Path, damage: str) -> None:
+    _, conn = _make_store(tmp_path)
+    _insert_decision(conn)
+    archive_dir = tmp_path / "archive"
+    archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+    partition = archive_dir / "decision_snapshots" / f"dt={_utc_day(2)}.jsonl.gz"
+    if damage == "missing":
+        partition.unlink()
+    else:
+        rows = _read_archive(partition)
+        rows[0]["reasons_json"] = '["changed"]'
+        with gzip.open(partition, "wt") as out:
+            out.write(json.dumps(rows[0]) + "\n")
+    with pytest.raises(RuntimeError, match="corrupt|mismatch"):
+        gate_missing_days(tmp_path / "paper.db", archive_dir)
+
+
+def test_restore_includes_orderbook_depth(tmp_path: Path) -> None:
+    _, conn = _make_store(tmp_path)
+    day = _utc_day(2)
+    conn.execute(
+        "INSERT INTO market_orderbook_depth_snapshots "
+        "(created_at, target_date, market_ticker, levels_requested, yes_levels_json, no_levels_json) "
+        "VALUES (?, ?, 'WEATHER-TEST', 2, '[[40, 3]]', '[[58, 4]]')",
+        (f"{day}T12:00:00+00:00", day),
+    )
+    conn.commit()
+    original = conn.execute("SELECT * FROM market_orderbook_depth_snapshots").fetchall()
+    archive_dir = tmp_path / "archive"
+    archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+    destination = tmp_path / "restored.db"
+    restored = archive_module.restore_archive_days(archive_dir, destination, days=[day])
+    assert restored["market_orderbook_depth_snapshots"] == 1
+    assert set(archive_module.STREAM_TABLES) <= set(archive_module.RESTORE_TABLE_ORDER)
+    with sqlite3.connect(destination) as recovered:
+        assert recovered.execute("SELECT * FROM market_orderbook_depth_snapshots").fetchall() == original
+
+
+def test_upload_backs_up_manifest_and_restores_from_remote_copies(tmp_path: Path, monkeypatch) -> None:
+    _, conn = _make_store(tmp_path)
+    _insert_decision(conn)
+    archive_dir = tmp_path / "archive"
+    archive_pending(tmp_path / "paper.db", archive_dir, log=lambda *_: None)
+    # Hold a WAL connection open: copying the live main file can miss these rows.
+    manifest = open_manifest(archive_dir)
+    manifest.execute("PRAGMA wal_autocheckpoint=0")
+    manifest.execute("UPDATE archive_files SET created_at='2026-01-01'")
+    manifest.commit()
+    remote = {}
+
+    def aws(args):
+        if args[:2] == ["s3", "cp"]:
+            source, target = Path(args[2]), args[3]
+            if target.endswith("/manifest.db"):
+                assert source != archive_dir / "manifest.db"
+                with sqlite3.connect(source) as snapshot:
+                    assert snapshot.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+                    assert snapshot.execute("SELECT COUNT(*) FROM archive_files WHERE uploaded_at IS NULL").fetchone() == (0,)
+                    assert snapshot.execute("SELECT DISTINCT created_at FROM archive_files").fetchall() == [("2026-01-01",)]
+            remote[target] = source.read_bytes()
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        assert args[:2] == ["s3api", "head-object"]
+        target = f"s3://archive-test/{args[args.index('--key') + 1]}"
+        return SimpleNamespace(returncode=0, stdout=json.dumps({"ContentLength": len(remote[target])}), stderr="")
+
+    monkeypatch.setenv("SFO_ARCHIVE_S3_BUCKET", "archive-test")
+    monkeypatch.setenv("SFO_ARCHIVE_S3_PREFIX", "paper-test")
+    monkeypatch.setattr(archive_module, "_aws", aws)
+    try:
+        assert archive_module.upload_pending(archive_dir) > 0
+        assert "s3://archive-test/paper-test/manifest.db" in remote
+        recovery = tmp_path / "recovery"
+        for target, data in remote.items():
+            path = recovery / target.removeprefix("s3://archive-test/paper-test/")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        destination = tmp_path / "recovered.db"
+        restored = archive_module.restore_archive_days(recovery, destination, days=[_utc_day(2)])
+        assert restored["decision_snapshots"] == 1
+        with sqlite3.connect(destination) as recovered:
+            assert recovered.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        manifest.close()
+
+
+@pytest.mark.parametrize("failure", ["upload", "verify"])
+def test_manifest_backup_failure_is_fatal_and_removes_snapshot(tmp_path, monkeypatch, failure):
+    archive_dir = tmp_path / "archive"
+    calls = []
+
+    def aws(args):
+        calls.append(args)
+        if args[:2] == ["s3", "cp"]:
+            assert args[3].endswith("/manifest.db")
+            return SimpleNamespace(returncode=int(failure == "upload"), stdout="", stderr="failed")
+        return SimpleNamespace(returncode=0, stdout='{"ContentLength": 0}', stderr="")
+
+    monkeypatch.setenv("SFO_ARCHIVE_S3_BUCKET", "archive-test")
+    monkeypatch.setattr(archive_module, "_aws", aws)
+    with pytest.raises(RuntimeError, match="manifest backup upload"):
+        archive_module.upload_pending(archive_dir)
+    assert calls
+    assert sorted(path.name for path in archive_dir.iterdir()) == ["manifest.db"]
+
+
 def test_scan_context_is_archived_gated_and_recoverable_with_decisions(tmp_path: Path) -> None:
     store, conn = _make_store(tmp_path)
     _record(store, [_decision(1)])

@@ -31,9 +31,11 @@ for unit in \
   sfo-kalshi-paper-settle.timer \
   sfo-kalshi-paper-settle.service \
   sfo-kalshi-paper-prune.timer \
-  sfo-kalshi-paper-prune.service; do
+  sfo-kalshi-paper-prune.service \
+  sfo-dataset-backfill.timer \
+  sfo-dataset-backfill.service; do
   if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$unit"; then
-    echo "$unit is active; stop the paper timers before compacting" >&2
+    echo "$unit is active; stop the paper and dataset timers and services before compacting" >&2
     exit 1
   fi
 done

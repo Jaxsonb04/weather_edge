@@ -1151,7 +1151,7 @@ def test_pages_deploy_retries_transient_api_failures_with_bounded_backoff():
     # incident: both deployment-creation requests received HTTP 503. Keep the
     # retries bounded by the job timeout, but give a transient API outage more
     # than one recovery window before abandoning the current snapshot.
-    assert workflow.count("uses: actions/deploy-pages@v4") == 4
+    assert workflow.count("uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e") == 4
     assert workflow.count("continue-on-error: true") == 3
     delays = [int(value) for value in re.findall(r"run: sleep (\d+)", workflow)]
     assert delays == [20, 40, 80]
@@ -1178,7 +1178,7 @@ def test_pages_deploy_retries_transient_api_failures_with_bounded_backoff():
         assert (
             f"id: {retry}\n"
             f"        if: steps.{previous}.outcome == 'failure'\n"
-            "        uses: actions/deploy-pages@v4"
+            "        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e"
         ) in workflow
 
     final_attempt = workflow[workflow.index("- name: Deploy to GitHub Pages (retry 3)") :]

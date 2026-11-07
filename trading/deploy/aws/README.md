@@ -954,6 +954,20 @@ normal service startup.
 
 Restore only to a new DB while paper services are stopped, using the tested
 `restore_archive_days` API, then run `paper-check-foreign-keys` before any swap.
+After a volume loss, first download `<archive-prefix>/manifest.db` from S3
+into a fresh archive directory. This is a consistent SQLite backup, uploaded
+after the partition upload receipts are committed. Copy the partition objects
+under the same prefix back into that directory, preserving their relative
+paths (for example `decision_snapshots/dt=YYYY-MM-DD.jsonl.gz`), before calling
+`restore_archive_days(archive_dir, new_db, days=[...])`. The API reads the
+catalog and verifies partition hashes, counts and dependencies before restore;
+keep the recovered catalog and raw partitions together. `features/` contains
+the separate feature-store mirror, not the restore catalog.
+
+If the nightly gate stops because a never-uploaded partition is missing and no
+copy survives, delete that partition's `archive_files` row in `manifest.db` and
+rerun `paper-archive`. It re-exports the rows still in the journal, and the gate
+then passes.
 
 ## Publication Health
 

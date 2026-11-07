@@ -191,8 +191,23 @@ def _run(
 
     root, public_manifest = _fresh_root(tmp_path, strategy_minutes=strategy_minutes)
     command_log = tmp_path / "systemctl.log"
-    activated_us = time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1_000 - int(
-        timer_active_minutes * 60_000_000
+    # Both ends of the monotonic subtraction share a synthetic boot clock.
+    # A runner booted less than timer_active_minutes ago cannot represent the
+    # simulated activation with its real clock (systemd rejects <= 0 stamps).
+    monotonic_ns = 7 * 24 * 60 * 60 * 1_000_000_000
+    activated_us = monotonic_ns // 1_000 - int(timer_active_minutes * 60_000_000)
+    python = tmp_path / "scheduler-python"
+    _write_executable(
+        python,
+        f"""#!{sys.executable}
+import os, sys, time
+if sys.argv[1] == "-":
+    sys.argv = sys.argv[1:]
+    time.clock_gettime_ns = lambda clock: {monotonic_ns}
+    exec(compile(sys.stdin.read(), "<stdin>", "exec"), {{"__name__": "__main__"}})
+else:
+    os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
+""",
     )
     systemctl = tmp_path / "systemctl"
     _write_executable(
@@ -232,7 +247,7 @@ exit 0
             "SFO_BASE_DIR": str(root.parent),
             "SFO_FORECASTER_ROOT": str(root),
             "SFO_TRADING_ROOT": str(ROOT / "trading"),
-            "SFO_TRADING_PYTHON": sys.executable,
+            "SFO_TRADING_PYTHON": str(python),
             "SFO_FORECAST_DB": str(root / "weather.db"),
             "SFO_PUBLICATION_MANIFEST_PATH": str(root / "publication_manifest.json"),
             "SFO_PUBLICATION_MAX_OPERATIONAL_AGE_MINUTES": "10",
@@ -507,6 +522,24 @@ def test_scheduler_health_treats_missing_stamps_and_journal_as_no_scans(
             "paper scan profile=live has no successful run in the last 20 minutes "
             "(no valid success stamp)"
         ) in result.stderr
+
+
+@pytest.mark.parametrize(("timer_active_minutes", "healthy"), [(3.0, True), (25.0, False)])
+def test_start_up_grace_is_independent_of_host_uptime(
+    tmp_path: Path, monkeypatch, timer_active_minutes: float, healthy: bool
+) -> None:
+    # Simulate a host booted just 30 seconds ago, younger than either timer
+    # activation. The helper must still model both sides of the grace window.
+    monkeypatch.setattr(time, "clock_gettime_ns", lambda clock: 30_000_000_000)
+    result = _run(
+        tmp_path,
+        tmp_path / "trading-data" / "paper_trading.db",
+        timer_active_minutes=timer_active_minutes,
+    )
+    assert (result.returncode == 0) is healthy, result.stderr
+    assert ("start-up grace" in result.stdout) is healthy
+    if not healthy:
+        assert NOT_SUCCEEDING in result.stderr
 
 
 @pytest.mark.parametrize(

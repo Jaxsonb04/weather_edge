@@ -12,18 +12,17 @@ EnvironmentFile=__ENV_FILE__
 # systemd stops a oneshot unit at its first failing command without a `-`
 # prefix. The dataset step carries one so a failed dataset night (a source
 # failing on consecutive runs, or dataset research failing) cannot skip the
-# maintenance below; ExecStartPost then fails the unit with that step's own
-# result, so OnFailure still alerts.
+# maintenance below; if that maintenance succeeds, ExecStartPost fails the
+# unit with the dataset step's own result, so OnFailure still alerts.
 ExecStart=-/usr/bin/env bash __TRADING_DIR__/deploy/aws/run_dataset_backfill.sh
 # Multi-city training-data maintenance (nightly is enough; the newest scored
 # day lands within one day, immaterial against a ~340-day archive):
 # yesterday's CLI settlements from the IEM archive (also picks up corrected
 # finals), the leakage-free NWP previous-runs rows, and the rolling-origin
 # EMOS rebuild that refreshes every city's calibration record.
-ExecStart=-__FORECASTER_DIR__/.venv/bin/python __FORECASTER_DIR__/city_truth.py --db __FORECASTER_DIR__/weather.db --backfill-iem --start-year 2026 --cities all
-ExecStart=-__FORECASTER_DIR__/.venv/bin/python __FORECASTER_DIR__/nwp_archive.py --db __FORECASTER_DIR__/weather.db --daily --cities all
-ExecStart=-__FORECASTER_DIR__/.venv/bin/python __FORECASTER_DIR__/emos_forecast.py --db __FORECASTER_DIR__/weather.db --backfill --lead 1 --cities all
-ExecStart=-__FORECASTER_DIR__/.venv/bin/python __FORECASTER_DIR__/emos_forecast.py --db __FORECASTER_DIR__/weather.db --backfill --lead 2 --cities all
+# The wrapper runs all four steps before returning failure; do not ignore its
+# result, or a healthy dataset step would conceal a failed forecaster step.
+ExecStart=/usr/bin/env bash __TRADING_DIR__/deploy/aws/run_forecaster_maintenance.sh __FORECASTER_DIR__
 # Re-raise the dataset step's result, which it records under this run's
 # INVOCATION_ID. It is ExecStartPost, not a last ExecStart, so it does not
 # replace the main-process record (ExecMain*) the runbook's timing check reads.
@@ -34,9 +33,9 @@ Nice=10
 # thrash-protection).
 MemoryHigh=600M
 MemoryMax=800M
-# Five sequential network-bound backfill steps legitimately run long; raise
-# the start timeout above the 90 s oneshot default so a normal nightly run
-# is not killed mid-chain. 2700 s (was 1800) since the registry grew to twenty
+# Five sequential network-bound backfill steps legitimately run long;
+# an explicit start timeout (oneshot defaults to no timeout) bounds a hung run.
+# 2700 s (was 1800) since the registry grew to twenty
 # cities (2026-09-13): the all-city rolling-origin EMOS rebuild at leads 1 and 2
 # fits a third more stations and has no runtime measurement yet. The `-` prefix
 # ignores exit codes but not this timeout, which would SIGTERM the chain mid

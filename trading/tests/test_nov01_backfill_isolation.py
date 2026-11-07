@@ -77,7 +77,7 @@ if "--lead" in args:
     step += " --lead " + args[args.index("--lead") + 1]
 with open(os.environ["MAINTENANCE_LOG"], "a") as log:
     log.write(step + "\\n")
-raise SystemExit(1 if os.environ.get("FAIL_MAINTENANCE") == "1" else 0)
+raise SystemExit(1 if os.environ.get("FAIL_MAINTENANCE") in ("1", step) else 0)
 """
 
 
@@ -213,7 +213,7 @@ class NightlyRig:
         return self.maintenance_log.read_text(encoding="utf-8").splitlines()
 
 
-def test_only_the_final_status_report_can_stop_the_unit() -> None:
+def test_only_completed_maintenance_and_final_status_can_stop_the_unit() -> None:
     unit = UNIT.read_text(encoding="utf-8")
     lines = unit.splitlines()
     commands = _exec_commands(unit)
@@ -222,11 +222,14 @@ def test_only_the_final_status_report_can_stop_the_unit() -> None:
     # the script's start against this unit's single start deadline.
     assert commands[0] == ("ExecStart", "-" + DATASET_STEP)
     assert "TimeoutStartSec=2700" in lines
-    # Every other step is fail-soft, so no failure can skip a later step, and
-    # the last command re-raises the dataset step's own result.
+    # The maintenance wrapper runs every forecaster step before returning any
+    # failure. If it succeeds, the final report re-raises the dataset result.
     unprefixed = [entry for entry in commands if not entry[1].startswith("-")]
-    assert unprefixed == [("ExecStartPost", DATASET_STEP + " --report-status")]
-    assert commands[-1] == unprefixed[0]
+    assert unprefixed == [
+        ("ExecStart", "/usr/bin/env bash __TRADING_DIR__/deploy/aws/run_forecaster_maintenance.sh __FORECASTER_DIR__"),
+        ("ExecStartPost", DATASET_STEP + " --report-status"),
+    ]
+    assert commands[-1] == unprefixed[-1]
     assert "Type=oneshot" in lines
     assert "OnFailure=sfo-alert@%n.service" in lines
 
@@ -236,6 +239,14 @@ def test_healthy_night_runs_every_maintenance_step_in_order(tmp_path: Path) -> N
 
     assert night.maintenance == MAINTENANCE_ORDER
     assert not night.failed, night.stderr
+
+
+@pytest.mark.parametrize("step", MAINTENANCE_ORDER)
+def test_each_failed_maintenance_step_fails_unit_after_running_every_step(tmp_path: Path, step: str) -> None:
+    night = NightlyRig(tmp_path, FAIL_MAINTENANCE=step).run_unit()
+    assert night.maintenance == MAINTENANCE_ORDER
+    assert night.failed
+    assert night.status == 1
 
 
 def test_source_failing_two_nights_running_still_gets_maintenance(tmp_path: Path) -> None:

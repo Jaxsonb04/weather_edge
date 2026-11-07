@@ -6,6 +6,9 @@ OnFailure=sfo-alert@%n.service
 
 [Service]
 Type=oneshot
+# Thirty-minute cadence; allow the entire interval for active and archived
+# lots and external truth checks before failing a hung run.
+TimeoutStartSec=1800
 User=__APP_USER__
 WorkingDirectory=__TRADING_DIR__
 EnvironmentFile=__ENV_FILE__
