@@ -317,6 +317,8 @@ def cmd_paper_settle(args: argparse.Namespace) -> int:
 
 def cmd_paper_resettle(args: argparse.Namespace) -> int:
     color = Color.from_no_color(args.no_color)
+    if getattr(args, "apply", False):
+        return _apply_settlement_restatement(color, args)
     if args.days <= 0:
         raise ValueError("--days must be at least 1")
     exchange_max_fetches = _exchange_max_fetches(args)
@@ -407,8 +409,9 @@ def _preview_settlement_restatement(
 
     Restating a lot rewrites its booked outcome and P&L, which is ledger
     history and needs the owner's approval, so this path only reports what each
-    restatement would book. It writes nothing -- no order, ledger row,
-    verification row or exchange check -- and makes no network call. Each
+    restatement would book (``--apply`` is the one-lot write). It writes nothing
+    -- no order, ledger row, verification row or exchange check -- and makes no
+    network call. Each
     account is totalled on its own; the books are never combined.
     """
 
@@ -453,6 +456,46 @@ def _preview_settlement_restatement(
             "never combined)"
         )
     )
+
+
+def _apply_settlement_restatement(color: Color, args: argparse.Namespace) -> int:
+    """Apply one owner-approved restatement; refusals surface as CLI errors."""
+
+    if (
+        not args.restate
+        or args.order_id is None
+        or args.expected_delta is None
+        or not (args.reason or "").strip()
+    ):
+        raise ValueError(
+            "--apply needs --restate, --order-id, --expected-delta and --reason"
+        )
+    # No PaperStore.init, for the reason the preview gives.
+    result = PaperStore(args.db_path, init=False).apply_settlement_restatement(
+        args.order_id,
+        SfoForecasterAdapter(args.forecaster_root).load_cli_settlement_truth(),
+        expected_delta=args.expected_delta,
+        reason=args.reason.strip(),
+    )
+    before, after = result["before"], result["after"]
+    state = (
+        "already applied, nothing changed"
+        if result["status"] == "already_applied"
+        else "applied"
+    )
+    print(
+        color.cyan(
+            f"settlement restatement {state}: order={result['order_id']} "
+            f"account={result['account_id']} "
+            f"high={before['settlement_high_f']:.0f}F->"
+            f"{after['settlement_high_f']:.0f}F "
+            f"pnl={_format_signed(before['realized_pnl'])}->"
+            f"{_format_signed(after['realized_pnl'])} "
+            f"delta={_format_signed(result['pnl_delta'])} "
+            f"exchange={result['exchange_verdict']}"
+        )
+    )
+    return 0
 
 
 def _exchange_max_fetches(args: argparse.Namespace) -> int:

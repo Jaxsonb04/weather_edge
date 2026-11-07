@@ -136,7 +136,15 @@ from .store.diagnostics import (
     _strategy_config_snapshot,
     _win_loss_reason,
 )
+from .store.exchange_settlement_checks import (
+    EXCHANGE_CHECK_MATCH,
+    EXCHANGE_CHECK_UNCHECKED,
+    cached_exchange_resolutions,
+    classify_exchange_settlement,
+    restate_exchange_settlement_check,
+)
 from .store.market_day_settlements import (
+    TRUTH_SOURCE_CLI_SETTLEMENT,
     TRUTH_SOURCE_SETTLED_SIBLING,
     TRUTH_SOURCE_SETTLEMENT_PATH,
     backfill_market_day_settlements,
@@ -184,6 +192,20 @@ logger = logging.getLogger(__name__)
 
 class ResearchEntryLimitError(ValueError):
     """A research leg no longer satisfies canonical entry limits."""
+
+
+def _settled_lot_outcome(row: sqlite3.Row, high_f: float) -> tuple[bool, bool, float]:
+    """``(resolved_yes, position_won, realized_pnl)`` of a lot settled on ``high_f``."""
+
+    resolved_yes = _row_resolves_yes(row, high_f)
+    position_won = resolved_yes if _row_side(row) == "YES" else not resolved_yes
+    return (
+        resolved_yes,
+        position_won,
+        settled_position_pnl(
+            float(row["contracts"]), float(row["cost_per_contract"]), position_won
+        ),
+    )
 
 
 def _single_series_ticker(rows: tuple[sqlite3.Row, ...]) -> str | None:
@@ -972,26 +994,37 @@ class PaperStore:
     ) -> dict[str, object]:
         """Reconcile each logical order lifecycle against its ledger cash flow."""
 
-        state = self._account_state(account_id, persist_high_water=False)
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            return self._account_order_ledger_reconciliation_on_connection(
+                conn, account_id
+            )
+
+    def _account_order_ledger_reconciliation_on_connection(
+        self,
+        conn: sqlite3.Connection,
+        account_id: str,
+    ) -> dict[str, object]:
+        state = self._account_state_on_connection(
+            conn, account_id, persist_high_water=False
+        )
         if state is None:
             return {
                 "status": "unavailable",
                 "difference": None,
                 "mismatched_order_ids": [],
             }
-        with self.connect() as conn:
-            conn.row_factory = sqlite3.Row
-            orders = conn.execute(
-                "SELECT * FROM paper_orders "
-                "WHERE account_id=? AND status!='REJECTED' ORDER BY id",
-                (account_id,),
-            ).fetchall()
-            ledger_rows = conn.execute(
-                "SELECT order_id, event_type, amount "
-                "FROM paper_account_ledger "
-                "WHERE account_id=? AND order_id IS NOT NULL ORDER BY id",
-                (account_id,),
-            ).fetchall()
+        orders = conn.execute(
+            "SELECT * FROM paper_orders "
+            "WHERE account_id=? AND status!='REJECTED' ORDER BY id",
+            (account_id,),
+        ).fetchall()
+        ledger_rows = conn.execute(
+            "SELECT order_id, event_type, amount "
+            "FROM paper_account_ledger "
+            "WHERE account_id=? AND order_id IS NOT NULL ORDER BY id",
+            (account_id,),
+        ).fetchall()
 
         ledger_by_order: dict[int, list[sqlite3.Row]] = {}
         for row in ledger_rows:
@@ -6337,6 +6370,37 @@ class PaperStore:
             )
         return score_ladder_outcomes(rows)
 
+    @staticmethod
+    def _record_settlement_verification(
+        conn: sqlite3.Connection,
+        result: dict,
+        checked_at: str,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO paper_settlement_verifications
+                (order_id, checked_at, market_ticker, target_date,
+                 booked_high_f, final_high_f, verification_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(order_id) DO UPDATE SET
+                checked_at=excluded.checked_at,
+                market_ticker=excluded.market_ticker,
+                target_date=excluded.target_date,
+                booked_high_f=excluded.booked_high_f,
+                final_high_f=excluded.final_high_f,
+                verification_status=excluded.verification_status
+            """,
+            (
+                result["order_id"],
+                checked_at,
+                result["market_ticker"],
+                result["target_date"],
+                result["booked_high_f"],
+                result["final_high_f"],
+                result["verification_status"],
+            ),
+        )
+
     def verify_paper_settlements(
         self,
         settlements,
@@ -6385,30 +6449,7 @@ class PaperStore:
                     "verification_status": status,
                 }
                 checked.append(result)
-                conn.execute(
-                    """
-                    INSERT INTO paper_settlement_verifications
-                        (order_id, checked_at, market_ticker, target_date,
-                         booked_high_f, final_high_f, verification_status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(order_id) DO UPDATE SET
-                        checked_at=excluded.checked_at,
-                        market_ticker=excluded.market_ticker,
-                        target_date=excluded.target_date,
-                        booked_high_f=excluded.booked_high_f,
-                        final_high_f=excluded.final_high_f,
-                        verification_status=excluded.verification_status
-                    """,
-                    (
-                        result["order_id"],
-                        checked_at,
-                        result["market_ticker"],
-                        result["target_date"],
-                        booked_high,
-                        final_high,
-                        status,
-                    ),
-                )
+                self._record_settlement_verification(conn, result, checked_at)
         return {
             "checked": checked,
             "mismatches": sum(
@@ -6502,12 +6543,7 @@ class PaperStore:
                         (checked_at, booked_high, final_high, int(row["id"])),
                     )
                 side = _row_side(row)
-                resolved_yes = _row_resolves_yes(row, final_high)
-                restated_pnl = settled_position_pnl(
-                    float(row["contracts"]),
-                    float(row["cost_per_contract"]),
-                    resolved_yes if side == "YES" else not resolved_yes,
-                )
+                resolved_yes, _, restated_pnl = _settled_lot_outcome(row, final_high)
                 booked_pnl = (
                     None if row["realized_pnl"] is None else float(row["realized_pnl"])
                 )
@@ -6542,6 +6578,237 @@ class PaperStore:
             "flagged": sum(row["flagged"] for row in drift),
             "unverified": sum(row["recorded_status"] is None for row in drift),
             "standing_mismatches": int(standing),
+        }
+
+    def apply_settlement_restatement(
+        self,
+        order_id: int,
+        settlements,
+        *,
+        expected_delta: float,
+        reason: str,
+    ) -> dict:
+        """Rebook one settled lot on its final truth, atomically and audited.
+
+        The owner-approved step after the ``recheck_paper_settlements`` preview.
+        It takes one lot id and the delta the owner approved, re-reads the lot
+        inside one transaction and raises ``ValueError`` (nothing written) on
+        any refusal. The lot's order row, verification row and market-day row
+        move to the final, and the correction is one appended ledger event on
+        the lot's own account whose details are the audit record. ``settled_at``
+        stays, because restatement.py ties the outcome to it. Only ARCHIVED
+        ledgers qualify, so no active book's cash moves. Its realized P&L and
+        outcome still reach the cross-book sizing inputs (research sizing
+        equity, posterior-Kelly, the research pause window): those read every
+        non-M1 lot, and a corrected fact should reach them.
+
+        It refuses while another lot on the same city-day (settled or expired) keeps
+        a different settlement high, because posterior-Kelly would then read two truths.
+
+        shortcut: a city-day with several settled lots cannot be restated, as each
+        refuses on the others; build a sibling-aware restatement if one is needed.
+        """
+
+        def refuse(why: str) -> ValueError:
+            return ValueError(f"restatement of order {order_id} refused: {why}")
+
+        truth = normalize_settlement_truth(settlements)
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM paper_orders WHERE id=?", (order_id,)
+            ).fetchone()
+            if row is None:
+                raise refuse("no such order")
+            if (
+                row["status"] != "PAPER_SETTLED"
+                or row["settled_at"] is None
+                or row["settlement_high_f"] is None
+                or row["realized_pnl"] is None
+            ):
+                raise refuse(f"lot is not settled (status {row['status']})")
+            account_id = row["account_id"]
+            account = conn.execute(
+                "SELECT status FROM paper_accounts WHERE account_id=?", (account_id,)
+            ).fetchone()
+            if account is None or account["status"] != "ARCHIVED":
+                raise refuse(f"ledger {account_id} is not archived")
+            market_ticker = str(row["market_ticker"])
+            final_high = settlement_for_market(
+                truth, market_ticker, str(row["target_date"])
+            )
+            if final_high is None:
+                raise refuse("no confirmed final truth for this market-day")
+            final_high = _integer_settlement_high_f(final_high)
+            booked_high = _integer_settlement_high_f(row["settlement_high_f"])
+            if booked_high == final_high:
+                applied = conn.execute(
+                    "SELECT details_json FROM paper_account_ledger "
+                    "WHERE order_id=? AND event_type='SETTLEMENT_RESTATEMENT' "
+                    "ORDER BY id DESC",
+                    (order_id,),
+                ).fetchone()
+                if applied is None:
+                    raise refuse(f"booked high already equals the final {final_high:.0f}F")
+                details = json.loads(applied["details_json"])
+                if not math.isclose(
+                    details["pnl_delta"], expected_delta, rel_tol=0.0, abs_tol=0.005
+                ):
+                    raise refuse(
+                        f"already applied at delta {details['pnl_delta']:+.2f}, "
+                        f"not the expected {expected_delta:+.2f}"
+                    )
+                return {
+                    "status": "already_applied",
+                    "order_id": order_id,
+                    "account_id": account_id,
+                    **details,
+                }
+            siblings = conn.execute(
+                "SELECT id FROM paper_orders WHERE id<>? AND target_date=? "
+                "AND market_ticker LIKE ? "
+                "AND settlement_high_f IS NOT NULL AND settlement_high_f<>? "
+                "ORDER BY id",
+                (
+                    order_id,
+                    row["target_date"],
+                    f"{series_ticker_for_market(market_ticker)}-%",
+                    final_high,
+                ),
+            ).fetchall()
+            if siblings:
+                raise refuse(
+                    "lots on the same city-day keep another settlement "
+                    f"high: {[s['id'] for s in siblings]}"
+                )
+            resolved_yes, position_won, restated_pnl = _settled_lot_outcome(
+                row, final_high
+            )
+            booked_pnl = float(row["realized_pnl"])
+            delta = restated_pnl - booked_pnl
+            if not math.isclose(delta, expected_delta, rel_tol=0.0, abs_tol=0.005):
+                raise refuse(
+                    f"computed delta {delta:+.2f} is not the expected "
+                    f"{expected_delta:+.2f}"
+                )
+            exchange = classify_exchange_settlement(
+                booked_high_f=final_high,
+                booked_winner="YES" if resolved_yes else "NO",
+                resolution=cached_exchange_resolutions(conn, [market_ticker]).get(
+                    market_ticker
+                ),
+            )
+            # shortcut: no cached exchange result passes on the final CLI alone,
+            # because audit F14 keeps label-settled markets (lot 3687's) out of
+            # the cache; require MATCH once F14 is fixed.
+            verdict = exchange["verification_status"]
+            if verdict not in (EXCHANGE_CHECK_MATCH, EXCHANGE_CHECK_UNCHECKED):
+                raise refuse(
+                    f"exchange does not confirm {final_high:.0f}F ({verdict}: "
+                    f"{exchange['mismatch_reason']})"
+                )
+            corrected_at = _now()
+            conn.execute(
+                "UPDATE paper_orders SET settlement_high_f=?, resolved_yes=?, "
+                "position_won=?, realized_pnl=?, outcome_diagnostics_json=? "
+                "WHERE id=?",
+                (
+                    final_high,
+                    1 if resolved_yes else 0,
+                    1 if position_won else 0,
+                    restated_pnl,
+                    json.dumps(
+                        _outcome_diagnostics_payload(
+                            row,
+                            event="settlement",
+                            resolved_at=row["settled_at"],
+                            settlement_high_f=final_high,
+                            resolved_yes=resolved_yes,
+                            position_won=position_won,
+                            realized_pnl=restated_pnl,
+                        ),
+                        sort_keys=True,
+                    ),
+                    order_id,
+                ),
+            )
+            details = {
+                "reason": reason,
+                "truth_source": TRUTH_SOURCE_CLI_SETTLEMENT,
+                "exchange_verdict": verdict,
+                "before": {
+                    "settlement_high_f": booked_high,
+                    "resolved_yes": bool(row["resolved_yes"]),
+                    "position_won": bool(row["position_won"]),
+                    "realized_pnl": booked_pnl,
+                },
+                "after": {
+                    "settlement_high_f": final_high,
+                    "resolved_yes": resolved_yes,
+                    "position_won": position_won,
+                    "realized_pnl": restated_pnl,
+                },
+                "pnl_delta": delta,
+            }
+            self._record_ledger_event(
+                conn,
+                account_id=account_id,
+                order_id=order_id,
+                event_type="SETTLEMENT_RESTATEMENT",
+                amount=delta,
+                idempotency_key=(
+                    f"order:{order_id}:settlement-restatement:"
+                    f"{booked_high:.0f}-to-{final_high:.0f}:{corrected_at}"
+                ),
+                details=details,
+            )
+            self._record_settlement_verification(
+                conn,
+                {
+                    "order_id": order_id,
+                    "market_ticker": market_ticker,
+                    "target_date": row["target_date"],
+                    "booked_high_f": final_high,
+                    "final_high_f": final_high,
+                    "verification_status": "MATCH",
+                },
+                corrected_at,
+            )
+            restate_exchange_settlement_check(
+                conn,
+                conn.execute(
+                    "SELECT * FROM paper_orders WHERE id=?", (order_id,)
+                ).fetchone(),
+                checked_at=corrected_at,
+            )
+            # Not the isolated helper: that one keeps settlement alive by
+            # swallowing errors, and a failed write here must undo the whole apply.
+            market_day = record_market_day_settlements(
+                conn,
+                target_date=row["target_date"],
+                settlement_high_f=final_high,
+                recorded_at=corrected_at,
+                series_ticker=_single_series_ticker((row,)),
+                truth_source=TRUTH_SOURCE_SETTLEMENT_PATH,
+                market_ticker=market_ticker,
+            )
+            if market_day["market_days_recorded"] != 1:
+                raise refuse(f"market-day row for {market_ticker} was not written")
+            reconciliation = self._account_order_ledger_reconciliation_on_connection(
+                conn, account_id
+            )
+            if reconciliation["status"] != "reconciled":
+                raise refuse(
+                    f"ledger {account_id} would not reconcile: "
+                    f"difference={reconciliation['difference']} "
+                    f"orders={reconciliation['mismatched_order_ids']}"
+                )
+        return {
+            "status": "applied",
+            "order_id": order_id,
+            "account_id": account_id,
+            **details,
         }
 
     def close_paper_order(
