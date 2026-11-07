@@ -6602,8 +6602,8 @@ class PaperStore:
         equity, posterior-Kelly, the research pause window): those read every
         non-M1 lot, and a corrected fact should reach them.
 
-        It refuses while another settled lot on the same city-day is booked on a
-        different high, because posterior-Kelly would then read two truths.
+        It refuses while another lot on the same city-day (settled or expired) keeps
+        a different settlement high, because posterior-Kelly would then read two truths.
 
         shortcut: a city-day with several settled lots cannot be restated, as each
         refuses on the others; build a sibling-aware restatement if one is needed.
@@ -6667,7 +6667,7 @@ class PaperStore:
                 }
             siblings = conn.execute(
                 "SELECT id FROM paper_orders WHERE id<>? AND target_date=? "
-                "AND market_ticker LIKE ? AND status='PAPER_SETTLED' "
+                "AND market_ticker LIKE ? "
                 "AND settlement_high_f IS NOT NULL AND settlement_high_f<>? "
                 "ORDER BY id",
                 (
@@ -6679,7 +6679,7 @@ class PaperStore:
             ).fetchall()
             if siblings:
                 raise refuse(
-                    "settled lots on the same city-day are booked on another "
+                    "lots on the same city-day keep another settlement "
                     f"high: {[s['id'] for s in siblings]}"
                 )
             resolved_yes, position_won, restated_pnl = _settled_lot_outcome(

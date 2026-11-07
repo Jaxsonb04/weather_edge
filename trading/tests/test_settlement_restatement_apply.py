@@ -531,6 +531,25 @@ def test_apply_refuses_while_a_sibling_lot_keeps_the_old_high(book):
     assert _snapshot(db_path) == before
 
 
+def test_apply_refuses_while_an_expired_sibling_keeps_the_old_high(book):
+    root, db_path, store, lot, _ = book
+    _store_final(root, TARGET, 71)
+    sibling = store.record_paper_order(TARGET, _bin_lot(TARGET))
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute(
+            "UPDATE paper_orders SET status='PAPER_EXPIRED', "
+            "settlement_high_f=72 WHERE id=?",
+            (sibling,),
+        )
+        conn.commit()
+    before = _snapshot(db_path)
+
+    code, _, err = _apply(root, db_path, lot)
+
+    assert code != 0 and str(sibling) in err
+    assert _snapshot(db_path) == before
+
+
 def test_apply_replaces_a_stale_exchange_mismatch_verdict(book):
     root, db_path, store, lot, _ = book
     _store_final(root, TARGET, 71)
