@@ -20,6 +20,7 @@ from sfo_kalshi_quant.research_policy import (
 )
 from sfo_kalshi_quant.strategy_lab.build import (
     _account_daily_balance_rows,
+    _bind_accounting_to_profiles,
     _capital_deposits,
     _weekly_goal_payload,
 )
@@ -134,6 +135,29 @@ def test_balances_before_the_deposit_stay_on_the_capital_live_really_had(tmp_pat
     assert [row["closing_equity"] for row in rows] == [1000.0, 2000.0, 2000.0]
     assert [row["cumulative_realized"] for row in rows] == [0.0, 0.0, 0.0]
     assert [row["capital_deposit"] for row in rows] == [0.0, 1000.0, 0.0]
+
+
+def test_the_public_live_profile_days_carry_the_deposit():
+    days = [
+        {"date": "2026-11-05", "closing_equity": 1033.22, "capital_deposit": 0.0},
+        {"date": "2026-11-06", "closing_equity": 2021.9, "capital_deposit": 1000.0},
+    ]
+    accounting = {
+        "available": True,
+        "active_ledgers": {
+            "live_stability": {"initial_equity": 2000.0, "realized_equity": 2021.9, "days": days},
+        },
+    }
+    profiles = [
+        {
+            "risk_profile": "live",
+            "daily_summary": {"days": [{"date": day["date"]} for day in days]},
+        }
+    ]
+
+    bound = _bind_accounting_to_profiles(profiles, accounting)
+
+    assert [day["capital_deposit"] for day in bound[0]["daily_summary"]["days"]] == [0.0, 1000.0]
 
 
 def test_a_malformed_deposit_time_does_not_stop_the_build(tmp_path):

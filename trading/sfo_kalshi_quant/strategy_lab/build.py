@@ -1627,6 +1627,7 @@ def _bind_accounting_to_profiles(
                     "opening_equity": balance.get("opening_equity"),
                     "daily_realized_pnl": balance.get("daily_realized_pnl"),
                     "closing_equity": balance.get("closing_equity"),
+                    "capital_deposit": balance.get("capital_deposit", 0.0),
                 }
             )
         daily.update(
