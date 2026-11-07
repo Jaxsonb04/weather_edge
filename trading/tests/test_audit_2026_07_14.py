@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -1706,3 +1707,91 @@ def test_weekly_goal_streak_excludes_weeks_before_current_execution_boundary() -
         assert goal["completed_week_success_streak"] == 0
         assert goal["first_full_evidence_week"] == (this_monday + timedelta(days=7)).isoformat()
         assert goal["current_week_evidence_qualified"] is False
+
+
+def _partly_filled_order(store: PaperStore) -> int:
+    order_id = _resting_order(
+        store,
+        "2026-07-14",
+        _decision(side="NO", limit_price=0.72, contracts=10.0),
+        created_at=T0,
+    )
+    store.apply_maker_trade_batch(
+        "KXHIGHTSEA-26JUL13-B82.5",
+        [
+            _trade(
+                "T-PARTLY",
+                yes_price=0.28,
+                quantity=6.0,
+                taker_book_side="bid",
+                created_time=T0 + timedelta(minutes=1),
+            )
+        ],
+    )
+    assert store.paper_order(order_id)["status"] == "PAPER_PARTIALLY_FILLED"
+    return order_id
+
+
+def test_close_rejects_a_cancel_that_lands_after_its_unlocked_read() -> None:
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        order_id = _partly_filled_order(store)
+        stale = store.open_paper_order(order_id)
+        store.cancel_resting_limit_order(order_id, reason="monitor expiry")
+
+        with patch.object(store, "_open_order", return_value=stale):
+            with pytest.raises(ValueError, match="resolved concurrently"):
+                store.close_paper_order(order_id, 0.80)
+
+        with store.connect() as conn:
+            releases = conn.execute(
+                "SELECT COUNT(*) FROM paper_account_ledger "
+                "WHERE idempotency_key=?",
+                (f"order:{order_id}:close-partial-release",),
+            ).fetchone()[0]
+        assert releases == 0
+        assert store.paper_order(order_id)["status"] == "PAPER_PARTIAL_EXPIRED"
+        assert store.paper_order(order_id)["closed_at"] is None
+
+
+def test_directional_budget_survives_partial_fills_closes_and_null_profiles() -> None:
+    with TemporaryDirectory() as tmp:
+        store = PaperStore(Path(tmp) / "paper.db")
+        order_id = _resting_order(
+            store,
+            "2026-07-14",
+            _decision(side="NO", limit_price=0.72, contracts=10.0),
+            created_at=T0,
+        )
+        admitted = store.paper_directional_spend("2026-07-14", "live")
+        target_spend = store.paper_spend_for_target("2026-07-14", risk_profile="live")
+        assert admitted > 0.0
+        store.apply_maker_trade_batch(
+            "KXHIGHTSEA-26JUL13-B82.5",
+            [
+                _trade(
+                    "T-PARTLY",
+                    yes_price=0.28,
+                    quantity=6.0,
+                    taker_book_side="bid",
+                    created_time=T0 + timedelta(minutes=1),
+                )
+            ],
+        )
+
+        # The unfilled four contracts are still committed through the reservation.
+        row = store.paper_order(order_id)
+        assert row["status"] == "PAPER_PARTIALLY_FILLED"
+        assert store.paper_directional_spend("2026-07-14", "live") == pytest.approx(admitted)
+        assert store.paper_spend_for_target(
+            "2026-07-14", risk_profile="live"
+        ) == pytest.approx(target_spend)
+
+        # A partial close cancels the remainder; the closed slice stays spent.
+        store.close_paper_order(order_id, 0.80, max_quantity=2.0)
+        filled_cost = 6.0 * float(row["cost_per_contract"])
+        assert store.paper_directional_spend("2026-07-14", "live") == pytest.approx(filled_cost)
+
+        with store.connect() as conn:
+            conn.execute("UPDATE paper_orders SET risk_profile=NULL")
+        assert store.paper_directional_spend("2026-07-14", "live") == pytest.approx(filled_cost)

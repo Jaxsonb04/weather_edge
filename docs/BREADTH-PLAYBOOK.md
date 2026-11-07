@@ -69,7 +69,10 @@ When size evidence is strong, every dollar cap has to move together so the ratio
 that fund breadth remain fixed. v5 moved to $45 position / $90 city / $180 region /
 $375 aggregate with a $120 daily-loss pause. v6 moved to **$90 / $180 / $360 /
 $750 with a $150 pause**, preserving about 8.3 position slots and two positions per
-city. The fixed $1,000 reference equity and $50 paper-research KPI did not change.
+city. The fixed $1,000 reference equity and $50 paper-research KPI did not change
+in v6. V7 runs on $2,000 (owner decision 2026-11-07): its percentage limits, daily
+goal and **$300 pause** scale with the account, while the position stays $90, so its
+geometry is about 16.7 position slots and four positions per city.
 
 v6 is the current ceiling, not an invitation to keep doubling. On the 2026-08-05
 Houston winner, v6 requested 147 contracts at $0.61 but public tape filled only
@@ -87,8 +90,8 @@ Watch prospectively, in order of importance:
   reservations;
 - leave-one-position and leave-one-day-out P&L so one event cannot authorize a
   policy; and
-- the **$150 daily-loss pause and -60% catastrophic position floor**, which must
-  not be loosened to chase the $50 KPI.
+- the **$300 daily-loss pause (15% of $2,000) and -60% catastrophic position floor**,
+  which must not be loosened to chase the daily KPI.
 
 Scaling is easy to code but expensive to conclude correctly. A candidate v7 needs
 a frozen policy, point-in-time tape replay that exactly reproduces 1.0× fills,

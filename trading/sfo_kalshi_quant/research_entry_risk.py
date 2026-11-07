@@ -32,11 +32,13 @@ TARGET_ENTRY_FRACTIONAL_KELLY = 0.25
 # over all losers and 0.34 over the six losers of $10 or more. The three
 # 2026-09-11/12 incident exits (61.05%, 40.76%, 53.51% of cost) are the
 # largest DOLLAR losses, not the worst ratios. So the projected room is a
-# planning estimate, not a bound: $250 open charged at 0.60 fills the $150
-# budget while a 73% day on that book would realize $183. The hard bound is
-# the $150 REALIZED pause (target_remaining_daily_risk returns 0 once
-# realized <= -$150), which halts new entries after the loss is booked; the
-# charge only decides how early entries stop before that.
+# planning estimate, not a bound: $500 open charged at 0.60 fills the $300
+# budget while a 73% day on that book would realize $365. The hard bound is
+# the $300 REALIZED pause (15% of the $2,000 reference equity;
+# target_remaining_daily_risk returns 0 once realized <= -$300), which halts
+# new entries after the loss is booked; the charge only decides how early
+# entries stop before that. The replay figures below were measured against the
+# $150 budget and have not been re-derived for $300.
 # PAPER CALIBRATION: every ratio above is a paper exit (the monitor closes
 # the remainder at the displayed bid on its 2-minute cadence, with
 # displayed-depth partial exits). A real-money stop on a thin NO book
@@ -62,7 +64,7 @@ TARGET_ENTRY_FRACTIONAL_KELLY = 0.25
 # room in 20.1% of samples at x1.0, 23.4% at x1.5, 27.9% at x2.0; mean room
 # $57.63, $55.61, $54.86. An approximation -- some extra rest converts to
 # fills, moving cost from pending to open rather than removing it. The two
-# levers together cost frequency, not safety: the $150 realized pause stays
+# levers together cost frequency, not safety: the $300 realized pause stays
 # the hard bound. Re-derive this fraction from the first post-deploy week. If
 # the owner wants the full frequency of both levers, charge resting
 # reservations by their measured fill share rather than by this
@@ -191,7 +193,7 @@ def target_remaining_daily_risk(realized_pnl: object, active_risk: object) -> fl
     Filled cost and resting reservations are charged alike, at
     TARGET_OPEN_RISK_CHARGE_FRACTION of cost. That fraction is a design
     estimate of what a stop realizes (per-position paper ratios have run
-    to 0.73), so the room is a planning figure; the hard bound is the $150
+    to 0.73), so the room is a planning figure; the hard bound is the $300
     realized pause below, which returns 0 once today's booked loss reaches
     the budget. The $90 per-entry cap and the fractional-Kelly entry limit
     are unchanged.

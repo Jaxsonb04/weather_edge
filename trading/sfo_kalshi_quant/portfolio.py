@@ -4,6 +4,7 @@ import math
 import uuid
 from dataclasses import dataclass, field, replace
 
+from .account import NORMAL_POSITION_CAP, NORMAL_POSITION_PCT, POSITION_CAP_HALVING_DRAWDOWN
 from .arbitrage import ArbitrageOpportunity
 from .config import normalize_risk_profile_name
 from .joint_kelly import build_joint_positions, joint_kelly_optimum
@@ -130,6 +131,7 @@ def allocate_portfolio(
     bin_yes_probs: dict[str, float] | None = None,
     joint_kelly_enabled: bool = False,
     existing_directional_spend: float = 0.0,
+    live_drawdown: float = 0.0,
 ) -> PortfolioPlan:
     limits = portfolio_limits_for_profile(risk_profile, bankroll)
     run_id = run_id or f"PF-{uuid.uuid4().hex[:12]}"
@@ -166,6 +168,21 @@ def allocate_portfolio(
         for decision in decisions
         if decision.approved and decision.recommended_contracts > 0 and decision.cost_per_contract > 0
     ]
+    if limits.risk_profile == "live":
+        # Charge what placement can book, not the recommendation: on $2,000 the
+        # 3% position budget (and the comfort boost on top) recommends $60+
+        # while account policy books $30. Charging the difference brings back
+        # the phantom budget the 2026-07-29 fix removed at $1,000.
+        position_cap = min(NORMAL_POSITION_CAP, NORMAL_POSITION_PCT * limits.bankroll)
+        if live_drawdown >= POSITION_CAP_HALVING_DRAWDOWN:
+            position_cap *= 0.5
+        clamped = [
+            decision
+            if _spend(decision) <= position_cap + 1e-9
+            else _scale_decision(decision, position_cap)
+            for decision in candidates
+        ]
+        candidates = [decision for decision in clamped if decision is not None]
     candidates.sort(key=lambda decision: _growth_score(decision, limits.bankroll), reverse=True)
 
     for decision in candidates:

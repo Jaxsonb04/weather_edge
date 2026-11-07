@@ -666,6 +666,7 @@ def _copy_logical_order_identity(row: sqlite3.Row) -> dict[str, object]:
 # this has already lost its meaning and should yield to the next one. The fix
 # for contention is to shorten the lock HOLDER, not to lengthen the waiter.
 PAPER_SQLITE_BUSY_TIMEOUT_MILLISECONDS = 30_000
+_ANY_GROUP = object()
 
 # Row cap for a single ladder-ledger read. Reaching it is an error rather
 # than a truncation, so no calibration number is ever computed over a
@@ -1950,13 +1951,17 @@ class PaperStore:
         *,
         account_id: str,
         objective_day: date,
+        strict_identity: bool = False,
     ) -> float | None:
         positions = PaperStore._research_positions_for_window_on_connection(
             conn,
             account_id=account_id,
             first_day=objective_day,
             last_day=objective_day,
+            strict_identity=strict_identity,
         )
+        if positions is None:
+            return None
         pnl_by_day = PaperStore._research_realized_pnl_by_day(positions)
         if pnl_by_day is None:
             return None
@@ -1969,8 +1974,16 @@ class PaperStore:
         account_id: str,
         first_day: date,
         last_day: date,
-    ) -> list[object]:
-        """Load only logical positions with lifecycle activity in one window."""
+        strict_identity: bool = False,
+    ) -> list[object] | None:
+        """Load only logical positions with lifecycle activity in one window.
+
+        Invalid positions stay in the list so ``_research_realized_pnl_by_day``
+        fails closed. A well-formed position under another identity stays out
+        of reported P&L, but its money is still in this account: admission
+        passes ``strict_identity`` and gets ``None`` rather than a loss pause
+        that silently ignores it.
+        """
 
         if first_day > last_day:
             return []
@@ -2000,12 +2013,16 @@ class PaperStore:
             TARGET_POLICY.account_id: "research-target",
             MOTION_POLICY.account_id: "research-motion",
         }[account_id]
-        return [
+        positions = group_logical_positions(rows)
+        matching = [
             position
-            for position in group_logical_positions(rows)
-            if position.valid
-            and row_published_profile_key(position.root) == expected_profile
+            for position in positions
+            if not position.valid
+            or row_published_profile_key(position.root) == expected_profile
         ]
+        if strict_identity and len(matching) != len(positions):
+            return None
+        return matching
 
     @staticmethod
     def _research_realized_pnl_by_day(
@@ -2331,6 +2348,7 @@ class PaperStore:
             conn,
             account_id=policy.account_id,
             objective_day=civil_day,
+            strict_identity=True,
         )
         if daily_pnl is None or not math.isfinite(daily_pnl):
             return {"allowed_spend": 0.0, "reason": "research daily P&L is invalid"}
@@ -2566,7 +2584,16 @@ class PaperStore:
             return None
         return EventSnapshot.from_kalshi(payload)
 
-    def record_probabilities(self, target_date: str, probabilities: Iterable[BucketProbability]) -> None:
+    def record_probabilities(
+        self,
+        target_date: str,
+        probabilities: Iterable[BucketProbability],
+        *,
+        risk_profile: str | None = None,
+    ) -> None:
+        profile = (
+            None if risk_profile is None else normalize_risk_profile_name(risk_profile)
+        )
         with self.connect() as conn:
             conn.executemany(
                 """
@@ -2575,9 +2602,9 @@ class PaperStore:
                     lower_confidence, empirical_probability, normal_probability, effective_n,
 	                    residual_probability, ensemble_probability,
 	                    model_probability, market_probability, observed_high_f,
-	                    intraday_probability, remaining_heat_risk
+	                    intraday_probability, remaining_heat_risk, risk_profile
 	                )
-	                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -2597,6 +2624,7 @@ class PaperStore:
 	                        probability.observed_high_f,
 	                        probability.intraday_probability,
 	                        probability.remaining_heat_risk,
+	                        profile,
 	                    )
                     for probability in probabilities
                 ],
@@ -2639,6 +2667,9 @@ class PaperStore:
 
         Terminal positions remain counted: this is a daily admission budget,
         not a momentary open-risk gauge that refreshes after every close or scan.
+        So partial-close child lots count (root remainder plus children adds
+        back to the admitted quantity), and a partly filled quote counts its
+        reserved remainder. Resting quotes already carry the requested contracts.
         Unfilled expired/cancelled roots and arbitrage groups are excluded.
         """
 
@@ -2646,11 +2677,10 @@ class PaperStore:
         with self.connect() as conn:
             row = conn.execute(
                 f"""
-                SELECT COALESCE(SUM(contracts * cost_per_contract), 0.0)
+                SELECT COALESCE(SUM({_FILLED_PLUS_RESERVED_COST}), 0.0)
                 FROM paper_orders
-                WHERE target_date = ? AND risk_profile = ?
+                WHERE target_date = ? AND COALESCE(risk_profile, 'live') = ?
                   AND {_NOT_M1}
-                  AND parent_order_id IS NULL
                   AND group_id IS NULL
                   AND status NOT IN ('PAPER_EXPIRED', 'PAPER_CANCELLED')
                 """,
@@ -2680,7 +2710,10 @@ class PaperStore:
                 risk_profile=risk_profile,
             ),
             self._latest_model_probability_from_snapshots(
-                target_date, market_ticker, max_age_minutes=max_age_minutes
+                target_date,
+                market_ticker,
+                max_age_minutes=max_age_minutes,
+                risk_profile=risk_profile,
             ),
         ]
         valid = [candidate for candidate in candidates if candidate is not None]
@@ -2741,21 +2774,38 @@ class PaperStore:
         market_ticker: str,
         *,
         max_age_minutes: float,
+        risk_profile: str | None,
     ) -> tuple[datetime, float] | None:
+        """Latest valid snapshot read, limited to one profile when asked.
+
+        Profiles build different probabilities (research uses EMOS), so one
+        profile's snapshot must not stand in for another's model. Rows from
+        before the column have no profile; they age out of the read window.
+        """
+
         now = datetime.now(UTC)
         lower = (now - timedelta(minutes=max_age_minutes)).isoformat()
         upper = (now + timedelta(minutes=5)).isoformat()
         with self.connect() as conn:
+            profile_clause = (
+                " AND (risk_profile IS NULL OR risk_profile = ?)"
+                if risk_profile is not None
+                else ""
+            )
+            params: tuple[object, ...] = (target_date, market_ticker, lower, upper)
+            if risk_profile is not None:
+                params = (*params, normalize_risk_profile_name(risk_profile))
             rows = conn.execute(
-                """
+                f"""
                 SELECT created_at, COALESCE(model_probability, probability)
                 FROM probability_snapshots
                 WHERE target_date = ? AND market_ticker = ?
                   AND julianday(created_at) >= julianday(?)
                   AND julianday(created_at) <= julianday(?)
+                  {profile_clause}
                 ORDER BY julianday(created_at) DESC, id DESC
                 """,
-                (target_date, market_ticker, lower, upper),
+                params,
             ).fetchall()
         for row in rows:
             if row[1] is None:
@@ -4735,7 +4785,7 @@ class PaperStore:
                 "contracts * cost_per_contract + reserved_cost "
                 "ELSE contracts * cost_per_contract END"
                 if account_id in _RESEARCH_POLICIES_BY_ACCOUNT
-                else "contracts * cost_per_contract"
+                else _FILLED_PLUS_RESERVED_COST
             )
             row = conn.execute(
                 f"""
@@ -5603,6 +5653,28 @@ class PaperStore:
                 (new_expires_at, json.dumps(details, sort_keys=True), order_id),
             )
         return self._order(order_id)
+
+    def promote_arbitrage_group(self, order_ids: list[int], *, group_id: str) -> None:
+        """Give a fully recorded box its guaranteed-group id in one statement.
+
+        Every leg must still be whole and open: the monitor manages pending
+        legs as ordinary risk, so it may already have closed part of the box.
+        """
+
+        placeholders = ",".join("?" for _ in order_ids)
+        with self.connect() as conn:
+            promoted = conn.execute(
+                "UPDATE paper_orders SET group_id=?, "
+                "diagnostics_json=json_set(diagnostics_json, '$.group_id', ?) "
+                f"WHERE id IN ({placeholders}) AND group_id=? "
+                "AND closed_at IS NULL AND settled_at IS NULL "
+                "AND NOT EXISTS (SELECT 1 FROM paper_orders AS lot "
+                "WHERE lot.parent_order_id=paper_orders.id)",
+                (group_id, group_id, *order_ids, f"DEGRADED-{group_id}"),
+            ).rowcount
+            if promoted != len(order_ids):
+                conn.rollback()
+                raise RuntimeError(f"arbitrage box {group_id} changed before promotion")
 
     def mark_arbitrage_group_degraded(
         self,
@@ -6852,6 +6924,7 @@ class PaperStore:
         *,
         max_quantity: float | None = None,
         liquidity_evidence: dict[str, object] | None = None,
+        expected_group_id: object = _ANY_GROUP,
     ) -> sqlite3.Row:
         """Close an open paper position at ``exit_price``, depth-aware.
 
@@ -6871,6 +6944,8 @@ class PaperStore:
         row = self._open_order(order_id)
         if row is None:
             raise ValueError(f"no open paper order found with id {order_id}")
+        if expected_group_id is not _ANY_GROUP and row["group_id"] != expected_group_id:
+            raise ValueError(f"paper order {order_id} changed group before close")
         contracts = float(row["contracts"])
         executed = contracts if max_quantity is None else min(contracts, float(max_quantity))
         if executed <= 0:
@@ -6948,19 +7023,18 @@ class PaperStore:
         with self.connect() as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("BEGIN IMMEDIATE")
-            open_statuses = (
-                "PAPER_FILLED",
-                "PAPER_PARTIALLY_FILLED",
-                "PAPER_PARTIAL_EXPIRED",
-            )
-            # Guard the close on the same open-state predicate settle uses, plus
-            # an unchanged-contracts check, then require it to have actually
-            # changed a row. Between _open_order() above and this UPDATE, a
-            # concurrent settle or close (the q2min monitor and the settle path
-            # race on one DB) can flip this order to PAPER_SETTLED or shrink it.
-            # A bare WHERE id = ? would then overwrite the true settlement
-            # outcome with an intraday exit price, permanently corrupting the
-            # paper PnL ledger, equity curve, and circuit breaker.
+            # Guard the close on the exact state it was computed from: status,
+            # contracts and reservation, plus the open-state predicate settle
+            # uses, then require it to have actually changed a row. Between
+            # _open_order() above and this UPDATE, a concurrent settle or close
+            # (the q2min monitor and the settle path race on one DB) can flip
+            # this order to PAPER_SETTLED or shrink it, and a concurrent expiry
+            # can cancel the unfilled remainder. A bare WHERE id = ? would then
+            # overwrite the true settlement outcome with an intraday exit price,
+            # and a stale reservation would be released a second time, either
+            # way corrupting the paper PnL ledger, equity curve, and circuit
+            # breaker.
+            reserved_cost = float(row["reserved_cost"] or 0.0)
             if partial:
                 cursor = conn.execute(
                     """
@@ -6988,17 +7062,21 @@ class PaperStore:
                             ELSE cancelled_at
                         END
                     WHERE id = ?
-                      AND status IN (?, ?, ?)
+                      AND status = ?
+                      AND group_id IS ?
                       AND settled_at IS NULL
                       AND closed_at IS NULL
                       AND contracts = ?
+                      AND COALESCE(reserved_cost, 0) = ?
                     """,
                     (
                         contracts - executed,
                         closed_at,
                         order_id,
-                        *open_statuses,
+                        row["status"],
+                        row["group_id"],
                         contracts,
+                        reserved_cost,
                     ),
                 )
             else:
@@ -7021,10 +7099,12 @@ class PaperStore:
                             ELSE cancelled_at
                         END
                     WHERE id = ?
-                      AND status IN (?, ?, ?)
+                      AND status = ?
+                      AND group_id IS ?
                       AND settled_at IS NULL
                       AND closed_at IS NULL
                       AND contracts = ?
+                      AND COALESCE(reserved_cost, 0) = ?
                     """,
                     (
                         closed_at,
@@ -7035,8 +7115,10 @@ class PaperStore:
                         outcome_json,
                         closed_at,
                         order_id,
-                        *open_statuses,
+                        row["status"],
+                        row["group_id"],
                         contracts,
+                        reserved_cost,
                     ),
                 )
             if cursor.rowcount == 0:
@@ -7065,7 +7147,7 @@ class PaperStore:
                     account_id=row["account_id"],
                     order_id=order_id,
                     event_type="RESERVATION_RELEASE",
-                    amount=float(row["reserved_cost"] or 0.0),
+                    amount=reserved_cost,
                     idempotency_key=f"order:{order_id}:close-partial-release",
                     details={
                         "reason": "position close cancelled unfilled maker quantity",
@@ -7913,6 +7995,12 @@ def _pending_cancel_request(raw: object) -> dict[str, object] | None:
 # M1 writes risk_profile='research' but is its own book: a profile-wide query
 # never pools it, unless the caller asks for M1's own account.
 _NOT_M1 = f"COALESCE(account_id, '') != '{M1_ACCOUNT_ID}'"
+# A partly filled quote holds only its filled quantity in ``contracts``; the
+# unfilled remainder is still committed through ``reserved_cost``.
+_FILLED_PLUS_RESERVED_COST = (
+    "contracts * cost_per_contract + CASE WHEN status='PAPER_PARTIALLY_FILLED' "
+    "THEN COALESCE(reserved_cost, 0) ELSE 0 END"
+)
 
 
 def _paper_profile_filter(

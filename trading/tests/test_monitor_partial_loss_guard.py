@@ -11,6 +11,7 @@ from sfo_kalshi_quant.cli import main
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.models import MarketBin, TradeDecision
 from sfo_kalshi_quant.research_policy import TARGET_POLICY
+from sfo_kalshi_quant.strategy_lab.paper_card import _paper_payload
 
 
 TARGET_DATE = "2026-09-12"
@@ -318,3 +319,20 @@ def test_malformed_root_ordinary_stop_still_fires_when_model_agrees(tmp_path):
     assert "invalid partial-close loss evidence" in reason
     assert "veto dollar floor applied to the open remainder only" in reason
     assert PaperStore(db_path).open_paper_order(order_id)["contracts"] == 80.0
+
+
+def test_dashboard_mirror_stops_on_the_same_dollar_floor_as_the_monitor(tmp_path):
+    db_path = tmp_path / "paper.db"
+    order_id = _seed_target_position(db_path)
+    _run_monitor(db_path)
+    assert PaperStore(db_path).open_paper_order(order_id)["contracts"] == 90.0
+
+    # The open remainder alone is inside the $35 floor; the realized slice is not.
+    mark = {"bid": 0.45, "ask": 0.47, "model_side_probability": 0.9}
+    with patch(
+        "sfo_kalshi_quant.strategy_lab.paper_card._position_mark_for",
+        return_value=mark,
+    ):
+        positions = _paper_payload(db_path)["open_positions"]
+
+    assert [row["monitor_action"] for row in positions] == ["STOP_LOSS"]

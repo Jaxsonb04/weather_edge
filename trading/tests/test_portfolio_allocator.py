@@ -1779,3 +1779,45 @@ def test_motion_has_no_count_throttle_and_stops_only_at_scenario_cap() -> None:
     blocked = [row for row in plans.motion.dispositions if row.status == "capacity_blocked"]
     assert len(blocked) == 1
     assert "aggregate" in (blocked[0].reason or "")
+
+
+def test_live_allocator_halves_the_position_cap_in_a_drawdown_like_placement() -> None:
+    market = _market("70°", ticker="KXHIGHTSFO-TEST-B70.5-0", floor=70, cap=71)
+    decision = _decision(market, side="NO", spend=60.0, probability=0.97, edge=0.05, edge_lcb=0.02)
+
+    plan = allocate_portfolio(
+        [decision],
+        bankroll=2000.0,
+        risk_profile="live",
+        existing_directional_spend=140.0,
+        live_drawdown=0.10,
+    )
+
+    assert len(plan.legs) == 1
+    assert plan.legs[0].spend <= 15.0
+
+
+def test_live_allocator_charges_the_position_cap_placement_can_book() -> None:
+    """On $2,000 the 3% budget recommends $60 a leg; account policy books $30."""
+
+    markets = [
+        _market(f"{70 + idx}°", ticker=f"KXHIGHTSFO-TEST-B{70 + idx}.5-{idx}", floor=70 + idx, cap=71 + idx, no_ask=0.89)
+        for idx in range(4)
+    ]
+    decisions = [
+        _decision(market, side="NO", spend=60.0, probability=0.97, edge=0.05, edge_lcb=0.02)
+        for market in markets
+    ]
+
+    plan = allocate_portfolio(decisions, bankroll=2000.0, risk_profile="live")
+
+    assert len(plan.legs) == 4
+    assert all(leg.spend <= 30.0 for leg in plan.legs)
+
+    with_existing = allocate_portfolio(
+        decisions,
+        bankroll=2000.0,
+        risk_profile="live",
+        existing_directional_spend=120.0,
+    )
+    assert len(with_existing.legs) == 1

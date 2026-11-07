@@ -892,7 +892,7 @@ def test_m1_identity_is_pinned_to_this_release_and_independent_of_its_versions(
 ) -> None:
     """The M1 fingerprint is computed by this release and never rotates with it.
 
-    This release stamps orders with exec-v5 and runs strategy behavior-v4,
+    This release stamps orders with exec-v5 and runs strategy behavior-v5,
     which moved the live and research strategy fingerprints. M1's policy
     fingerprint hashes only its pre-registered constants, so it is the same
     value for the new capital decision, and a later release-wide version bump
@@ -900,7 +900,7 @@ def test_m1_identity_is_pinned_to_this_release_and_independent_of_its_versions(
     """
 
     assert EXECUTION_MODEL_VERSION == "exec-v5-2026-10-05"
-    assert STRATEGY_BEHAVIOR_VERSION == "behavior-v4-v7-correctness-2026-10-05"
+    assert STRATEGY_BEHAVIOR_VERSION == "behavior-v5-audit-admission-2026-11-07"
     assert m1.M1_POLICY.policy_fingerprint == "f0258953ff7eb55a1e9318b4"
     import sfo_kalshi_quant.account as account_module
     import sfo_kalshi_quant.maker_fills as maker_fills_module
@@ -1592,3 +1592,23 @@ def test_the_monitor_records_the_hold_once_per_lot(tmp_path) -> None:
     )
     assert sorted(row["order_id"] for row in snapshots) == sorted(order_ids)
     assert {row["action"] for row in snapshots} == {"HOLD_TO_SETTLEMENT"}
+
+
+def test_settle_maintenance_drains_a_long_backlog_oldest_days_first(tmp_path) -> None:
+    store, _ = _store(tmp_path)
+    _scan(store)
+    first_day = date.fromisoformat(
+        _rows(store, "SELECT MIN(created_at) AS at FROM m1_evaluations")[0]["at"][:10]
+    )
+    resumed = datetime(
+        first_day.year, first_day.month, first_day.day, 15, tzinfo=UTC
+    ) + timedelta(days=20)
+
+    first = engine.run_m1_settle_maintenance(store, now=resumed)
+    second = engine.run_m1_settle_maintenance(store, now=resumed)
+
+    days = [
+        (first_day + timedelta(days=offset)).isoformat() for offset in range(20)
+    ]
+    assert [row["utc_day"] for row in first["reconciled_days"]] == days[:14]
+    assert [row["utc_day"] for row in second["reconciled_days"]] == days[14:]
