@@ -447,6 +447,33 @@ def record_exchange_settlement_checks(
     )
 
 
+def restate_exchange_settlement_check(
+    conn: sqlite3.Connection, lot: sqlite3.Row, *, checked_at: str
+) -> None:
+    """Re-check a lot whose booked high was restated, replacing any decided verdict.
+
+    The upsert never downgrades a decided verdict, so a stale ``MISMATCH`` on the
+    old high must be dropped first; the lot is then judged on its new booking.
+    """
+
+    conn.execute(
+        "DELETE FROM paper_settlement_exchange_checks WHERE order_id=?", (lot["id"],)
+    )
+    ticker = str(lot["market_ticker"])
+    record_exchange_settlement_checks(
+        conn,
+        [
+            build_exchange_settlement_check(
+                lot,
+                resolution=cached_exchange_resolutions(conn, [ticker]).get(ticker),
+                error=None,
+                checked_at=checked_at,
+                attempted=False,
+            )
+        ],
+    )
+
+
 def standing_exchange_mismatches(conn: sqlite3.Connection) -> int:
     """Every ``MISMATCH`` on record, not just the ones found this run."""
 

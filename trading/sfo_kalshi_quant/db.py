@@ -141,6 +141,7 @@ from .store.exchange_settlement_checks import (
     EXCHANGE_CHECK_UNCHECKED,
     cached_exchange_resolutions,
     classify_exchange_settlement,
+    restate_exchange_settlement_check,
 )
 from .store.market_day_settlements import (
     TRUTH_SOURCE_CLI_SETTLEMENT,
@@ -6601,9 +6602,11 @@ class PaperStore:
         equity, posterior-Kelly, the research pause window): those read every
         non-M1 lot, and a corrected fact should reach them.
 
-        shortcut: a sibling lot still booked on the old high keeps a conflicting
-        city-day truth in posterior-Kelly; lot 3687 has none. Restate siblings
-        together before using this on a day with several settled lots.
+        It refuses while another settled lot on the same city-day is booked on a
+        different high, because posterior-Kelly would then read two truths.
+
+        shortcut: a city-day with several settled lots cannot be restated, as each
+        refuses on the others; build a sibling-aware restatement if one is needed.
         """
 
         def refuse(why: str) -> ValueError:
@@ -6662,6 +6665,23 @@ class PaperStore:
                     "account_id": account_id,
                     **details,
                 }
+            siblings = conn.execute(
+                "SELECT id FROM paper_orders WHERE id<>? AND target_date=? "
+                "AND market_ticker LIKE ? AND status='PAPER_SETTLED' "
+                "AND settlement_high_f IS NOT NULL AND settlement_high_f<>? "
+                "ORDER BY id",
+                (
+                    order_id,
+                    row["target_date"],
+                    f"{series_ticker_for_market(market_ticker)}-%",
+                    final_high,
+                ),
+            ).fetchall()
+            if siblings:
+                raise refuse(
+                    "settled lots on the same city-day are booked on another "
+                    f"high: {[s['id'] for s in siblings]}"
+                )
             resolved_yes, position_won, restated_pnl = _settled_lot_outcome(
                 row, final_high
             )
@@ -6754,6 +6774,13 @@ class PaperStore:
                     "verification_status": "MATCH",
                 },
                 corrected_at,
+            )
+            restate_exchange_settlement_check(
+                conn,
+                conn.execute(
+                    "SELECT * FROM paper_orders WHERE id=?", (order_id,)
+                ).fetchone(),
+                checked_at=corrected_at,
             )
             # Not the isolated helper: that one keeps settlement alive by
             # swallowing errors, and a failed write here must undo the whole apply.

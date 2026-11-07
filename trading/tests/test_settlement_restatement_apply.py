@@ -80,10 +80,12 @@ def book(tmp_path):
     db_path = tmp_path / "paper.db"
     store = PaperStore(db_path)
     lot = store.record_paper_order(TARGET, _lot_3687())
-    live = store.record_paper_order(TARGET, _bin_lot(TARGET))
+    live_day = "2026-10-20"
+    live = store.record_paper_order(live_day, _bin_lot(live_day))
     _into_account(db_path, lot, TARGET_POLICY_V6)
     assert _order(db_path, live)["account_id"] == LIVE_STABILITY_ACCOUNT_ID
-    assert store.settle_paper_orders(TARGET, 72.0, series_ticker=SERIES) == 2
+    assert store.settle_paper_orders(TARGET, 72.0, series_ticker=SERIES) == 1
+    assert store.settle_paper_orders(live_day, 72.0, series_ticker=SERIES) == 1
     store.verify_paper_settlements({(SERIES, TARGET): 71}, intervals={SERIES: (TARGET, TARGET)})
     return root, db_path, store, lot, live
 
@@ -197,8 +199,8 @@ def test_apply_moves_only_the_lots_own_archived_ledger_by_the_delta(book):
     recheck = store.recheck_paper_settlements(
         {(SERIES, TARGET): 71}, intervals={SERIES: (TARGET, TARGET)}
     )
-    # Only the Live sibling, never restated with it, is still on the old high.
-    assert [row["order_id"] for row in recheck["drift"]] == [live]
+    # The Live lot sits on another city-day and keeps its own booking.
+    assert recheck["drift"] == []
     day = {
         (row["market_ticker"]): (row["settlement_high_f"], row["resolved_yes"])
         for row in store.market_day_settlements()
@@ -514,3 +516,41 @@ def test_apply_needs_every_explicit_argument(book, drop):
     assert code == 1
     assert "--apply needs" in err.getvalue()
     assert _snapshot(db_path) == before
+
+
+def test_apply_refuses_while_a_sibling_lot_keeps_the_old_high(book):
+    root, db_path, store, lot, _ = book
+    _store_final(root, TARGET, 71)
+    sibling = store.record_paper_order(TARGET, _bin_lot(TARGET))
+    assert store.settle_paper_orders(TARGET, 72.0, series_ticker=SERIES) == 1
+    before = _snapshot(db_path)
+
+    code, _, err = _apply(root, db_path, lot)
+
+    assert code != 0 and str(sibling) in err
+    assert _snapshot(db_path) == before
+
+
+def test_apply_replaces_a_stale_exchange_mismatch_verdict(book):
+    root, db_path, store, lot, _ = book
+    _store_final(root, TARGET, 71)
+    _seed_exchange(db_path, "no", 71.0)
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO paper_settlement_exchange_checks "
+            "(order_id, checked_at, market_ticker, target_date, "
+            "verification_status) VALUES (?, 'x', ?, ?, 'MISMATCH')",
+            (lot, TICKER, TARGET),
+        )
+        conn.commit()
+
+    code, _, err = _apply(root, db_path, lot)
+    assert code == 0, err
+
+    with closing(sqlite3.connect(db_path)) as conn:
+        status = conn.execute(
+            "SELECT verification_status FROM paper_settlement_exchange_checks "
+            "WHERE order_id=?",
+            (lot,),
+        ).fetchone()[0]
+    assert status == "MATCH"
