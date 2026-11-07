@@ -6,6 +6,9 @@ OnFailure=sfo-alert@%n.service
 
 [Service]
 Type=oneshot
+# Two-minute ticks; allow five ticks for all-city exits and bounded SQLite
+# retries. A hung run must fail and release the timer for the next tick.
+TimeoutStartSec=600
 User=__APP_USER__
 WorkingDirectory=__TRADING_DIR__
 EnvironmentFile=__ENV_FILE__

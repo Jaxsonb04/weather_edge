@@ -986,9 +986,12 @@ def gate_missing_days(db_path: Path, archive_dir: Path) -> list[tuple[str, str]]
                     "metadata or re-export that UTC-day partition before --check-gate"
                 )
             coverage = {
-                str(day): (int(rows), id_coverage_json, min_id, max_id)
-                for day, rows, id_coverage_json, min_id, max_id in manifest.execute(
-                    "SELECT day, rows, id_coverage_json, min_id, max_id FROM archive_files "
+                str(day): (int(rows), id_coverage_json, min_id, max_id, path, sha256, upload_target)
+                for (
+                    day, rows, id_coverage_json, min_id, max_id, path, sha256, upload_target
+                ) in manifest.execute(
+                    "SELECT day, rows, id_coverage_json, min_id, max_id, path, sha256, "
+                    "upload_target FROM archive_files "
                     "WHERE table_name = ? AND kind = 'day'",
                     (table,),
                 )
@@ -999,7 +1002,17 @@ def gate_missing_days(db_path: Path, archive_dir: Path) -> list[tuple[str, str]]
                 if day not in coverage:
                     missing.append((table, day))
                     continue
-                archived_rows, raw_ranges, min_id, max_id = coverage[day]
+                (
+                    archived_rows, raw_ranges, min_id, max_id, path, sha256, upload_target
+                ) = coverage[day]
+                if source_rows > 0 and not upload_target:
+                    _ranges_from_verified_archive(
+                        archive_dir / path,
+                        table=table,
+                        day=day,
+                        expected_rows=archived_rows,
+                        expected_sha256=sha256,
+                    )
                 ranges = _decode_id_ranges(
                     raw_ranges,
                     table,
@@ -1064,6 +1077,7 @@ def gate_missing_days(db_path: Path, archive_dir: Path) -> list[tuple[str, str]]
 RESTORE_TABLE_ORDER: tuple[str, ...] = (
     "forecast_snapshots",
     "market_snapshots",
+    "market_orderbook_depth_snapshots",
     "scan_context_snapshots",
     "decision_snapshots",
     "probability_snapshots",
@@ -1394,7 +1408,7 @@ def _aws(args: list[str]) -> subprocess.CompletedProcess:
 
 
 def upload_pending(archive_dir: Path, log=print) -> int:
-    """Upload unuploaded manifest files to S3; verify size via head-object.
+    """Upload partitions and a consistent manifest backup; verify remote sizes.
 
     No-op (exit clean, loud notice) until SFO_ARCHIVE_S3_BUCKET is set, so
     the pipeline degrades to the local ring buffer instead of failing.
@@ -1458,6 +1472,31 @@ def upload_pending(archive_dir: Path, log=print) -> int:
                 log(f"WARN: features mirror failed: {cp.stderr.strip()}")
             else:
                 log(f"mirrored features.db -> {target}")
+        # Capture committed WAL contents and upload the catalog only after the
+        # partition upload receipts above have been committed.
+        with tempfile.TemporaryDirectory(prefix="manifest-backup-", dir=archive_dir) as tmp:
+            snapshot = Path(tmp) / "manifest.db"
+            backup = sqlite3.connect(snapshot)
+            try:
+                manifest.backup(backup)
+            finally:
+                backup.close()
+            key = f"{prefix}/manifest.db"
+            target = f"s3://{bucket}/{key}"
+            cp = _aws(["s3", "cp", str(snapshot), target, "--only-show-errors"])
+            if cp.returncode != 0:
+                raise RuntimeError(f"manifest backup upload failed: {cp.stderr.strip()}")
+            head = _aws(["s3api", "head-object", "--bucket", bucket, "--key", key])
+            try:
+                remote_size = (
+                    json.loads(head.stdout).get("ContentLength")
+                    if head.returncode == 0 else None
+                )
+            except json.JSONDecodeError:
+                remote_size = None
+            if remote_size != snapshot.stat().st_size:
+                raise RuntimeError("manifest backup upload verification failed")
+            log(f"mirrored manifest.db -> {target}")
     finally:
         manifest.close()
     return uploaded

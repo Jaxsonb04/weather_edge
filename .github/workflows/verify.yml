@@ -46,7 +46,7 @@ jobs:
           # Audit F-08: semgrep degrades to a WARN on developer machines that do
           # not have it installed. CI must never take that path -- state the
           # requirement explicitly rather than relying on the implicit CI var.
-          SFO_REQUIRE_SEMGREP: "1"
+          WEATHEREDGE_REQUIRE_SEMGREP: "1"
         run: bash scripts/verify_project.sh
 
       - name: Run Python tests
@@ -64,11 +64,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    env:
-      # Licensed artifacts are available only to trusted maintainer events.
-      # GitHub does not pass repository secrets to forked pull requests, and
-      # the job-level guard ensures untrusted code never reaches this token.
-      HEROUI_KEY: ${{ secrets.HEROUI_KEY }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -79,6 +74,8 @@ jobs:
           bun-version: "1.3.14"
 
       - name: Verify HeroUI Pro credential
+        env:
+          HEROUI_KEY: ${{ secrets.HEROUI_KEY }}
         run: |
           if [[ -z "$HEROUI_KEY" ]]; then
             echo "::error::HEROUI_KEY is missing from the GitHub Actions secret store."
@@ -89,6 +86,8 @@ jobs:
         run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Install licensed HeroUI Pro artifacts
+        env:
+          HEROUI_KEY: ${{ secrets.HEROUI_KEY }}
         # 4.5.0 honors the installed version without --update when CI is unset.
         # 4.6+ upgrades to latest unconditionally, rewriting our dependency lock.
         run: env -u CI npx -y hpsetup@4.5.0 --auto

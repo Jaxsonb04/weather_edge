@@ -37,9 +37,9 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url || steps.deployment_retry.outputs.page_url || steps.deployment_retry_2.outputs.page_url || steps.deployment_retry_3.outputs.page_url }}
     steps:
       - name: Checkout published tree
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
           path: .
       # The artifact API is eventually consistent, and the Pages deployment
@@ -51,7 +51,7 @@ jobs:
       # still cancels this run through the workflow concurrency policy.
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
         continue-on-error: true
       - name: Wait before Pages deployment retry 1
         if: steps.deployment.outcome == 'failure'
@@ -59,7 +59,7 @@ jobs:
       - name: Deploy to GitHub Pages (retry 1)
         id: deployment_retry
         if: steps.deployment.outcome == 'failure'
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
         continue-on-error: true
       - name: Wait before Pages deployment retry 2
         if: steps.deployment_retry.outcome == 'failure'
@@ -67,7 +67,7 @@ jobs:
       - name: Deploy to GitHub Pages (retry 2)
         id: deployment_retry_2
         if: steps.deployment_retry.outcome == 'failure'
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
         continue-on-error: true
       - name: Wait before Pages deployment retry 3
         if: steps.deployment_retry_2.outcome == 'failure'
@@ -75,4 +75,4 @@ jobs:
       - name: Deploy to GitHub Pages (retry 3)
         id: deployment_retry_3
         if: steps.deployment_retry_2.outcome == 'failure'
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5

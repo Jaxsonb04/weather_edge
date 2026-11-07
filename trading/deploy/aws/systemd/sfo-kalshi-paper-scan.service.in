@@ -6,6 +6,9 @@ OnFailure=sfo-alert@%n.service
 
 [Service]
 Type=oneshot
+# Five-minute ticks; allow three ticks for both profiles and lock retries,
+# while bounding a hang inside the watchdog's 20-minute scan-age window.
+TimeoutStartSec=900
 User=__APP_USER__
 WorkingDirectory=__TRADING_DIR__
 EnvironmentFile=__ENV_FILE__

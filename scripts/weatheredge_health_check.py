@@ -352,7 +352,7 @@ def check_optional_tools(root: Path) -> CheckResult:
     if missing:
         # Audit F-08: this stays a WARN and scripts/run_semgrep.sh now agrees --
         # it skips the scan locally and hard-fails only under
-        # SFO_REQUIRE_SEMGREP=1, which CI sets. Previously this said OPTIONAL
+        # WEATHEREDGE_REQUIRE_SEMGREP=1, which CI sets. Previously this said OPTIONAL
         # while the very next step of the same gate treated it as mandatory.
         return CheckResult(
             "optional quality tools",

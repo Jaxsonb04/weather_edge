@@ -747,7 +747,9 @@ clear_propagation_misses
 # evaluates the next civil day's ladder, so it legitimately writes nothing
 # from about 07:00 to 15:00 UTC while Kalshi lists no next-day market; the
 # staleness check is skipped from 07:00 until 16:30 UTC (the first 90 minutes
-# after listing). The admission check always runs. Read-only, as the app user.
+# after listing). An active account with no evaluations gets 24 hours from its
+# creation, including a full listing cycle. The admission check always runs.
+# Read-only, as the app user.
 if [[ -n "$PAPER_DB" && ",${SCAN_PROFILES// /}," == *",research,"* ]]; then
   m1_status=0
   (
@@ -758,7 +760,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sfo_kalshi_quant.research_m1 import DECISION_ADMISSION_ERROR, DECISION_PENDING
+from sfo_kalshi_quant.research_m1 import DECISION_ADMISSION_ERROR, DECISION_PENDING, M1_ACCOUNT_ID
 
 db_path, now_override = sys.argv[1:]
 now = (
@@ -780,17 +782,21 @@ if not Path(db_path).is_file():
     raise SystemExit(0)  # the paper scan check above owns a missing journal
 conn = sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
 try:
-    if not conn.execute(
+    account = conn.execute(
+        "SELECT created_at FROM paper_accounts WHERE account_id=? AND status='ACTIVE'",
+        (M1_ACCOUNT_ID,),
+    ).fetchone()
+    newest, failures = None, []
+    if conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='m1_evaluations'"
     ).fetchone():
-        raise SystemExit(0)
-    newest = conn.execute(
-        "SELECT created_at FROM m1_evaluations ORDER BY id DESC LIMIT 1"
-    ).fetchone()
-    failures = conn.execute(
-        "SELECT utc_hour, created_at, decision FROM m1_evaluations WHERE decision IN (?, ?)",
-        (DECISION_ADMISSION_ERROR, DECISION_PENDING),
-    ).fetchall()
+        newest = conn.execute(
+            "SELECT created_at FROM m1_evaluations ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        failures = conn.execute(
+            "SELECT utc_hour, created_at, decision FROM m1_evaluations WHERE decision IN (?, ?)",
+            (DECISION_ADMISSION_ERROR, DECISION_PENDING),
+        ).fetchall()
 except sqlite3.Error as exc:
     print(f"M1 trial journal is unreadable: {exc}", file=sys.stderr)
     raise SystemExit(2)
@@ -811,11 +817,13 @@ if len(failed_hours) >= 2:
     )
 minute_of_day = now.hour * 60 + now.minute
 if not 7 * 60 <= minute_of_day < 16 * 60 + 30:
-    # shortcut: an empty journal is not alerted (a never-started M1 stays silent),
-    # since a fresh deploy has no evaluation until the first listing.
     last = parse_utc(newest[0]) if newest else None
     if last is not None and now - last > timedelta(minutes=90):
         problems.append(f"M1 trial has no evaluation in the last 90 minutes (newest {newest[0]})")
+    if newest is None and account is not None:
+        created = parse_utc(account[0])
+        if created is None or now - created > timedelta(hours=24):
+            problems.append("M1 trial has no evaluation since account creation (24-hour start-up grace expired or unavailable)")
 for message in problems:
     print(message, file=sys.stderr)
 raise SystemExit(3 if problems else 0)

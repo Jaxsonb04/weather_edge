@@ -106,6 +106,34 @@ def test_watchdog_alerts_on_stale_m1_evaluations_but_not_the_daily_gap(
         assert "no evaluation in the last 90 minutes" in result.stderr
 
 
+@pytest.mark.parametrize("missing_table", [False, True])
+@pytest.mark.parametrize(
+    ("now", "age_hours", "healthy"),
+    [(_at(20), 23, True), (_at(20), 25, False), (_at(11), 25, True)],
+    ids=["new-account-grace", "never-started", "listing-gap"],
+)
+def test_empty_m1_journal_grace_expires_despite_fresh_research_scans(
+    tmp_path, monkeypatch, missing_table, now, age_hours, healthy
+) -> None:
+    db = _paper_db(tmp_path, _every_tick("live", "research"))
+    for profile in ("live", "research"):
+        _stamp(db, profile, 1.0)
+    with closing(sqlite3.connect(db)) as conn:
+        assert conn.execute(
+            "UPDATE paper_accounts SET created_at=?, status='ACTIVE' WHERE account_id=?",
+            ((now - timedelta(hours=age_hours)).isoformat(), m1.M1_ACCOUNT_ID),
+        ).rowcount == 1
+        if missing_table:
+            conn.execute("DROP TABLE m1_evaluations")
+        conn.commit()
+    monkeypatch.setenv("SFO_SCHEDULER_M1_NOW", now.isoformat())
+    result = _run(tmp_path, db)
+    assert (result.returncode == 0) is healthy, result.stderr
+    if not healthy:
+        assert M1_FAILED in result.stderr
+        assert "no evaluation since account creation" in result.stderr
+
+
 def test_watchdog_alerts_on_repeated_admission_failures_even_inside_the_gap(
     tmp_path, monkeypatch
 ) -> None:
