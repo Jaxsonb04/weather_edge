@@ -308,7 +308,10 @@ def _dataset_run_params(args: argparse.Namespace, source: str, start: date, end:
 
 
 def cmd_daily_report(args: argparse.Namespace) -> int:
-    config = _config(args)
+    # This report is read-only and feeds the public signal. SFO's only live
+    # forecast is EMOS, so price it on its own distribution even though the
+    # Live trading profile has not adopted that distribution.
+    config = replace(_config(args), emos_distribution_enabled=True)
     payload = build_daily_report(
         forecaster_root=args.forecaster_root,
         targets=parse_target_dates(args.target_date),

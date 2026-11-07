@@ -1207,9 +1207,11 @@ if [[ -n "$HISTORY_BUNDLE" ]]; then
     "$HISTORY_HELPER_DIR/guards.py" \
     "$REMOTE_USER@$HOST_IP:$REMOTE_BASE/scripts/local_compute/"
   deadman_abort_if_revoked
-  rsync -av --chmod=F600 \
+  # macOS openrsync rejects --chmod, so set the mode after the copy.
+  rsync -av \
     -e "ssh -i '$HOST_KEY' -o StrictHostKeyChecking=accept-new" \
     -- "$HISTORY_BUNDLE" "$REMOTE_USER@$HOST_IP:$HISTORY_REMOTE_DIR/history.json"
+  ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" "chmod 600 '$HISTORY_REMOTE_DIR/history.json'"
   verify_deploy_source_unchanged "history helper transfer"
   deadman_abort_if_revoked
   ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$HOST_IP" \
