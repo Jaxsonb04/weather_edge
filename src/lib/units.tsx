@@ -62,7 +62,7 @@ export function useTemperature() {
       symbol,
       /** A market bracket label ("67° to 68°") is Fahrenheit contract wording, never
           converted; in °C mode it gets an explicit °F so it can't read as Celsius. */
-      bracket: (label: string) => (unit === "C" ? (label.includes("°") ? label.replace(/°/g, "°F") : `${label}°F`) : label),
+      bracket: (label: string | null | undefined) => (!label ? "—" : unit === "C" ? (label.includes("°") ? label.replace(/°/g, "°F") : `${label}°F`) : label),
       toggle: () => setUnit(unit === "C" ? "F" : "C"),
       abs,
       round: roundTo,

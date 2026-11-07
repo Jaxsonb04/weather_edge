@@ -126,4 +126,14 @@ describe("temperature unit preference", () => {
     expect(screen.getByText("67.1°")).toBeInTheDocument();
     expect(screen.getByText(/model high 67.1° · market implies 68° · modal bin 67° to 68°$/)).toBeInTheDocument();
   });
+
+  it("renders a missing bracket label as a dash instead of crashing in °C mode", () => {
+    localStorage.setItem("weatheredge-temp-unit", "C");
+    function Probe() {
+      const t = useTemperature();
+      return <span data-testid="b">{t.bracket(null)}|{t.bracket(undefined)}</span>;
+    }
+    render(<TempUnitProvider><Probe /></TempUnitProvider>);
+    expect(screen.getByTestId("b")).toHaveTextContent("—|—");
+  });
 });
