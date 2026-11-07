@@ -215,7 +215,7 @@ export function M1Trial({ s }: { s: StrategyLab }) {
               <Chip size="sm" variant="soft" color="success"><Chip.Label>Paper only</Chip.Label></Chip>
               {entriesOpen != null && (
                 <Chip size="sm" variant="soft" color={entriesOpen ? "default" : "danger"}>
-                  <Chip.Label>{entriesOpen ? "Entries open" : "Entries halted"}</Chip.Label>
+                  <Chip.Label>{entriesOpen ? "Stop rules clear" : "Entries halted"}</Chip.Label>
                 </Chip>
               )}
             </div>
