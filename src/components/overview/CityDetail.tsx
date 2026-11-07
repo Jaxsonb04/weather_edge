@@ -68,17 +68,17 @@ function ForecastPanel({ city, intradayLock }: { city: City; intradayLock: Intra
 
   return (
     <Card className="h-full min-w-0 rounded-3xl">
-      <Card.Header className="flex flex-row items-start justify-between gap-3">
+      <Card.Header className="flex flex-row flex-wrap items-start justify-between gap-3">
         <div>
           <Card.Title className="text-base">Forecast</Card.Title>
           <Card.Description className="text-sm text-muted">
             {lead ? `Next settlement · ${shortDateUTC(lead.target_date)}` : "No forecast published"}
           </Card.Description>
         </div>
-        <Chip size="sm" variant="soft">
+        <Chip size="sm" variant="soft" className="h-auto min-w-0 max-w-full">
           {/* The artifact's own tag, in plain English. It already carries the
               intraday fold-in, so appending "+ intraday" here printed it twice. */}
-          <Chip.Label>{methodLabel(lead?.method)}</Chip.Label>
+          <Chip.Label className="whitespace-normal">{methodLabel(lead?.method)}</Chip.Label>
         </Chip>
       </Card.Header>
       <Card.Content className="flex flex-col gap-4 pt-0">

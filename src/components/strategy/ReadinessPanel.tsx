@@ -103,7 +103,7 @@ function CheckRow({ c }: { c: ReadinessCheck }) {
         <p className="mt-0.5 text-xs text-muted">{c.detail}</p>
         <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-default" aria-hidden="true">
           <div
-            className={`h-full rounded-full ${c.passed ? "bg-success" : "bg-danger/70"}`}
+            className={`bar-grow h-full rounded-full ${c.passed ? "bg-success" : "bg-danger/70"}`}
             style={{ width: `${Math.max(progress * 100, c.passed ? 100 : 2)}%` }}
           />
         </div>

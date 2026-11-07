@@ -112,7 +112,7 @@ export default function App() {
           mainRef.current?.focus({ preventScroll: true });
           mainRef.current?.scrollIntoView?.();
         }}
-        className="fixed left-4 top-3 z-50 -translate-y-20 rounded-full bg-foreground px-4 py-2 text-sm font-semibold text-background no-underline transition-transform duration-150 focus:translate-y-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] motion-reduce:transition-none"
+        className="fixed left-4 top-3 z-50 inline-flex min-h-11 -translate-y-20 items-center rounded-full bg-foreground px-4 text-sm font-semibold text-background no-underline transition-transform duration-150 focus:translate-y-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] motion-reduce:transition-none"
       >
         Skip to main content
       </a>
@@ -148,9 +148,11 @@ export default function App() {
         aria-labelledby={`${route}-page-title`}
         className="min-h-screen flex-1 focus:outline-none"
       >
-        {/* Keyed by route so each view replays one short CSS entrance; CSS (not
-            a frame callback) so a backgrounded tab still settles visible. */}
-        <div key={route} className="route-enter">
+        {/* Keyed by route so each view replays one short CSS entrance, and by
+            data arrival so content rises over its skeleton instead of snapping.
+            The Lab loads its own data and must not remount. CSS, not a frame
+            callback, so a backgrounded tab still settles visible. */}
+        <div key={route === "lab" ? route : `${route}-${data ? "ready" : "loading"}`} className="route-enter">
         {route === "lab" ? (
           <ErrorBoundary key={route}>
             <Suspense fallback={<ViewLoader />}>

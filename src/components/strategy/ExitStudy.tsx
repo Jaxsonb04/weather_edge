@@ -98,7 +98,7 @@ export function ExitStudy({ s }: { s: StrategyLab }) {
               </div>
               <div className="h-2 overflow-hidden rounded-full bg-default">
                 <div
-                  className={`h-full rounded-full ${row.hitRate >= 0.5 ? "bg-success" : "bg-danger"}`}
+                  className={`bar-grow h-full rounded-full ${row.hitRate >= 0.5 ? "bg-success" : "bg-danger"}`}
                   style={{ width: `${Math.max(row.hitRate * 100, 0.8)}%` }}
                 />
               </div>

@@ -1,5 +1,5 @@
 import { BarChart } from "@heroui-pro/react/bar-chart";
-import { useReducedMotion } from "motion/react";
+import { useChartDraw } from "../../lib/useChartDraw";
 import { ChartTooltip } from "@heroui-pro/react/chart-tooltip";
 import { Widget } from "@heroui-pro/react/widget";
 import { featureSeries, type Diagnostics } from "../../lib/diagnostics";
@@ -7,7 +7,7 @@ import { featureSeries, type Diagnostics } from "../../lib/diagnostics";
 /** XGBoost feature attribution — what the model leans on most. */
 export function FeatureImportanceChart({ diag }: { diag: Diagnostics }) {
   // Recharts grows series in on mount; reduced motion draws them in place.
-  const reduceMotion = useReducedMotion();
+  const draw = useChartDraw();
   const series = featureSeries(diag);
   const top = series[series.length - 1];
   const label = top
@@ -27,7 +27,7 @@ export function FeatureImportanceChart({ diag }: { diag: Diagnostics }) {
           <BarChart.Grid horizontal={false} />
           <BarChart.XAxis type="number" tickFormatter={(v: number) => `${v}%`} />
           <BarChart.YAxis type="category" dataKey="feature" width={116} tickMargin={6} />
-          <BarChart.Bar isAnimationActive={!reduceMotion} dataKey="importance" name="Importance" fill="var(--accent)" radius={[0, 6, 6, 0]} barSize={14} />
+          <BarChart.Bar {...draw} dataKey="importance" name="Importance" fill="var(--accent)" radius={[0, 6, 6, 0]} barSize={14} />
           <BarChart.Tooltip
             content={({ active, payload, label }) => {
               if (!active || !payload?.length) return null;

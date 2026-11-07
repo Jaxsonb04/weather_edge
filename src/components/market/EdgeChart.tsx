@@ -1,5 +1,5 @@
 import { BarChart } from "@heroui-pro/react/bar-chart";
-import { useReducedMotion } from "motion/react";
+import { useChartDraw } from "../../lib/useChartDraw";
 import { ChartTooltip } from "@heroui-pro/react/chart-tooltip";
 import { Widget } from "@heroui-pro/react/widget";
 import { f1, marketModelSeries, type Target } from "../../lib/data";
@@ -8,7 +8,7 @@ import { f1, marketModelSeries, type Target } from "../../lib/data";
     market-implied ones — i.e. where the edge (if any) lives. */
 export function EdgeChart({ target }: { target: Target }) {
   // Recharts grows series in on mount; reduced motion draws them in place.
-  const reduceMotion = useReducedMotion();
+  const draw = useChartDraw();
   const series = marketModelSeries(target);
   const mc = target.market_consensus;
   if (!series.length || !mc) return null;
@@ -31,8 +31,8 @@ export function EdgeChart({ target }: { target: Target }) {
           <BarChart.Grid vertical={false} />
           <BarChart.XAxis dataKey="label" tickMargin={8} interval={0} />
           <BarChart.YAxis width={40} tickFormatter={(v: number) => `${v}%`} />
-          <BarChart.Bar isAnimationActive={!reduceMotion} dataKey="model" name="Model" fill="var(--accent)" radius={[4, 4, 0, 0]} barSize={14} />
-          <BarChart.Bar isAnimationActive={!reduceMotion} dataKey="market" name="Market" fill="var(--series-market)" radius={[4, 4, 0, 0]} barSize={14} />
+          <BarChart.Bar {...draw} dataKey="model" name="Model" fill="var(--accent)" radius={[4, 4, 0, 0]} barSize={14} />
+          <BarChart.Bar {...draw} dataKey="market" name="Market" fill="var(--series-market)" radius={[4, 4, 0, 0]} barSize={14} />
           <BarChart.Tooltip
             content={({ active, payload }) => {
               if (!active || !payload?.length) return null;

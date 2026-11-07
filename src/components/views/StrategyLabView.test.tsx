@@ -240,6 +240,19 @@ describe("PolicyLineage", () => {
   });
 });
 
+describe("PolicyLineage after an archive", () => {
+  it("keeps a just-archived version in the trail (audit F28)", () => {
+    const profiles = [
+      { ...twoAccounts.profiles?.[1], daily_target: { available: true, policy_version: "research-target-roi-v7" } },
+      { risk_profile: "research-target-v5", archived: true },
+      { risk_profile: "research-target-v6", archived: true },
+    ];
+    render(<PolicyLineage s={{ ...twoAccounts, profiles } as StrategyLab} />);
+    const versions = screen.getAllByRole("listitem").map((item) => item.textContent);
+    expect(versions.map((text) => text?.match(/^v\d+/)?.[0])).toEqual(["v5", "v6", "v7"]);
+  });
+});
+
 describe("LabNotices", () => {
   const withDays = (start: string, opened: number[]) =>
     opened.map((count, index) => {

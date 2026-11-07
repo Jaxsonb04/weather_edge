@@ -1,5 +1,5 @@
 import { BarChart } from "@heroui-pro/react/bar-chart";
-import { useReducedMotion } from "motion/react";
+import { useChartDraw } from "../../lib/useChartDraw";
 import { ChartTooltip } from "@heroui-pro/react/chart-tooltip";
 import { Widget } from "@heroui-pro/react/widget";
 import { cohortSeries, type TradingSignal } from "../../lib/data";
@@ -8,7 +8,7 @@ import { cohortSeries, type TradingSignal } from "../../lib/data";
     on cold days and humbled on rare hot ones. */
 export function CohortChart({ signal }: { signal: TradingSignal }) {
   // Recharts grows series in on mount; reduced motion draws them in place.
-  const reduceMotion = useReducedMotion();
+  const draw = useChartDraw();
   const series = cohortSeries(signal);
   if (!series.length) return null;
   return (
@@ -24,7 +24,7 @@ export function CohortChart({ signal }: { signal: TradingSignal }) {
           <BarChart.Grid horizontal={false} />
           <BarChart.XAxis type="number" tickFormatter={(v: number) => `${v}%`} domain={[0, 100]} />
           <BarChart.YAxis type="category" dataKey="name" width={108} tickMargin={6} />
-          <BarChart.Bar isAnimationActive={!reduceMotion} dataKey="skill" name="RPS skill" fill="var(--accent)" radius={[0, 6, 6, 0]} barSize={18} />
+          <BarChart.Bar {...draw} dataKey="skill" name="RPS skill" fill="var(--accent)" radius={[0, 6, 6, 0]} barSize={18} />
           <BarChart.Tooltip
             content={({ active, payload, label }) => {
               if (!active || !payload?.length) return null;

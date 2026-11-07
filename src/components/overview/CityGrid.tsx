@@ -123,7 +123,7 @@ function CityCard({
       type="button"
       aria-pressed={isActive}
       onClick={onSelect}
-      className={`flex h-full w-full cursor-pointer flex-col gap-3 rounded-2xl p-4 text-left shadow-surface transition-[transform,background-color] duration-200 ease-out hover:-translate-y-0.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] motion-reduce:transition-none motion-reduce:hover:translate-y-0 ${
+      className={`flex h-full w-full cursor-pointer flex-col gap-3 rounded-2xl p-4 text-left shadow-surface transition-[translate,scale,background-color] duration-200 ease-out hover:-translate-y-0.5 active:scale-[0.985] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] motion-reduce:transition-none motion-reduce:hover:translate-y-0 motion-reduce:active:scale-100 ${
         isActive
           ? "bg-surface ring-2 ring-accent"
           : "bg-surface hover:bg-surface-hover"

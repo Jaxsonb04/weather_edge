@@ -52,12 +52,12 @@ export function Hero({ targets, cities, selectedCity, activeCity, onSelectCity }
         </div>
 
         <div className="flex min-w-0 flex-col gap-3">
-          {cities.length > 0 && (
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-sm font-medium text-foreground">Forecast</p>
-              <CitySelect cities={cities} selected={selectedCity} onSelect={onSelectCity} />
-            </div>
-          )}
+          {/* Always laid out: the cities file can land after the forecast, and
+              this row appearing late pushed the whole card down. */}
+          <div className="flex min-h-11 items-center justify-between gap-3 md:min-h-9">
+            <p className="text-sm font-medium text-foreground">Forecast</p>
+            {cities.length > 0 && <CitySelect cities={cities} selected={selectedCity} onSelect={onSelectCity} />}
+          </div>
           <ForecastDial key={activeCity?.slug ?? "sfo"} targets={targets} city={activeCity} />
         </div>
       </div>

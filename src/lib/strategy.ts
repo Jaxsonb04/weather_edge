@@ -487,6 +487,95 @@ export interface AccountSnapshot {
   days?: DayRow[];
 }
 
+export interface M1Stats {
+  roi?: number | null;
+  lower?: number | null;
+  upper?: number | null;
+  p_le_zero?: number | null;
+  dates?: number;
+}
+
+export interface M1Hypothesis extends M1Stats {
+  id?: string;
+  role?: string;
+  statement?: string;
+  alpha?: number;
+  settled_entries?: number;
+  disagree_roi?: number | null;
+  disagree_settled_entries?: number;
+}
+
+export interface M1StopRule {
+  rule?: string;
+  label?: string;
+  status?: string;
+  threshold?: string;
+  threshold_dollars?: number;
+  realized_pnl?: number;
+  min_settled_entries?: number;
+  threshold_roi?: number;
+  settled_entries?: number;
+  roi?: number | null;
+  threshold_slope?: number;
+  window_target_dates?: number;
+  entries?: number;
+  entries_limit?: number;
+  trading_days?: number;
+  trading_days_limit?: number;
+}
+
+export interface M1ShadowArm {
+  arm?: string;
+  entries?: number;
+  settled_entries?: number;
+  pnl?: number;
+  stake?: number;
+  roi?: number | null;
+}
+
+/** `accounts.research_m1.trial`. Static pre-registration fields are published
+    even before the first evaluation, so every live block is optional. */
+export interface M1TrialPayload {
+  available?: boolean;
+  reason?: string | null;
+  promotion_note?: string;
+  policy_version?: string;
+  initial_capital?: number;
+  entries_enabled_by_stop_rules?: boolean;
+  halts?: Array<{ rule?: string; recorded_at?: string }>;
+  stop_rules?: M1StopRule[];
+  hypotheses?: M1Hypothesis[];
+  inference_note?: string;
+  caps?: Record<string, number | null | undefined>;
+  rule?: { sampling?: string; edge_threshold?: number; lead_days?: number; exits?: string };
+  horizon?: { entries?: number; trading_days?: number };
+  expected_roi?: { low?: number; central?: number; high?: number };
+  book?: {
+    entries?: number;
+    trading_days?: number;
+    settled_entries?: number;
+    realized_pnl?: number;
+    settled_stake?: number;
+    last_entry_at?: string | null;
+  };
+  shadow_arms?: Record<string, M1ShadowArm | undefined>;
+  health?: {
+    last_evaluation_at?: string | null;
+    stale_pending_admissions?: number;
+    missed_entries?: number | null;
+    last_error?: { at?: string; reason?: string } | null;
+  };
+}
+
+/** The M1 book as published. It has no place in the shared `profiles` list, so
+    this is the only way the site reaches it, and it is never added to another. */
+export type M1Book = Partial<AccountSnapshot> & {
+  available?: boolean;
+  reason?: string | null;
+  paper_only?: boolean;
+  trial?: M1TrialPayload;
+};
+
 /** Provenance the publisher stamps on every decision and gate COUNT in the
     artifact. A `fast_public` cycle reuses an older analysis cache, so those
     counts describe a window that closed before this publication. */
@@ -674,6 +763,12 @@ export interface StrategyLab {
 
 export const useStrategyLab = () => useResource<StrategyLab>("strategy_research.json");
 
+/** null until the runtime publishes the book; production has none before deploy. */
+export function m1Book(s: StrategyLab): M1Book | null {
+  const book = s.accounting?.accounts?.research_m1 as M1Book | undefined;
+  return book && typeof book === "object" ? book : null;
+}
+
 const ACTIVE_PROFILE_ORDER = ["live", "research-target"] as const;
 
 /** Canonical account projection for every public Strategy Lab surface. Legacy
@@ -775,7 +870,7 @@ export function researchDailyTarget(
 
 /** Equity curve from any day series + starting bankroll (combined book OR a
     single profile). Tolerant of missing dates / cumulative values. */
-export function equitySeriesFromDays(days: DayRow[] | undefined, startingBankroll = 1000) {
+export function equitySeriesFromDays(days: DayRow[] | undefined, startingBankroll = 2000) {
   return [...(days ?? [])]
     .filter((d) => !!d?.date)
     .sort((a, b) => a.date.localeCompare(b.date))
@@ -801,7 +896,7 @@ export function equitySeries(s: StrategyLab) {
   const startingBankroll =
     s.daily_summary?.equity_basis === "attribution_only"
       ? 0
-      : (s.daily_summary?.starting_bankroll ?? 1000);
+      : (s.daily_summary?.starting_bankroll ?? 2000);
   return equitySeriesFromDays(s.daily_summary?.days, startingBankroll);
 }
 

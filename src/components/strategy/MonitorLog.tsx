@@ -134,7 +134,7 @@ export function MonitorLog({
               <Chip.Label>{meta.label}</Chip.Label>
             </Chip>
             {d.note && d.note !== "closed by monitor" && (
-              <span className="max-w-56 truncate text-xs text-muted" title={d.note}>
+              <span className="min-w-0 max-w-56 whitespace-normal text-xs text-muted sm:truncate" title={d.note}>
                 {d.note}
               </span>
             )}

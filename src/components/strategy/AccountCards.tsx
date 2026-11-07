@@ -42,7 +42,7 @@ function Sparkline({ values, tone }: { values: number[]; tone: "pos" | "neg" | "
     .join(" ");
   const color = tone === "pos" ? "text-success" : tone === "neg" ? "text-danger" : "text-muted";
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className={`h-7 w-24 shrink-0 ${color}`} aria-hidden="true">
+    <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className={`bar-grow h-7 w-24 shrink-0 ${color}`} aria-hidden="true">
       <polyline
         points={points}
         fill="none"
@@ -91,7 +91,7 @@ function AccountCard({
       aria-pressed={selected}
       onClick={onSelect}
       data-account={profile.risk_profile}
-      className={`group flex w-full min-w-0 cursor-pointer flex-col gap-4 rounded-2xl p-4 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] sm:p-5 ${
+      className={`group flex w-full min-w-0 cursor-pointer flex-col gap-4 rounded-2xl p-4 text-left transition-[scale,background-color] duration-150 active:scale-[0.99] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] motion-reduce:transition-none motion-reduce:active:scale-100 sm:p-5 ${
         selected
           ? "bg-surface shadow-surface ring-2 ring-accent"
           : "bg-surface-secondary hover:bg-surface-tertiary"

@@ -119,7 +119,7 @@ export function DailyTargetEvidence({ target }: { target: ResearchDailyTarget })
               aria-valuemax={targetPnl}
               aria-valuenow={progressValue}
             >
-              <div className="h-full rounded-full bg-accent" style={{ width: `${progress * 100}%` }} />
+              <div className="bar-grow h-full rounded-full bg-accent" style={{ width: `${progress * 100}%` }} />
             </div>
           )}
         </div>
@@ -354,7 +354,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
                   <span className="text-sm font-normal text-muted"> of {gateCount.signals.toLocaleString()}</span>
                 </p>
                 <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-default">
-                  <div className="h-full rounded-full bg-accent" style={{ width: `${Math.max((gateCount.approved / gateCount.signals) * 100, 0.75)}%` }} />
+                  <div className="bar-grow h-full rounded-full bg-accent" style={{ width: `${Math.max((gateCount.approved / gateCount.signals) * 100, 0.75)}%` }} />
                 </div>
                 <p className="mt-2 text-xs text-muted">
                   {pct(gateCount.approved / gateCount.signals, 2)} approved
@@ -368,9 +368,9 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
                 <ul className="flex flex-col gap-2">
                   {rejections.map((r) => (
                     <li key={r.reason} className="grid grid-cols-[minmax(0,9rem)_1fr_auto] items-center gap-2.5">
-                      <span className="truncate text-xs text-foreground" title={r.reason}>{rejectionLabel(r.reason)}</span>
+                      <span className="min-w-0 text-xs text-foreground" title={r.reason}>{rejectionLabel(r.reason)}</span>
                       <div className="h-1 overflow-hidden rounded-full bg-default">
-                        <div className="h-full rounded-full bg-accent/70" style={{ width: `${Math.max((r.count / maxRejection) * 100, 2)}%` }} />
+                        <div className="bar-grow h-full rounded-full bg-accent/70" style={{ width: `${Math.max((r.count / maxRejection) * 100, 2)}%` }} />
                       </div>
                       <span className="tnum text-xs text-muted">{r.count.toLocaleString()}</span>
                     </li>

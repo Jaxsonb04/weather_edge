@@ -14,6 +14,8 @@ export function Footer({ disclaimer, repoUrl }: FooterProps) {
             src={`${import.meta.env.BASE_URL}favicon.svg`}
             alt=""
             aria-hidden="true"
+            width={20}
+            height={20}
             className="mt-0.5 size-5 shrink-0 rounded-md"
           />
           <p className="max-w-2xl text-xs leading-relaxed text-muted">
@@ -24,7 +26,7 @@ export function Footer({ disclaimer, repoUrl }: FooterProps) {
           href={repoUrl}
           target="_blank"
           rel="noreferrer"
-          className="shrink-0 text-xs font-medium text-muted underline-offset-4 transition-colors hover:text-foreground hover:underline focus-visible:rounded focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)]"
+          className="flex min-h-11 shrink-0 items-center text-xs font-medium text-muted underline-offset-4 sm:min-h-0 transition-colors hover:text-foreground hover:underline focus-visible:rounded focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)]"
         >
           Source on GitHub
         </a>

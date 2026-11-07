@@ -1,6 +1,6 @@
 import { useId } from "react";
 import { ReferenceArea, ReferenceLine } from "recharts";
-import { useReducedMotion } from "motion/react";
+import { useChartDraw } from "../../lib/useChartDraw";
 import { ChartTooltip } from "@heroui-pro/react/chart-tooltip";
 import { LineChart } from "@heroui-pro/react/line-chart";
 import { Widget } from "@heroui-pro/react/widget";
@@ -53,14 +53,14 @@ export function EquityCurve({
   // Unique gradient id per instance: several curves can share a page, and a
   // duplicated SVG id would make later charts inherit the first chart's fill.
   const gid = `eq-fill-${useId().replace(/:/g, "")}`;
-  const reduce = useReducedMotion();
+  const draw = useChartDraw();
 
   const rendersContribution =
     contributionMode ||
     (!days && s.daily_summary?.equity_basis === "attribution_only");
   const start =
     startingBankroll ??
-    (rendersContribution ? 0 : (s.daily_summary?.starting_bankroll ?? 1000));
+    (rendersContribution ? 0 : (s.daily_summary?.starting_bankroll ?? 2000));
   const series = days ? equitySeriesFromDays(days, start) : equitySeries(s);
   const lineKey = rendersContribution ? "pnl" : "equity";
   const header = (fallbackDescription: string) => (
@@ -161,7 +161,7 @@ export function EquityCurve({
               strokeWidth={2.25}
               type="monotone"
               fill={`url(#${gid})`}
-              isAnimationActive={!reduce}
+              {...draw}
             />
             <LineChart.Tooltip
               cursor={false}

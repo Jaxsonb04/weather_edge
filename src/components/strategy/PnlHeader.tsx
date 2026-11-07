@@ -56,7 +56,7 @@ export function PnlHeader({ s }: { s: StrategyLab }) {
               )}
             </Kpi>
             <KPIGroup.Separator />
-            <Kpi icon="solar:wallet-linear" title="Realized equity" hint={`from ${money(account?.initial_capital ?? s.daily_summary.starting_bankroll ?? 1000, { digits: 0, sign: "negative-only" })}`}>
+            <Kpi icon="solar:wallet-linear" title="Realized equity" hint={`from ${money(account?.initial_capital ?? s.daily_summary.starting_bankroll ?? 2000, { digits: 0, sign: "negative-only" })}`}>
               {realizedEquity == null ? <span className="font-display text-2xl font-semibold">—</span> : (
                 <AnimatedNumber
                   className="font-display text-2xl font-semibold"

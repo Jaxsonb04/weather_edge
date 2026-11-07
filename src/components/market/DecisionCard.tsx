@@ -33,8 +33,8 @@ export function DecisionCard({ target, approvedCount }: { target: Target; approv
           <span className="shrink-0">Quality</span>
           <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-default">
             <div
-              className="h-full rounded-full transition-[width] duration-700 ease-out motion-reduce:transition-none"
-              style={{ width: `${Math.min(100, Math.max(0, d.trade_quality_score))}%`, background: qualityColor(d.trade_quality_score) }}
+              className="h-full origin-left rounded-full transition-transform duration-300 ease-out motion-reduce:transition-none"
+              style={{ transform: `scaleX(${Math.min(100, Math.max(0, d.trade_quality_score)) / 100})`, background: qualityColor(d.trade_quality_score) }}
             />
           </div>
           <span className="tnum font-medium text-foreground">{Math.round(d.trade_quality_score)}</span>
