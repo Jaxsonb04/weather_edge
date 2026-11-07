@@ -71,7 +71,7 @@ operational claim; all production observations below are dated snapshots.
     gates for that account only; its current limits are listed above.
 
   Alerts are skipped for now because there is no destination. Real-money
-  trading, retention deletion beyond the November 1 trim, and weakened risk or
+  trading, retention deletion beyond the November 1 trim (superseded Nov 6), and weakened risk or
   promotion gates remain unauthorized.
 - **Incident, October 27 09:46 PT → November 1 14:02 PT:**
   - **Cause:** Kalshi finalized LA Oct 22 and Boston Oct 24 with the winning
@@ -109,10 +109,10 @@ operational claim; all production observations below are dated snapshots.
   - **Production journal:** trimmed with the deployed
     `prune_decision_snapshots(full_days=1, dedup_days=45)` to 17.17 GiB (Nov 1).
     It was 17.75 GiB on Nov 2 and grows about 0.57 GiB/day.
-  - **Retention:** the installed backend defaults to archive-only. Main defaults
-    to bounded-delete, so every deploy of main must keep `SFO_PRUNE_MODE=archive-only`
-    (the installer appends it when the key is missing). Deletion is not
-    authorized, and audit F9 found that S3 archive copies expire at 90 days.
+  - **Retention (Nov 2; superseded Nov 6):** the installed backend defaulted to
+    archive-only, and deletion was not yet authorized. The Nov 6 owner decision
+    authorizes `bounded-delete` after archive, and S3 expiry was raised to 3650
+    days, so the keep-`archive-only` instruction no longer applies.
   - **Owner decision pending (soon):** under archive-only, the same-volume deploy
     backup (journal plus 1 GiB free) stops fitting about 8 days after Nov 2.
 - **Production snapshot (November 2, 19:27 PT):**

@@ -362,7 +362,9 @@ default.
 A host that predates this default does not start deleting on its own. Both
 installers run `migrate_weatheredge_env.py`, which appends
 `SFO_PRUNE_MODE=archive-only` under a comment pointing here when the key is
-absent, and leaves any existing value alone. The post-deploy production policy
+absent, and leaves any existing value alone. Supervised catch-up (step 5.5)
+deletes that key, so re-set `SFO_PRUNE_MODE=bounded-delete` afterwards or the
+next install reinstates `archive-only`. The post-deploy production policy
 is explicit `SFO_PRUNE_MODE=bounded-delete`: archive first, verify, then delete
 only verified days. Keep that explicit setting through installation and
 migration; do not rely on an absent key. Supervised catch-up and compaction
