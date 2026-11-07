@@ -922,6 +922,20 @@ def test_closing_by_hand_during_an_outage_is_an_acknowledgement_not_an_invitatio
     assert github.recently_acknowledged(foreign, "owner/repo", NOW) is False
 
 
+def test_relapse_after_the_monitors_own_close_is_not_suppressed_for_unhealthy():
+    issue = {
+        "number": 90,
+        "title": core.ISSUE_TITLE,
+        "body": core.MONITOR_MARKER,
+        "closed_at": (NOW - timedelta(minutes=10)).isoformat(),
+    }
+    auto = {"body": f"{core.MONITOR_MARKER}\nPublication recovered: x. Closing automatically."}
+    ack = github.recently_acknowledged
+    assert ack(FakeGitHub(closed_issues=[issue], comments=[auto]), "o/r", NOW, check_close_comment=True) is False
+    human = [{"body": "seen, on it"}]
+    assert ack(FakeGitHub(closed_issues=[issue], comments=human), "o/r", NOW, check_close_comment=True) is True
+
+
 def test_the_monitors_own_recovery_close_is_not_mistaken_for_an_acknowledgement():
     # Publication flaps: it recovers, the monitor auto-closes, and it dies again
     # an hour later. Counting that close as a human acknowledgement would

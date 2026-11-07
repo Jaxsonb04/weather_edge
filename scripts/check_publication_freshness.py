@@ -237,7 +237,14 @@ def _run(args: argparse.Namespace, notes: Notes) -> int:
                 minutes=thresholds.close_at_or_below_minutes
             )
         try:
-            if recently_acknowledged(api, repo, now, human_close_after=human_close_after, notes=notes):
+            if recently_acknowledged(
+                api,
+                repo,
+                now,
+                human_close_after=human_close_after,
+                check_close_comment=verdict.state == STATE_UNHEALTHY,
+                notes=notes,
+            ):
                 action = plan_action(
                     verdict,
                     issue,

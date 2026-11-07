@@ -247,6 +247,7 @@ def recently_acknowledged(
     now: datetime,
     *,
     human_close_after: datetime | None = None,
+    check_close_comment: bool = False,
     within_minutes: float = ACK_AFTER_MANUAL_CLOSE_MINUTES,
     notes: Notes | None = None,
 ) -> bool:
@@ -285,6 +286,8 @@ def recently_acknowledged(
                 if human_close_after is not None and closed_at <= human_close_after:
                     # This monitor's own recovery close, not a human's.
                     continue
+                if check_close_comment and _closed_by_monitor(api, repo, entry):
+                    continue
                 if notes is not None:
                     notes.add(
                         f"issue #{entry.get('number')} was closed at {closed_at.isoformat()}; "
@@ -292,6 +295,21 @@ def recently_acknowledged(
                     )
                 return True
     return False
+
+
+def _closed_by_monitor(api: ApiCall, repo: str, entry: dict[str, Any]) -> bool:
+    """Whether the issue's last comment is the monitor's own recovery close.
+
+    For verdicts that keep a fresh publish time, the timestamp cannot tell the
+    monitor's close from a human's, so the closing comment does.
+    """
+
+    comments: list[Any] = []
+    for page in _pages(api, f"/repos/{repo}/issues/{entry.get('number')}/comments", max_pages=3):
+        comments = page
+    last = comments[-1] if comments else None
+    body = last.get("body") if isinstance(last, dict) else None
+    return isinstance(body, str) and MONITOR_MARKER in body and "Closing automatically." in body
 
 
 # --- Issue prose ---
