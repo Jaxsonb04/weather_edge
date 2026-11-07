@@ -23,6 +23,19 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
+    # Held updates, one reason each. Remove an entry when its reason is gone.
+    ignore:
+      # Licensed package: CI reinstalls it with hpsetup@4.5.0 and fails if package.json or bun.lock change.
+      - dependency-name: "@heroui-pro/react"
+      # Must stay on the Node 24 types that match the runtime.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # 30+ needs Node ^22.22.2 || ^24.15.0 || >=26; the Node 23.2 dev machine can't start the test workers. Take it after upgrading Node.
+      - dependency-name: "jsdom"
+        update-types: ["version-update:semver-major"]
+      # @heroui/react and @heroui/styles pin 3.3.1 exactly; a v4 root copy would duplicate it and Pro's peer would resolve to v4.
+      - dependency-name: "tailwind-variants"
+        update-types: ["version-update:semver-major"]
     # Minor and patch updates arrive as one PR; majors stay individual PRs.
     # Tiptap packages share exact peer contracts, so they move together.
     groups:
