@@ -151,7 +151,7 @@ class ReplayOrder:
     contracts: float
     fee_per_contract: float
     queue_ahead: float = 0.0
-    ttl_minutes: int = 15
+    ttl_minutes: float = 15
     immediate: bool = False
     queue_price: float | None = None
 
@@ -1619,7 +1619,7 @@ def as_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
-def _row_ttl_minutes(row, placed: datetime, default: int = 15) -> int:
+def _row_ttl_minutes(row, placed: datetime, default: float = 15) -> float:
     """TTL a journaled resting order actually carried, from its own expires_at.
 
     Live rows keep 15 (their expires_at is created_at + 15); the research
@@ -1634,7 +1634,7 @@ def _row_ttl_minutes(row, placed: datetime, default: int = 15) -> int:
     minutes = (expires - as_utc(placed)).total_seconds() / 60.0
     if not math.isfinite(minutes) or minutes <= 0:
         return default
-    return int(round(minutes))
+    return minutes  # a pulled quote expires at its exact cancel instant
 
 
 def _parse_time(value) -> datetime | None:

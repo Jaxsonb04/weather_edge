@@ -176,7 +176,7 @@ def _with_intraday_update(
         "predicted_high_f": round(float(updated.predicted_high_f), 2),
         "method": updated.method,
         "intraday_update": {
-            "applied": True,
+            "applied": round(float(updated.predicted_high_f), 2) != round(float(base_high_f), 2),
             "observed_high_f": intraday.observed_high_f,
             "latest_temp_f": intraday.latest_temp_f,
             "latest_observed_at": intraday.latest_observed_at,

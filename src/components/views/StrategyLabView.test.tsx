@@ -280,6 +280,20 @@ describe("LabNotices", () => {
     }
   });
 
+  it("keeps other same-day entry failures as normal notices with their detail", () => {
+    const s = {
+      ...twoAccounts,
+      status: {
+        alerts: [{ code: "same-day-entry-blocked", level: "warning", title: "Same-day entries blocked", detail: "Live forecast failed to load." }],
+      },
+    } as unknown as StrategyLab;
+    render(<LabNotices s={s} tab="accounts" />);
+    expect(screen.getByText("Same-day entries blocked")).toBeInTheDocument();
+    expect(screen.getByText("Live forecast failed to load.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Same-day entries blocked/ })).toBeInTheDocument();
+    expect(screen.queryByText("Next-day entries only")).not.toBeInTheDocument();
+  });
+
   it("keeps account drawdown and unmarked-position warnings on Accounts", () => {
     const s = {
       ...twoAccounts,

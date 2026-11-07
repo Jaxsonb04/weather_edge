@@ -812,9 +812,9 @@ def test_find_open_issue_falls_back_when_the_label_does_not_exist():
         label_exists=False,
         issues=[
             {"number": 5, "title": "unrelated", "body": "nope"},
-            {"number": 6, "title": core.ISSUE_TITLE, "body": core.MONITOR_MARKER},
+            {"number": 6, "title": core.ISSUE_TITLE, "body": core.MONITOR_MARKER, "user": {"login": "github-actions[bot]"}},
         ],
-        comments=[{"body": core.BUCKET_MARKER_TEMPLATE.format(bucket=6)}],
+        comments=[{"body": core.BUCKET_MARKER_TEMPLATE.format(bucket=6), "user": {"login": "github-actions[bot]"}}],
     )
     notes = core.Notes()
 
@@ -831,8 +831,8 @@ def test_find_open_issue_never_adopts_someone_elses_labelled_issue():
     # or auto-closed -- and must not suppress the monitor's own alert either.
     api = FakeGitHub(
         issues=[
-            {"number": 200, "title": "Track the stale-production follow-ups", "body": "mine"},
-            {"number": 150, "title": core.ISSUE_TITLE, "body": core.MONITOR_MARKER},
+            {"number": 200, "title": "Track the stale-production follow-ups", "body": "mine", "user": {"login": "outsider"}},
+            {"number": 150, "title": core.ISSUE_TITLE, "body": core.MONITOR_MARKER, "user": {"login": "github-actions[bot]"}},
         ],
         comments=[],
     )
@@ -843,12 +843,46 @@ def test_find_open_issue_never_adopts_someone_elses_labelled_issue():
     assert issue.number == 150
 
 
+@pytest.mark.parametrize("match", [{"title": core.ISSUE_TITLE}, {"body": core.MONITOR_MARKER}])
+def test_outsiders_matching_issues_are_ignored(match):
+    issue = {
+        "number": 200,
+        "user": {"login": "outsider"},
+        "closed_at": (NOW - timedelta(minutes=10)).isoformat(),
+        **match,
+    }
+    api = FakeGitHub(issues=[issue], closed_issues=[issue])
+
+    assert github.find_open_issue(api, "owner/repo") is None
+    assert github.recently_acknowledged(api, "owner/repo", NOW) is False
+    assert not any("/comments?" in path for path in api.paths("GET"))
+
+
+def test_find_open_issue_ignores_outsiders_comment_markers():
+    api = FakeGitHub(
+        issues=[{"number": 6, "title": core.ISSUE_TITLE, "user": {"login": "github-actions[bot]"}}],
+        comments=[
+            {"body": core.BUCKET_MARKER_TEMPLATE.format(bucket=6), "user": {"login": "outsider"}},
+            {"body": core.BUCKET_MARKER_TEMPLATE.format(bucket=12), "user": {"login": "github-actions[bot]"}},
+        ],
+    )
+
+    issue = github.find_open_issue(api, "owner/repo")
+
+    assert issue is not None
+    assert core.posted_buckets(issue) == frozenset({12})
+    stale = core.evaluate(_fetch_at(400), NOW)
+    action = core.plan_action(stale, issue, 90.0, 20.0)
+    assert action.kind == core.ACTION_COMMENT
+    assert action.bucket_hours == 6
+
+
 def test_find_open_issue_reads_every_page_of_issues_and_comments():
     filler = [{"number": n, "title": "unrelated", "body": ""} for n in range(100)]
-    ours = {"number": 4242, "title": core.ISSUE_TITLE, "body": core.MONITOR_MARKER}
+    ours = {"number": 4242, "title": core.ISSUE_TITLE, "body": core.MONITOR_MARKER, "user": {"login": "github-actions[bot]"}}
     comment_pages = [
         [{"body": f"chatter {n}"} for n in range(100)],
-        [{"body": core.BUCKET_MARKER_TEMPLATE.format(bucket=24)}],
+        [{"body": core.BUCKET_MARKER_TEMPLATE.format(bucket=24), "user": {"login": "github-actions[bot]"}}],
     ]
 
     class Paged(FakeGitHub):
@@ -872,7 +906,8 @@ def test_find_open_issue_reads_every_page_of_issues_and_comments():
     assert core.posted_buckets(issue) == frozenset({24})
 
 
-def test_closing_by_hand_during_an_outage_is_an_acknowledgement_not_an_invitation():
+@pytest.mark.parametrize("check_close_comment", [False, True])
+def test_closing_by_hand_during_an_outage_is_an_acknowledgement_not_an_invitation(check_close_comment):
     closed_at = (NOW - timedelta(minutes=10)).isoformat()
     api = FakeGitHub(
         closed_issues=[
@@ -880,13 +915,17 @@ def test_closing_by_hand_during_an_outage_is_an_acknowledgement_not_an_invitatio
                 "number": 90,
                 "title": core.ISSUE_TITLE,
                 "body": core.MONITOR_MARKER,
+                "user": {"login": "github-actions[bot]"},
+                "closed_by": {"login": "human"},
                 "closed_at": closed_at,
             }
         ]
     )
     notes = core.Notes()
 
-    assert github.recently_acknowledged(api, "owner/repo", NOW, notes=notes) is True
+    assert github.recently_acknowledged(
+        api, "owner/repo", NOW, notes=notes, check_close_comment=check_close_comment
+    ) is True
     assert any("acknowledgement" in line for line in notes.lines)
 
     stale = core.evaluate(_fetch_at(300), NOW)
@@ -909,6 +948,7 @@ def test_closing_by_hand_during_an_outage_is_an_acknowledgement_not_an_invitatio
                 "number": 90,
                 "title": core.ISSUE_TITLE,
                 "body": core.MONITOR_MARKER,
+                "user": {"login": "github-actions[bot]"},
                 "closed_at": (NOW - timedelta(days=4)).isoformat(),
             }
         ]
@@ -927,13 +967,20 @@ def test_relapse_after_the_monitors_own_close_is_not_suppressed_for_unhealthy():
         "number": 90,
         "title": core.ISSUE_TITLE,
         "body": core.MONITOR_MARKER,
+        "user": {"login": "github-actions[bot]"},
+        "closed_by": {"login": "human"},
         "closed_at": (NOW - timedelta(minutes=10)).isoformat(),
     }
-    auto = {"body": f"{core.MONITOR_MARKER}\nPublication recovered: x. Closing automatically."}
+    auto = {
+        "body": f"{core.MONITOR_MARKER}\nPublication recovered: x. Closing automatically.",
+        "user": {"login": "github-actions[bot]"},
+    }
     ack = github.recently_acknowledged
     assert ack(FakeGitHub(closed_issues=[issue], comments=[auto]), "o/r", NOW, check_close_comment=True) is False
-    human = [{"body": "seen, on it"}]
+    human = [{"body": "seen, on it", "user": {"login": "human"}}]
     assert ack(FakeGitHub(closed_issues=[issue], comments=human), "o/r", NOW, check_close_comment=True) is True
+    forged = {**auto, "user": {"login": "outsider"}}
+    assert ack(FakeGitHub(closed_issues=[issue], comments=[forged]), "o/r", NOW, check_close_comment=True) is True
 
 
 def test_the_monitors_own_recovery_close_is_not_mistaken_for_an_acknowledgement():
@@ -951,6 +998,7 @@ def test_the_monitors_own_recovery_close_is_not_mistaken_for_an_acknowledgement(
                     "number": 92,
                     "title": core.ISSUE_TITLE,
                     "body": core.MONITOR_MARKER,
+                    "user": {"login": "github-actions[bot]"},
                     "closed_at": closed_at.isoformat(),
                 }
             ]
@@ -993,7 +1041,7 @@ def test_mute_deadline_reads_the_flag_then_the_environment():
 def test_find_open_issue_skips_pull_requests():
     api = FakeGitHub(
         issues=[
-            {"number": 8, "title": core.ISSUE_TITLE, "body": "x", "pull_request": {"url": "..."}},
+            {"number": 8, "title": core.ISSUE_TITLE, "body": "x", "pull_request": {"url": "..."}, "user": {"login": "github-actions[bot]"}},
         ],
         comments=[],
     )
@@ -1450,3 +1498,31 @@ def test_strategy_problem_reads_alerts_and_age_only():
     assert "not refreshed" in core.strategy_problem({"generated_at": "2026-11-07T06:00:00+00:00"}, now)
     assert core.strategy_url(MANIFEST_URL).endswith("/strategy_research.json")
 
+
+@pytest.mark.parametrize("skew_hours, strategy_age_minutes, state", [
+    (2, 30, core.STATE_FRESH),
+    (-2, 120, core.STATE_UNHEALTHY),
+])
+def test_strategy_problem_uses_validated_clock_when_runner_is_skewed(monkeypatch, capsys, skew_hours, strategy_age_minutes, state):
+    class RunnerClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW + timedelta(hours=skew_hours)
+
+    def fetch(url, now, **kwargs):
+        document = (
+            {"generated_at": (NOW - timedelta(minutes=strategy_age_minutes)).isoformat()}
+            if url.endswith("strategy_research.json")
+            else _manifest((NOW - timedelta(minutes=5)).isoformat())
+        )
+        return core.ManifestFetch(url=url, manifest=document, http_date=NOW)
+
+    monkeypatch.setattr(cli, "datetime", RunnerClock)
+    monkeypatch.setattr(cli, "fetch_manifest_with_retries", fetch)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    assert cli.main(["--manifest-url", MANIFEST_URL, "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith(f"{state.upper()}:")
+    assert "clock: http-date" in out

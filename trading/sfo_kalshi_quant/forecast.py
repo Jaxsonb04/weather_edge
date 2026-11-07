@@ -492,10 +492,12 @@ class SfoForecasterAdapter:
                 "intraday_weight": weight,
             },
         }
+        # Before the peak the weight is 0, so the point usually stays put.
+        moved = round(adjusted_high, 2) != round(forecast.predicted_high_f, 2)
         return replace(
             forecast,
             predicted_high_f=round(adjusted_high, 2),
-            method=f"{forecast.method} + intraday high-so-far update",
+            method=f"{forecast.method} + intraday high-so-far update" if moved else forecast.method,
             raw=raw,
         )
 

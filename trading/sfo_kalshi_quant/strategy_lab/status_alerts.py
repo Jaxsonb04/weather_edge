@@ -190,6 +190,13 @@ def _strategy_alerts(
                         f"Last reconciled UTC day: {rule.get('last_reconciled_utc_day') or 'none'}.",
                         "Inspect paper-settle service logs and re-run paper-m1-reconcile.",
                     ))
+            problems = ((m1.get("trial") or {}).get("health") or {}).get("problems")
+            if problems and not DEPLOY_MAINTENANCE_MARKER.exists():
+                alerts.append(_alert(
+                    "critical", "m1-health", "M1 trial is failing",
+                    "; ".join(problems),
+                    "Read the paper scan service logs on the host.",
+                ))
     summary = paper.get("summary") or {}
     if not paper.get("available"):
         alerts.append(
@@ -270,7 +277,10 @@ def _strategy_alerts(
             )
         )
 
-    latest_monitor_at = summary.get("latest_monitor_action_at")
+    # One lot failing every pass leaves the others fresh, so judge the oldest.
+    latest_monitor_at = (
+        summary.get("oldest_lot_inspection_at") or summary.get("latest_monitor_action_at")
+    )
     latest_monitor_dt = _parse_timestamp(latest_monitor_at)
     if open_count and latest_monitor_dt is None:
         latest_opened_dt = _parse_timestamp(summary.get("latest_opened_at"))
@@ -302,7 +312,7 @@ def _strategy_alerts(
                     "critical",
                     "monitor-stale",
                     "Monitor stale",
-                    f"Latest paper monitor action is {_age_label(monitor_age)} old.",
+                    f"An open paper position was last inspected {_age_label(monitor_age)} ago.",
                     "Check the paper monitor timer and service logs.",
                 )
             )

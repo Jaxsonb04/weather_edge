@@ -726,3 +726,22 @@ def test_intraday_reads_stay_on_the_station_date_index(monkeypatch):
             for sql in reads:
                 plan = " ".join(row[3] for row in conn.execute(f"EXPLAIN QUERY PLAN {sql}"))
                 assert "idx_nws_obs_local_date" in plan, sql
+
+
+def test_morning_update_keeps_the_method_when_the_high_does_not_move():
+    adapter = SfoForecasterAdapter(Path("/nonexistent"), get_city("den"))
+    forecast = ForecastSnapshot(
+        target_date=date(2026, 11, 7), predicted_high_f=62.7, station_id="KDEN",
+        fetched_at=datetime(2026, 11, 7, 7, 0, tzinfo=UTC), method="emos_wmean",
+    )
+
+    def update(local_hour: int, high: float) -> ForecastSnapshot:
+        return adapter.apply_intraday_update(forecast, IntradaySnapshot(
+            target_date=forecast.target_date, observed_high_f=high, latest_temp_f=high,
+            latest_observed_at=f"2026-11-07T{local_hour + 7:02d}:00:00+00:00",
+            remaining_forecast_high_f=None, forecast_fetched_at=None,
+        ))
+
+    assert update(0, 39.2).method == "emos_wmean"
+    assert update(0, 39.2).predicted_high_f == 62.7
+    assert update(15, 60.0).method == "emos_wmean + intraday high-so-far update"

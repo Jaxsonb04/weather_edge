@@ -397,6 +397,9 @@ def _profile_paper_payload(paper: dict[str, Any], name: str) -> dict[str, Any]:
             if monitor_health is not None
             else monitor_action_rows[0].get("time") if monitor_action_rows else None
         ),
+        "oldest_lot_inspection_at": (
+            monitor_health.get("oldest_lot_inspection_at") if monitor_health is not None else None
+        ),
         "closed_positions": int(_to_float(profile.get("orders"))),
         "realized_pnl": _round(profile.get("realized_pnl"), 2),
         "unrealized_pnl": unrealized_pnl,

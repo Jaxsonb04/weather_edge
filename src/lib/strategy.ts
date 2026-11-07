@@ -562,6 +562,7 @@ export interface M1TrialPayload {
   shadow_arms?: Record<string, M1ShadowArm | undefined>;
   health?: {
     last_evaluation_at?: string | null;
+    problems?: string[];
     stale_pending_admissions?: number;
     missed_entries?: number | null;
     last_error?: { at?: string; reason?: string } | null;

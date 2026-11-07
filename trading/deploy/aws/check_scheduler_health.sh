@@ -758,11 +758,11 @@ if [[ -n "$PAPER_DB" && ",${SCAN_PROFILES// /}," == *",research,"* ]]; then
     run_as_app "$PYTHON_BIN" - "$PAPER_DB" "$M1_NOW_OVERRIDE" <<'PY'
 import sqlite3
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
-from sfo_kalshi_quant.research_m1 import DECISION_ADMISSION_ERROR, DECISION_PENDING, M1_ACCOUNT_ID
-from sfo_kalshi_quant.research_m1_store import m1_overdue_reconciliation_day
+from sfo_kalshi_quant.research_m1 import M1_ACCOUNT_ID
+from sfo_kalshi_quant.research_m1_store import m1_health_problems, m1_overdue_reconciliation_day
 
 db_path, now_override = sys.argv[1:]
 now = (
@@ -771,71 +771,34 @@ now = (
     else datetime.now(timezone.utc)
 )
 
-
-def parse_utc(value):
-    try:
-        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
-
-
 if not Path(db_path).is_file():
     raise SystemExit(0)  # the paper scan check above owns a missing journal
 conn = sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
 try:
-    account = conn.execute(
-        "SELECT created_at FROM paper_accounts WHERE account_id=? AND status='ACTIVE'",
+    problems = m1_health_problems(conn, now=now)
+    active = conn.execute(
+        "SELECT 1 FROM paper_accounts WHERE account_id=? AND status='ACTIVE'",
         (M1_ACCOUNT_ID,),
     ).fetchone()
-    newest, failures, overdue_day, last_reconciled_day = None, [], None, None
-    if conn.execute(
+    if active and conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='m1_evaluations'"
     ).fetchone():
-        newest = conn.execute(
-            "SELECT created_at FROM m1_evaluations ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        failures = conn.execute(
-            "SELECT utc_hour, created_at, decision FROM m1_evaluations WHERE decision IN (?, ?)",
-            (DECISION_ADMISSION_ERROR, DECISION_PENDING),
-        ).fetchall()
-        if account is not None:
-            overdue_day = m1_overdue_reconciliation_day(conn, now=now)
+        overdue_day = m1_overdue_reconciliation_day(conn, now=now)
+        if overdue_day is not None:
             last_reconciled_day = conn.execute(
                 "SELECT MAX(utc_day) FROM m1_reconciliations"
             ).fetchone()[0]
+            problems.insert(
+                0,
+                f"M1 trial reconciliation overdue for UTC day {overdue_day} "
+                f"(last reconciled UTC day: {last_reconciled_day or 'none'})",
+            )
 except sqlite3.Error as exc:
     print(f"M1 trial journal is unreadable: {exc}", file=sys.stderr)
     raise SystemExit(2)
 finally:
     conn.close()
 
-problems = []
-if overdue_day is not None:
-    problems.append(
-        f"M1 trial reconciliation overdue for UTC day {overdue_day} "
-        f"(last reconciled UTC day: {last_reconciled_day or 'none'})"
-    )
-failed_hours = set()
-for utc_hour, created_at, decision in failures:
-    age = now - moment if (moment := parse_utc(created_at)) is not None else None
-    if age is None or age > timedelta(hours=3):
-        continue
-    if decision == DECISION_ADMISSION_ERROR or age > timedelta(hours=1):
-        failed_hours.add(utc_hour)
-if len(failed_hours) >= 2:
-    problems.append(
-        f"M1 trial admissions failed in {len(failed_hours)} UTC hours of the last 3"
-    )
-minute_of_day = now.hour * 60 + now.minute
-if not 7 * 60 <= minute_of_day < 16 * 60 + 30:
-    last = parse_utc(newest[0]) if newest else None
-    if last is not None and now - last > timedelta(minutes=90):
-        problems.append(f"M1 trial has no evaluation in the last 90 minutes (newest {newest[0]})")
-    if newest is None and account is not None:
-        created = parse_utc(account[0])
-        if created is None or now - created > timedelta(hours=24):
-            problems.append("M1 trial has no evaluation since account creation (24-hour start-up grace expired or unavailable)")
 for message in problems:
     print(message, file=sys.stderr)
 raise SystemExit(3 if problems else 0)

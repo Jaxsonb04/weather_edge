@@ -26,6 +26,7 @@ const STATUS: Record<string, { label: string; color: Tone }> = {
   not_yet_checked: { label: "Not yet checked", color: "default" },
   insufficient_data: { label: "Too little data", color: "default" },
   fit_failed: { label: "Fit failed", color: "warning" },
+  overdue: { label: "Overdue", color: "warning" },
   triggered: { label: "Triggered", color: "warning" },
   paused: { label: "Paused", color: "warning" },
   stopped: { label: "Stopped", color: "warning" },
@@ -195,6 +196,7 @@ export function M1Trial({ s }: { s: StrategyLab }) {
   const primary = trial?.hypotheses?.find((h) => h.id === "H1");
   const entriesOpen = trial?.entries_enabled_by_stop_rules;
   const checksOverdue = trial?.stop_rules?.some((rule) => rule.status === "overdue");
+  const failing = Boolean(trial?.health?.problems?.length);
   const lastEvaluation = when(trial?.health?.last_evaluation_at);
   const days = book.days?.filter((day) => day?.date && typeof day.closing_equity === "number" && Number.isFinite(day.closing_equity)) ?? [];
   const finalRead = trial?.stop_rules?.find((rule) => rule.rule === "final_read");
@@ -211,8 +213,8 @@ export function M1Trial({ s }: { s: StrategyLab }) {
             <div className="flex flex-wrap gap-1.5">
               <Chip size="sm" variant="soft" color="success"><Chip.Label>Paper only</Chip.Label></Chip>
               {currentStateAvailable && entriesOpen != null && (
-                <Chip size="sm" variant="soft" color={!entriesOpen ? "danger" : checksOverdue ? "warning" : "default"}>
-                  <Chip.Label>{!entriesOpen ? "Entries halted" : checksOverdue ? "Daily check overdue" : "Stop rules clear"}</Chip.Label>
+                <Chip size="sm" variant="soft" color={!entriesOpen ? "danger" : failing || checksOverdue ? "warning" : "default"}>
+                  <Chip.Label>{!entriesOpen ? "Entries halted" : failing ? "Trial failing" : checksOverdue ? "Daily check overdue" : "Stop rules clear"}</Chip.Label>
                 </Chip>
               )}
             </div>

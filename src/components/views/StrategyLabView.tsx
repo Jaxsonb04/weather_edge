@@ -205,7 +205,7 @@ export function LabNotices({ s, tab }: { s: StrategyLab; tab: LabTab }) {
         const plain: { title: string; text: string } | null =
           alert.code === "settlement-backlog" && past.length > 0
             ? { title: alert.title, text: `${count} open position${count === 1 ? "" : "s"} from ${dates} ${count === 1 ? "has" : "have"} not settled. Their marks are stale.` }
-            : alert.code === "same-day-entry-blocked"
+            : alert.code === "same-day-entry-blocked" && alert.detail?.includes("min_lead_days")
               ? { title: "Next-day entries only", text: "Live and V7 only enter next-day markets, so same-day signals are research-only." }
               : alert.code === "emos-live-missing"
                 ? { title: "Live forecast missing", text: `${stations.length ? stations.join(", ") : "Some stations"} ${stations.length === 1 ? "has" : "have"} no live forecast distribution yet and use a simpler fallback.` }

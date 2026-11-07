@@ -233,3 +233,49 @@ def test_watchdog_skips_m1_when_research_is_not_scanned(tmp_path, monkeypatch) -
     result = _run(tmp_path, db, profiles="live")
     assert result.returncode == 0, result.stderr
     assert CHECK_BLOCKED not in result.stderr
+
+
+def test_m1_failures_reach_public_status_after_a_clean_reconcile(tmp_path) -> None:
+    """A contained M1 exception keeps the scan green, so publish the journal's verdict."""
+
+    store, _clock = _store(tmp_path)
+    db = tmp_path / "paper.db"
+
+    def public(now):
+        trial = m1_trial_payload(store, now=now, resamples=10)
+        def alerts(status):
+            return _strategy_alerts(
+                paper={"available": True, "summary": {}}, entry_block_reason=None, now=now,
+                accounting={"accounts": {"research_m1": {"status": status, "trial": trial}}},
+            )
+        return trial, [a for a in alerts("ACTIVE") if a["code"] == "m1-health"], alerts("ARCHIVED")
+
+    _evaluation(db, _at(20), m1.DECISION_SHADOW)
+    engine.run_m1_settle_maintenance(store, now=_at(20, 30))
+    assert public(_at(21))[1] == []
+
+    trial, critical, archived = public(_at(22))
+    assert trial["stop_rules"][0]["status"] == "ok"
+    assert [a["level"] for a in critical] == ["critical"]
+    assert "no evaluation in the last 90 minutes" in critical[0]["detail"]
+    assert "m1-health" not in {a["code"] for a in archived}
+    assert public(_at(22).replace(hour=12))[1] == []  # the listing gap is normal
+
+    _evaluation(db, _at(23), m1.DECISION_ADMISSION_ERROR, "boom")
+    _evaluation(db, _at(23) + timedelta(hours=1, minutes=10), m1.DECISION_ADMISSION_ERROR, "boom")
+    failed = public(_at(23) + timedelta(hours=1, minutes=20))[1]
+    assert "admissions failed in 2 UTC hours" in failed[0]["detail"]
+    _evaluation(db, _at(23) + timedelta(hours=4), m1.DECISION_SHADOW)
+    assert public(_at(23) + timedelta(hours=4, minutes=5))[1] == []
+
+
+def test_stop_rule_lookup_uses_the_order_index(tmp_path) -> None:
+    store, _clock = _store(tmp_path)
+    with store.connect() as conn:
+        plan = " ".join(
+            str(row[3]) for row in conn.execute(
+                "EXPLAIN QUERY PLAN SELECT (SELECT e.agree FROM m1_evaluations e "
+                "WHERE e.order_id = o.id ORDER BY e.id LIMIT 1) FROM paper_orders o"
+            )
+        )
+    assert "idx_m1_evaluations_order" in plan
