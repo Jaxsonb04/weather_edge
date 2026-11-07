@@ -31,14 +31,14 @@ export function LoadingState() {
   );
 }
 
-export function ErrorState({ message }: { message: string }) {
+export function ErrorState({ message, title = "Couldn't load the forecast" }: { message: string; title?: string }) {
   return (
     <div className="grid min-h-[70vh] place-items-center bg-background px-6 text-center" role="alert">
       <div className="flex max-w-md flex-col items-center gap-3">
         <span className="grid size-12 place-items-center rounded-2xl bg-danger-soft text-danger">
           <Icon icon="solar:cloud-cross-linear" className="size-6" aria-hidden="true" />
         </span>
-        <p className="text-lg font-semibold text-foreground">Couldn't load the forecast</p>
+        <p className="text-lg font-semibold text-foreground">{title}</p>
         <p className="text-sm text-muted">{message}</p>
         <button
           type="button"

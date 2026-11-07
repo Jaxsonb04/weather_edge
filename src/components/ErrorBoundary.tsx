@@ -3,6 +3,7 @@ import { ErrorState } from "./States";
 
 interface ErrorBoundaryProps {
   children: ReactNode;
+  title?: string;
 }
 
 interface ErrorBoundaryState {
@@ -21,7 +22,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   }
 
   render() {
-    if (this.state.error) return <ErrorState message={this.state.error.message} />;
+    if (this.state.error) return <ErrorState title={this.props.title} message={this.state.error.message} />;
     return this.props.children;
   }
 }

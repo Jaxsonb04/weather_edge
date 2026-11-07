@@ -47,7 +47,8 @@ def _create_activity_tables(conn: sqlite3.Connection) -> None:
             account_id TEXT,
             research_sleeve TEXT,
             research_policy_version TEXT,
-            policy_fingerprint TEXT
+            policy_fingerprint TEXT,
+            reserved_cost REAL DEFAULT 0
         );
         """
     )
@@ -66,7 +67,11 @@ def _seed_activity(conn: sqlite3.Connection) -> None:
         ],
     )
     conn.executemany(
-        "INSERT INTO paper_orders VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        """INSERT INTO paper_orders (
+            market_ticker, risk_profile, contracts, cost_per_contract, status,
+            settled_at, closed_at, realized_pnl, account_id, research_sleeve,
+            research_policy_version, policy_fingerprint
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         [
             (
                 "KXHIGHTSFO-26JUL09-B65.5",
@@ -199,6 +204,30 @@ def test_all_city_books_tolerates_missing_tables():
     assert books["sfo"]["decisions_24h"] == 0
     assert books["sfo"]["live"]["open_positions"] == 0
     assert books["sfo"]["research"]["settled_orders"] == 0
+
+
+def test_partial_fill_exposure_includes_the_remaining_reservation_once():
+    with sqlite3.connect(":memory:") as conn:
+        _create_activity_tables(conn)
+        conn.executemany(
+            """
+            INSERT INTO paper_orders (
+                market_ticker, risk_profile, account_id, contracts,
+                cost_per_contract, status, reserved_cost
+            ) VALUES (?, 'live', ?, ?, 0.5, ?, ?)
+            """,
+            [
+                ("KXHIGHTSFO-26JUL09-B68.5", LIVE_STABILITY_ACCOUNT_ID, 2, "PAPER_PARTIALLY_FILLED", 4),
+                ("KXHIGHTSFO-26JUL09-B69.5", LIVE_STABILITY_ACCOUNT_ID, 8, "PAPER_LIMIT_RESTING", 4),
+                ("KXHIGHTSFO-26JUL09-B70.5", LIVE_STABILITY_ACCOUNT_ID, 2, "PAPER_PARTIAL_EXPIRED", 0),
+            ],
+        )
+
+        live = cities_report._all_city_books(conn, CUTOFF)["sfo"]["live"]
+
+    assert live["open_exposure"] == 10  # (1 filled + 4 reserved) + 4 resting + 1 expired partial
+    assert live["open_positions"] == 2
+    assert live["resting_orders"] == 2
 
 
 def test_cities_payload_includes_city_settlement_day_and_forecast_target_status():

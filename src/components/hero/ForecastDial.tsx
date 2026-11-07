@@ -135,7 +135,8 @@ export function ForecastDial({ targets, city }: { targets: Target[]; city?: City
   const currentStateAvailable = signal.state === "fresh";
   const [idx, setIdx] = useState(0);
   const displayTargets = useMemo(() => selectCurrentTargets(targets), [targets]);
-  const target = displayTargets[idx] ?? displayTargets.at(0);
+  const activeIdx = idx < displayTargets.length ? idx : 0;
+  const target = displayTargets[activeIdx];
 
   if (city && city.slug !== "sfo") return <CityForecastDial city={city} />;
 
@@ -188,7 +189,7 @@ export function ForecastDial({ targets, city }: { targets: Target[]; city?: City
           <Segment
             aria-label="Forecast day"
             size="sm"
-            selectedKey={String(idx)}
+            selectedKey={String(activeIdx)}
             onSelectionChange={(k) => setIdx(Number(k))}
             className="self-start"
           >

@@ -713,6 +713,20 @@ def test_latest_deployment_accepts_a_json_encoded_payload_string():
     assert record.state is None
 
 
+def test_missing_deploy_window_note_matches_the_nonterminal_threshold():
+    api = FakeGitHub(
+        deployments=[{"id": 79, "created_at": "2026-09-15T10:00:00Z", "payload": {}}],
+        statuses=[{"state": "in_progress"}],
+    )
+    notes = core.Notes()
+
+    record = github.latest_deployment(api, "owner/repo", notes=notes)
+    verdict = core.evaluate(_fetch_at(120), NOW)
+
+    assert core.open_threshold(verdict, record, core.Thresholds()) == 135.0
+    assert "base window plus deploy margin (135 minutes with defaults)" in notes.lines[0]
+
+
 # --- plan_action() ---
 
 

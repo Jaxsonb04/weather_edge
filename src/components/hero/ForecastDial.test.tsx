@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicationProvider, type PublicationManifest } from "../../lib/publication";
 import type { Target } from "../../lib/data";
@@ -57,6 +57,7 @@ describe("ForecastDial publication truthfulness", () => {
   });
 
   afterEach(() => {
+    Reflect.deleteProperty(Element.prototype, "getAnimations");
     vi.unstubAllGlobals();
     vi.useRealTimers();
     fetchMock.mockReset();
@@ -88,6 +89,28 @@ describe("ForecastDial publication truthfulness", () => {
 
     expect(screen.getByText("Market live")).toBeInTheDocument();
     expect(screen.getByText(/Live · 3 obs/)).toBeInTheDocument();
+  });
+
+  it("selects the displayed first day when a publication removes the selected target", async () => {
+    // jsdom has no Web Animations API; the real Segment moves its indicator on selection.
+    Object.defineProperty(Element.prototype, "getAnimations", { configurable: true, value: () => [] });
+    const targets = [target, { ...target, target_date: "2026-07-10" }, { ...target, target_date: "2026-07-11" }];
+    fetchMock.mockResolvedValue(ok(publication("2026-07-09T11:59:00Z")));
+    const view = (days: Target[]) => (
+      <PublicationProvider>
+        <PublicationLoaded artifacts={["trading_signal.json"]} />
+        <ForecastDial targets={days} />
+      </PublicationProvider>
+    );
+    const { rerender } = render(view(targets));
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    fireEvent.click(screen.getAllByRole("radio")[2]);
+    expect(screen.getAllByRole("radio")[2]).toHaveAttribute("aria-checked", "true");
+
+    rerender(view(targets.slice(0, 2)));
+
+    expect(screen.getAllByRole("radio")[0]).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText(/Predicted high · Today/)).toBeInTheDocument();
   });
 
   it("does not wait for the below-fold city artifact before showing fresh signal status", async () => {

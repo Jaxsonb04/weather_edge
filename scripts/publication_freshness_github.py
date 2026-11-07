@@ -142,7 +142,7 @@ def latest_deployment(api: ApiCall, repo: str, *, notes: Notes | None = None) ->
     if notes is not None and expected is None:
         notes.add(
             f"deployment {identifier} carries no payload.expected_dark_minutes; "
-            "assuming the full deploy window"
+            "a covering nonterminal deployment uses the base window plus deploy margin (135 minutes with defaults)"
         )
     return DeploymentRecord(
         identifier=identifier,

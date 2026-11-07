@@ -5,6 +5,7 @@ import { Widget } from "@heroui-pro/react/widget";
 import { Icon } from "@iconify/react/offline";
 import { m1Book, money, type M1Hypothesis, type M1StopRule, type StrategyLab } from "../../lib/strategy";
 import { percent } from "../../lib/lab-format";
+import { usePublication } from "../../lib/publication";
 import { AnimatedNumber } from "../ui/AnimatedNumber";
 import { DetailDisclosure } from "../ui/DetailDisclosure";
 import { InfoTip } from "../ui/InfoTip";
@@ -91,8 +92,10 @@ function Meter({ label, value, limit }: { label: string; value?: number; limit?:
   );
 }
 
-function StopRuleRow({ rule }: { rule: M1StopRule }) {
-  const status = STATUS[rule.status ?? ""] ?? { label: rule.status?.replaceAll("_", " ") ?? "Unknown", color: "default" as Tone };
+function StopRuleRow({ rule, currentStateAvailable }: { rule: M1StopRule; currentStateAvailable: boolean }) {
+  const status = currentStateAvailable
+    ? STATUS[rule.status ?? ""] ?? { label: rule.status?.replaceAll("_", " ") ?? "Unknown", color: "default" as Tone }
+    : { label: "Unavailable", color: "default" as Tone };
   const detail = stopDetail(rule);
   return (
     <li className="flex items-start justify-between gap-3 py-3 first:pt-0 last:pb-0">
@@ -143,6 +146,8 @@ function Panel({ title, sub, children }: { title: string; sub?: ReactNode; child
     in one number with, any other account. Every block tolerates a missing field,
     because the book is absent until the runtime first publishes it. */
 export function M1Trial({ s }: { s: StrategyLab }) {
+  const { strategy } = usePublication();
+  const currentStateAvailable = strategy.state === "fresh";
   const book = m1Book(s);
   const trial = book?.trial;
   const capital = book?.initial_equity ?? trial?.initial_capital ?? REGISTERED_CAPITAL;
@@ -190,7 +195,7 @@ export function M1Trial({ s }: { s: StrategyLab }) {
   const primary = trial?.hypotheses?.find((h) => h.id === "H1");
   const entriesOpen = trial?.entries_enabled_by_stop_rules;
   const lastEvaluation = when(trial?.health?.last_evaluation_at);
-  const days = book.days?.filter((day) => day?.date) ?? [];
+  const days = book.days?.filter((day) => day?.date && typeof day.closing_equity === "number" && Number.isFinite(day.closing_equity)) ?? [];
   const finalRead = trial?.stop_rules?.find((rule) => rule.rule === "final_read");
   const arms = Object.values(trial?.shadow_arms ?? {}).filter((arm) => arm != null);
   const caps = CAPS.filter(([key]) => typeof trial?.caps?.[key] === "number");
@@ -204,7 +209,7 @@ export function M1Trial({ s }: { s: StrategyLab }) {
             <Widget.Title>Paper book</Widget.Title>
             <div className="flex flex-wrap gap-1.5">
               <Chip size="sm" variant="soft" color="success"><Chip.Label>Paper only</Chip.Label></Chip>
-              {entriesOpen != null && (
+              {currentStateAvailable && entriesOpen != null && (
                 <Chip size="sm" variant="soft" color={entriesOpen ? "default" : "danger"}>
                   <Chip.Label>{entriesOpen ? "Stop rules clear" : "Entries halted"}</Chip.Label>
                 </Chip>
@@ -234,7 +239,7 @@ export function M1Trial({ s }: { s: StrategyLab }) {
                 tone={primary?.roi == null || primary.roi === 0 ? "default" : primary.roi > 0 ? "pos" : "neg"}
                 note={trial?.book?.settled_stake == null ? undefined : `on ${flat(trial.book.settled_stake)}`}
               />
-              <Stat label="Open" value={count(book.open_positions)} note={book.open_cost_basis == null ? undefined : `${flat(book.open_cost_basis)} at risk`} />
+              <Stat label="Open" value={currentStateAvailable ? count(book.open_positions) : "Unavailable"} note={!currentStateAvailable || book.open_cost_basis == null ? undefined : `${flat(book.open_cost_basis)} at risk`} />
               <Stat label="Settled entries" value={count(trial?.book?.settled_entries)} note={lastEvaluation ? `checked ${lastEvaluation}` : undefined} />
             </div>
           </Widget.Content>
@@ -255,7 +260,7 @@ export function M1Trial({ s }: { s: StrategyLab }) {
           {(trial?.stop_rules?.length ?? 0) > 0 && (
             <Panel title="Stop rules" sub="Fixed before the first entry">
               <ul className="divide-y divide-separator">
-                {trial?.stop_rules?.map((rule, index) => <StopRuleRow key={rule.rule ?? index} rule={rule} />)}
+                {trial?.stop_rules?.map((rule, index) => <StopRuleRow key={rule.rule ?? index} rule={rule} currentStateAvailable={currentStateAvailable} />)}
               </ul>
             </Panel>
           )}

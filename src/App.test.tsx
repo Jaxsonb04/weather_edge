@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-const routeState = vi.hoisted(() => ({ route: "overview" as "overview" | "methodology" | "lab" }));
+const routeState = vi.hoisted(() => ({ route: "overview" as "overview" | "methodology" | "lab", labFails: false }));
 const dashboardState = vi.hoisted(() => ({
   data: { signal: { disclaimer: "Paper only" } } as unknown,
   error: null as string | null,
@@ -22,7 +22,6 @@ vi.mock("./lib/useHashRoute", () => ({
 vi.mock("./components/layout/TopBar", () => ({ TopBar: () => <header>Navigation</header> }));
 vi.mock("./components/layout/PublicationStatusBanner", () => ({ PublicationStatusBanner: () => null }));
 vi.mock("./components/Footer", () => ({ Footer: ({ disclaimer }: { disclaimer: string }) => <footer>{disclaimer}</footer> }));
-vi.mock("./components/ErrorBoundary", () => ({ ErrorBoundary: ({ children }: { children: React.ReactNode }) => children }));
 vi.mock("./components/views/OverviewView", () => ({
   OverviewView: () => <h1 id="overview-page-title" tabIndex={-1}>Overview heading</h1>,
 }));
@@ -30,12 +29,30 @@ vi.mock("./components/views/MethodologyView", () => ({
   default: () => <h1 id="methodology-page-title" tabIndex={-1}>Methodology heading</h1>,
 }));
 vi.mock("./components/views/StrategyLabView", () => ({
-  default: () => <h1 id="lab-page-title" tabIndex={-1}>Strategy heading</h1>,
+  default: () => {
+    if (routeState.labFails) throw new Error("Strategy render failure");
+    return <h1 id="lab-page-title" tabIndex={-1}>Strategy heading</h1>;
+  },
 }));
 
 import App from "./App";
 
 describe("application landmarks and route focus", () => {
+  it("identifies the Strategy Lab when that route fails to render", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    routeState.route = "lab";
+    routeState.labFails = true;
+    try {
+      render(<App />);
+      expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load Strategy Lab");
+      expect(screen.getByRole("alert")).not.toHaveTextContent("Couldn't load the forecast");
+      expect(screen.getByRole("button", { name: "Reload" })).toBeInTheDocument();
+    } finally {
+      routeState.labFails = false;
+      consoleError.mockRestore();
+    }
+  });
+
   it("provides a skip link targeting one labeled semantic main region", async () => {
     routeState.route = "overview";
     window.location.hash = "#/overview";

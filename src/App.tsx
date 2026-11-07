@@ -154,7 +154,7 @@ export default function App() {
             callback, so a backgrounded tab still settles visible. */}
         <div key={route === "lab" ? route : `${route}-${data ? "ready" : "loading"}`} className="route-enter">
         {route === "lab" ? (
-          <ErrorBoundary key={route}>
+          <ErrorBoundary key={route} title="Couldn't load Strategy Lab">
             <Suspense fallback={<ViewLoader />}>
               <StrategyLabView />
             </Suspense>
