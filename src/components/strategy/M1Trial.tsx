@@ -160,7 +160,8 @@ export function M1Trial({ s }: { s: StrategyLab }) {
     />
   );
 
-  if (!book || (!trial && book.available !== true)) {
+  // An unverified book shows no figures, only the publisher's reason.
+  if (!book || book.available === false || (!trial && book.available !== true)) {
     return (
       <section className="flex min-w-0 flex-col" aria-label="M1 paper trial">
         {heading}
@@ -198,16 +199,6 @@ export function M1Trial({ s }: { s: StrategyLab }) {
     <section className="flex min-w-0 flex-col" aria-label="M1 paper trial">
       {heading}
       <div className="flex min-w-0 flex-col gap-4">
-        {book.available === false && (
-          <div role="status" className="flex items-start gap-3 rounded-2xl bg-warning-soft px-4 py-3 text-sm">
-            <Icon icon="solar:danger-triangle-linear" className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden="true" />
-            <p className="min-w-0 text-muted">
-              <span className="font-semibold text-foreground">Book not verified.</span>{" "}
-              {book.reason ?? "This publication could not confirm the M1 ledger."}
-            </p>
-          </div>
-        )}
-
         <Widget className="w-full min-w-0">
           <Widget.Header className="flex-wrap gap-2">
             <Widget.Title>Paper book</Widget.Title>

@@ -55,10 +55,11 @@ describe("M1Trial", () => {
     expect(screen.getByRole("progressbar", { name: "Entries" })).toHaveAttribute("aria-valuemax", "1500");
   });
 
-  it("flags a book the publisher could not verify, and survives a bare trial block", () => {
-    render(<M1Trial s={lab({ available: false, reason: "M1 trial ledger is not active or not reconciled", trial: {} })} />);
-    expect(screen.getByText("Book not verified.")).toBeInTheDocument();
+  it("withholds every figure from a populated book the publisher could not verify", () => {
+    render(<M1Trial s={lab({ ...book, available: false, reason: "M1 trial ledger is not active or not reconciled" })} />);
     expect(screen.getByText(/not active or not reconciled/)).toBeInTheDocument();
+    expect(screen.queryByText(/2,010/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Paper book")).not.toBeInTheDocument();
   });
 
   it("never writes the venue's name, even though the payload does", () => {
