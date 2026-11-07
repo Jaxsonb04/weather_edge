@@ -30,6 +30,7 @@ from publication_freshness_core import (
     SNAPSHOT_ID_PATTERN,
     SOURCE_SHA_PATTERN,
     STATE_BROKEN,
+    STATE_UNHEALTHY,
     STATE_FUTURE,
     STATE_STALE,
     USER_AGENT,
@@ -340,6 +341,10 @@ HEADLINES = {
         "`gh-pages` branch or the manifest path may be gone. The site being *missing* "
         "is a worse outage than the site being stale."
     ),
+    STATE_UNHEALTHY: (
+        "The site is publishing, but its Strategy Lab says part of the pipeline is "
+        "failing behind it."
+    ),
     STATE_FUTURE: (
         "The published manifest is stamped in the future, so the freshness signal "
         "cannot be trusted: the publishing box's clock is wrong. The box cannot catch "
@@ -358,6 +363,11 @@ TRIAGE_LEADS = {
         "post-deploy watch says to re-verify that the manifest still loads after one.",
         "If Pages is serving but the document is not ours, the last publish wrote "
         "something unexpected: read `sfo-operational-publish` on the box.",
+    ),
+    STATE_UNHEALTHY: (
+        "Read the alert named in **Detail**, then its unit's logs on the box: "
+        "`sfo-kalshi-paper-scan`, `sfo-kalshi-paper-monitor`, `sfo-kalshi-paper-settle` "
+        "or `sfo-strategy-lab-refresh`.",
     ),
     STATE_FUTURE: (
         "Check the box's clock first: `timedatectl` on the host. The publisher "
@@ -408,7 +418,7 @@ def issue_body(
         f"- **snapshot_id**: `{_code(verdict.snapshot_id, SNAPSHOT_ID_PATTERN)}`",
         f"- **provenance.source_sha**: `{_code(verdict.source_sha, SOURCE_SHA_PATTERN)}`",
     ]
-    if verdict.state in (STATE_BROKEN, STATE_FUTURE):
+    if verdict.state in (STATE_BROKEN, STATE_FUTURE, STATE_UNHEALTHY):
         lines.append(f"- **Detail**: {_safe_text(verdict.detail)}")
     if deployment is not None:
         lines.append(

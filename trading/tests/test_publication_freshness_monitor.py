@@ -1360,3 +1360,58 @@ def test_workflow_flags_are_all_accepted_by_the_script_parser():
     assert args.close_at_or_below_minutes == 20.0
     assert args.manifest_url.endswith("publication_manifest.json")
     assert args.dry_run is False
+
+
+def test_fresh_manifest_with_a_failing_pipeline_files_one_issue_then_recovers(monkeypatch, capsys):
+    now = datetime.now(UTC)
+    manifest = _manifest(now.isoformat())
+    documents = {
+        "publication_manifest.json": manifest,
+        "strategy_research.json": {
+            "generated_at": now.isoformat(),
+            "status": {"alerts": [{"level": "critical", "title": "Entry scans are failing"}]},
+        },
+    }
+
+    def fetch(url, now, **kwargs):
+        return core.ManifestFetch(url=url, manifest=documents[url.rsplit("/", 1)[1]])
+
+    monkeypatch.setattr(cli, "fetch_manifest_with_retries", fetch)
+    api = FakeGitHub()
+    monkeypatch.setattr(cli, "make_api", lambda *args, **kwargs: api)
+    monkeypatch.setenv("GH_TOKEN", "token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+
+    assert cli.main(["--manifest-url", MANIFEST_URL]) == 0
+    assert "::error::Strategy Lab reports a critical alert: Entry scans are failing" in capsys.readouterr().out
+    created = [body for method, path, body in api.calls if method == "POST" and path.endswith("/issues")]
+    assert len(created) == 1
+    assert "Entry scans are failing" in created[0]["body"]
+
+
+def test_unreadable_strategy_lab_keeps_an_open_incident_open(monkeypatch):
+    now = datetime.now(UTC)
+
+    def fetch(url, now, **kwargs):
+        if url.endswith("strategy_research.json"):
+            return core.ManifestFetch(url=url, error="HTTP 503 Service Unavailable")
+        return core.ManifestFetch(url=url, manifest=_manifest(now.isoformat()))
+
+    monkeypatch.setattr(cli, "fetch_manifest_with_retries", fetch)
+    api = FakeGitHub()
+    monkeypatch.setattr(cli, "make_api", lambda *args, **kwargs: api)
+    monkeypatch.setenv("GH_TOKEN", "token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+
+    assert cli.main(["--manifest-url", MANIFEST_URL]) == 0
+    assert not [call for call in api.calls if call[0] != "GET"]
+
+
+def test_strategy_problem_reads_alerts_and_age_only():
+    now = datetime(2026, 11, 7, 8, 0, tzinfo=UTC)
+
+    assert core.strategy_problem({"status": {"alerts": [{"level": "warning", "title": "x"}]}}, now) is None
+    assert core.strategy_problem({"generated_at": "2026-11-07T07:00:00+00:00"}, now) is None
+    assert "not refreshed" in core.strategy_problem({"generated_at": "2026-11-07T06:00:00+00:00"}, now)
+    assert core.strategy_url(MANIFEST_URL).endswith("/strategy_research.json")
+

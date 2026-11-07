@@ -237,7 +237,7 @@ def backfill_iem(
     *,
     start_year: int,
     end_year: int | None = None,
-) -> int:
+) -> int | None:
     """Backfill historical CLI maxima for one city from the IEM archive.
 
     IEM may hold several CLI versions per day; later list entries are later
@@ -247,14 +247,17 @@ def backfill_iem(
 
     ensure_schema(conn)
     end = end_year or date.today().year
+    years = range(start_year, end + 1)
+    failed_requests = 0
     written = 0
     observed_at = _utcnow()
     fetched_at = observed_at.isoformat(timespec="seconds")
-    for year in range(start_year, end + 1):
+    for year in years:
         try:
             rows = _iem_rows(city.nws_station_id, year)
         except Exception as exc:  # noqa: BLE001 - report and continue per year
             print(f"  ! {city.nws_station_id} {year}: {exc}")
+            failed_requests += 1
             continue
         for row in rows:
             high = row.get("high")
@@ -277,6 +280,9 @@ def backfill_iem(
             )
             written += 1
     conn.commit()
+    # An outage must remain distinguishable from a successfully fetched empty archive.
+    if failed_requests and failed_requests == len(years):
+        return None
     return written
 
 
@@ -331,11 +337,14 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("nothing to do; pass --refresh, --backfill-iem, or --coverage")
 
     cities = parse_city_slugs(args.cities)
+    backfill_succeeded = not cities
     with sqlite3.connect(args.db) as conn:
         if args.backfill_iem:
             for city in cities:
                 written = backfill_iem(conn, city, start_year=args.start_year)
-                print(f"{city.slug}: backfilled {written} CLI days from IEM")
+                if written is not None:
+                    backfill_succeeded = True
+                print(f"{city.slug}: backfilled {written or 0} CLI days from IEM")
         if args.refresh:
             stored = refresh_live(conn, cities)
             summary = ", ".join(f"{station}={n}" for station, n in stored.items())
@@ -344,7 +353,7 @@ def main(argv: list[str] | None = None) -> int:
             print("cli_settlements coverage:")
             for station, days, lo, hi in coverage(conn):
                 print(f"  {station}: {days} days {lo} -> {hi}")
-    return 0
+    return int(args.backfill_iem and not backfill_succeeded)
 
 
 if __name__ == "__main__":

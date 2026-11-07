@@ -749,6 +749,7 @@ clear_propagation_misses
 # staleness check is skipped from 07:00 until 16:30 UTC (the first 90 minutes
 # after listing). An active account with no evaluations gets 24 hours from its
 # creation, including a full listing cycle. The admission check always runs.
+# The listing gap cannot delay replay of an already finished UTC day.
 # Read-only, as the app user.
 if [[ -n "$PAPER_DB" && ",${SCAN_PROFILES// /}," == *",research,"* ]]; then
   m1_status=0
@@ -761,6 +762,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sfo_kalshi_quant.research_m1 import DECISION_ADMISSION_ERROR, DECISION_PENDING, M1_ACCOUNT_ID
+from sfo_kalshi_quant.research_m1_store import m1_overdue_reconciliation_day
 
 db_path, now_override = sys.argv[1:]
 now = (
@@ -786,7 +788,7 @@ try:
         "SELECT created_at FROM paper_accounts WHERE account_id=? AND status='ACTIVE'",
         (M1_ACCOUNT_ID,),
     ).fetchone()
-    newest, failures = None, []
+    newest, failures, overdue_day, last_reconciled_day = None, [], None, None
     if conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='m1_evaluations'"
     ).fetchone():
@@ -797,6 +799,11 @@ try:
             "SELECT utc_hour, created_at, decision FROM m1_evaluations WHERE decision IN (?, ?)",
             (DECISION_ADMISSION_ERROR, DECISION_PENDING),
         ).fetchall()
+        if account is not None:
+            overdue_day = m1_overdue_reconciliation_day(conn, now=now)
+            last_reconciled_day = conn.execute(
+                "SELECT MAX(utc_day) FROM m1_reconciliations"
+            ).fetchone()[0]
 except sqlite3.Error as exc:
     print(f"M1 trial journal is unreadable: {exc}", file=sys.stderr)
     raise SystemExit(2)
@@ -804,6 +811,11 @@ finally:
     conn.close()
 
 problems = []
+if overdue_day is not None:
+    problems.append(
+        f"M1 trial reconciliation overdue for UTC day {overdue_day} "
+        f"(last reconciled UTC day: {last_reconciled_day or 'none'})"
+    )
 failed_hours = set()
 for utc_hour, created_at, decision in failures:
     age = now - moment if (moment := parse_utc(created_at)) is not None else None
@@ -830,7 +842,7 @@ raise SystemExit(3 if problems else 0)
 PY
   ) || m1_status=$?
   if (( m1_status == 3 )); then
-    echo "scheduler health failed: M1 paper trial is stale or its admissions keep failing" >&2
+    echo "scheduler health failed: M1 paper trial is stale or its admissions keep failing or reconciliation is overdue" >&2
     exit 1
   fi
   if (( m1_status != 0 )); then

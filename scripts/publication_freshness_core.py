@@ -30,6 +30,9 @@ DEFAULT_MANIFEST_URL = "https://jaxsonb04.github.io/weather_edge/publication_man
 
 USER_AGENT = "weatheredge-freshness-monitor"
 MANIFEST_TIMEOUT_SECONDS = 20
+STRATEGY_ARTIFACT = "strategy_research.json"
+# Refreshed every five minutes; the browser warns at 20. This is the off-box net.
+STRATEGY_MAX_AGE_MINUTES = 90
 API_TIMEOUT_SECONDS = 20
 CACHE_BUSTER_PARAM = "freshness_probe"
 
@@ -98,6 +101,7 @@ STATE_UNREADABLE = "unreadable"
 # Structural: the manifest is gone or unusable. A dead site is a worse outage
 # than a stale one, so this alerts rather than warning forever on a green job.
 STATE_BROKEN = "broken"
+STATE_UNHEALTHY = "unhealthy"
 STATE_FUTURE = "future"
 
 ACTION_CREATE = "create"
@@ -437,6 +441,33 @@ def deployment_covers_window(verdict: Verdict, deployment: DeploymentRecord | No
     return deployment.created_at >= earliest
 
 
+def strategy_url(manifest_url: str) -> str:
+    return f"{manifest_url.rsplit('/', 1)[0]}/{STRATEGY_ARTIFACT}"
+
+
+def strategy_problem(document: dict[str, Any], now: datetime) -> str | None:
+    """Why the published Strategy Lab says the pipeline is failing, or ``None``.
+
+    A fresh manifest only proves the publisher runs. Behind it scans, the monitor
+    or settlement can fail for days, as scans did from Oct 27 to Nov 1, and alerts
+    from the box have no destination.
+    """
+
+    status = document.get("status")
+    alerts = status.get("alerts") if isinstance(status, dict) else None
+    critical = [
+        str(alert.get("title"))
+        for alert in alerts or []
+        if isinstance(alert, dict) and alert.get("level") == "critical"
+    ]
+    if critical:
+        return f"Strategy Lab reports a critical alert: {'; '.join(critical)}"
+    generated_at = parse_timestamp(document.get("generated_at"))
+    if generated_at is not None and now - generated_at > timedelta(minutes=STRATEGY_MAX_AGE_MINUTES):
+        return f"Strategy Lab has not refreshed since {generated_at.isoformat()}"
+    return None
+
+
 def open_threshold(
     verdict: Verdict,
     deployment: DeploymentRecord | None,
@@ -540,6 +571,9 @@ def plan_action(
             muted=muted,
             acknowledged=acknowledged,
         )
+
+    if verdict.state == STATE_UNHEALTHY:
+        return _plan_alert_only(issue, reason=verdict.detail, muted=muted, acknowledged=acknowledged)
 
     if verdict.state == STATE_FUTURE:
         # Never acted on as freshness -- the clock is not trustworthy -- but a
