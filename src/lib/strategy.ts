@@ -189,6 +189,7 @@ export interface ProfilePaperSummary {
   roi: number | null;
   open_positions: number;
   pending_limit_orders?: number;
+  pending_limit_risk?: number;
   open_risk?: number | null;
   latest_monitor_action_at?: string | null;
   latest_opened_at?: string | null;

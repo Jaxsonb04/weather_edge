@@ -16,6 +16,8 @@ import { AccountCards } from "../strategy/AccountCards";
 import { ReadinessPanel } from "../strategy/ReadinessPanel";
 import { useHashSub } from "../../lib/useHashRoute";
 
+vi.mock("../../lib/publication", () => ({ usePublication: () => ({ strategy: { state: "fresh" } }) }));
+
 describe("Lab tab deep links", () => {
   const tabs = ["accounts", "research", "archive", "system"] as const;
   const go = (hash: string) =>

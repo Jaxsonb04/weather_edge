@@ -11,6 +11,7 @@ import {
 } from "../../lib/strategy";
 import { AnimatedNumber } from "../ui/AnimatedNumber";
 import { percent, policyMarker } from "../../lib/lab-format";
+import { usePublication } from "../../lib/publication";
 
 const ROLE: Record<string, string> = {
   live: "Readiness book",
@@ -67,6 +68,8 @@ function AccountCard({
   selected: boolean;
   onSelect: () => void;
 }) {
+  const { strategy } = usePublication();
+  const currentStateAvailable = strategy.state === "fresh";
   const summary = profile.paper_trading?.summary;
   const balance = profile.daily_summary?.current_equity;
   const start = profile.daily_summary?.starting_bankroll ?? null;
@@ -102,10 +105,10 @@ function AccountCard({
           <span className="block truncate text-sm font-semibold text-foreground">{label}</span>
           <span className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
             <span
-              className={`size-1.5 shrink-0 rounded-full ${paused ? "bg-warning" : "bg-success"}`}
+              className={`size-1.5 shrink-0 rounded-full ${!currentStateAvailable ? "bg-muted" : paused ? "bg-warning" : "bg-success"}`}
               aria-hidden="true"
             />
-            {paused ? "Entries paused" : "Scanning"} · {ROLE[profile.risk_profile] ?? "Paper book"}
+            {!currentStateAvailable ? "Current status unavailable" : paused ? "Entries paused" : "Scanning"} · {ROLE[profile.risk_profile] ?? "Paper book"}
           </span>
         </span>
         {policy && (
@@ -158,8 +161,8 @@ function AccountCard({
         </span>
         <span className="min-w-0">
           <span className="block text-muted">Open</span>
-          <span className="tnum block text-sm font-semibold text-foreground">{open}</span>
-          <span className="tnum block text-muted">{pending} resting</span>
+          <span className="tnum block text-sm font-semibold text-foreground">{currentStateAvailable ? open : "—"}</span>
+          <span className="tnum block text-muted">{currentStateAvailable ? pending : "—"} resting</span>
         </span>
       </span>
     </button>

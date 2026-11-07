@@ -1,7 +1,9 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { M1Book, StrategyLab } from "../../lib/strategy";
 import { M1Trial } from "./M1Trial";
+
+vi.mock("../../lib/publication", () => ({ usePublication: () => ({ strategy: { state: "fresh" } }) }));
 
 const lab = (research_m1?: unknown) =>
   ({ available: true, accounting: { accounts: { live: { realized_equity: 1031.4 }, research_m1 } } }) as unknown as StrategyLab;
@@ -53,6 +55,20 @@ describe("M1Trial", () => {
     expect(screen.getByText("Stops at −$300.00; realized +$10.49")).toBeInTheDocument();
     expect(screen.getByText("Clear")).toBeInTheDocument();
     expect(screen.getByRole("progressbar", { name: "Entries" })).toHaveAttribute("aria-valuemax", "1500");
+  });
+
+  it("charts only days with a published closing balance", () => {
+    render(<M1Trial s={lab({
+      ...book,
+      days: [
+        { date: "2026-11-04", cumulative_realized: 0, closing_equity: null },
+        { date: "2026-11-05", cumulative_realized: 0 },
+        { date: "2026-11-06", cumulative_realized: 0, closing_equity: 2000 },
+        { date: "2026-11-07", cumulative_realized: 10.49, closing_equity: 2010.49 },
+      ],
+    })} />);
+
+    expect(screen.getByRole("img", { name: /Balance over 2 days, from \$2,000 to \$2,010/ })).toBeInTheDocument();
   });
 
   it("withholds every figure from a populated book the publisher could not verify", () => {

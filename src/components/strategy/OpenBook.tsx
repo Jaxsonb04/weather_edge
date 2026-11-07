@@ -4,11 +4,9 @@ import { Chip } from "@heroui/react/chip";
 import { Icon } from "@iconify/react/offline";
 import { cityForTicker } from "../../lib/data";
 import { shortDay } from "../../lib/incidents";
-import { cents, money, openForProfile, pendingForProfile, type OpenPosition, type StrategyLab } from "../../lib/strategy";
+import { cents, findProfile, money, openForProfile, pendingForProfile, type OpenPosition, type StrategyLab } from "../../lib/strategy";
 import { usePublication } from "../../lib/publication";
 import { Stat } from "../ui/Stat";
-
-const sumRisk = (rows: OpenPosition[]) => rows.reduce((acc, r) => acc + (r.risk ?? 0), 0);
 
 /** A position whose market date is at least two days gone should have settled
     already; its bid is a last mark, not a live price. One day is normal: the
@@ -29,10 +27,19 @@ function relTime(iso?: string | null): string {
   return `${Math.round(hrs / 24)}d ago`;
 }
 
-function PositionList({ rows, kind, scope }: { rows: OpenPosition[]; kind: "open" | "pending"; scope: string }) {
+function PositionList({ rows, total, kind, scope }: { rows: OpenPosition[]; total?: number; kind: "open" | "pending"; scope: string }) {
   const [expanded, setExpanded] = useState(false);
   const listId = `${kind}-list-${scope}`;
+  const noun = kind === "open" ? "open positions" : "pending limits";
+  const omitted = total != null && total > rows.length;
+  const notice = omitted ? (
+    <p role="status" className="py-3 text-xs text-muted">
+      Showing {rows.length} of {total} {noun}. Only the latest rows across paper accounts are published.
+    </p>
+  ) : null;
   if (!rows.length) {
+    if (omitted) return notice;
+    if (total == null) return <p role="status" className="py-3 text-xs text-muted">No {noun} rows published.</p>;
     if (kind === "pending") {
       return (
         <div role="status" className="flex items-center gap-2 py-3 text-left">
@@ -50,9 +57,9 @@ function PositionList({ rows, kind, scope }: { rows: OpenPosition[]; kind: "open
   }
   const overflow = rows.slice(5);
   const shown = expanded ? rows : rows.slice(0, 5);
-  const noun = kind === "open" ? "open positions" : "pending limits";
   return (
     <>
+      {notice}
       <ul id={listId} className="divide-y divide-separator">
         <PositionRows rows={shown} kind={kind} />
       </ul>
@@ -122,11 +129,12 @@ function PositionRows({ rows, kind }: { rows: OpenPosition[]; kind: "open" | "pe
 
 /** The account's book as of this publication: exposure figures, then open and
     pending orders (an empty book is a real state and says so). With `profile`,
-    everything is scoped to one account and exposure is recomputed from its rows. */
+    everything is scoped to one account; totals include rows omitted by the publisher. */
 export function OpenBook({ s, profile }: { s: StrategyLab; profile?: string }) {
   const { strategy } = usePublication();
   const currentStateAvailable = strategy.state === "fresh";
   const sum = s.paper_trading?.summary;
+  const profileSummary = profile ? findProfile(s, profile)?.paper_trading?.summary : undefined;
   const open = profile ? openForProfile(s, profile) : s.paper_trading?.open_positions ?? [];
   const pending = profile ? pendingForProfile(s, profile) : s.paper_trading?.pending_limit_orders ?? [];
   const scope = profile ?? "all";
@@ -136,10 +144,10 @@ export function OpenBook({ s, profile }: { s: StrategyLab; profile?: string }) {
     <div className="flex min-w-0 flex-col gap-4">
       {profile ? (
         <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
-          <Stat label="Open positions" value={currentStateAvailable ? `${open.length}` : unavailable} />
-          <Stat label="Open risk" value={currentStateAvailable ? money(sumRisk(open), { sign: "negative-only" }) : unavailable} />
-          <Stat label="Pending limits" value={currentStateAvailable ? `${pending.length}` : unavailable} />
-          <Stat label="Pending risk" value={currentStateAvailable ? money(sumRisk(pending), { sign: "negative-only" }) : unavailable} />
+          <Stat label="Open positions" value={currentStateAvailable && profileSummary?.open_positions != null ? `${profileSummary.open_positions}` : unavailable} />
+          <Stat label="Open risk" value={currentStateAvailable ? money(profileSummary?.open_risk, { sign: "negative-only" }) : unavailable} />
+          <Stat label="Pending limits" value={currentStateAvailable && profileSummary?.pending_limit_orders != null ? `${profileSummary.pending_limit_orders}` : unavailable} />
+          <Stat label="Pending risk" value={currentStateAvailable ? money(profileSummary?.pending_limit_risk, { sign: "negative-only" }) : unavailable} />
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3 lg:grid-cols-6">
@@ -160,13 +168,13 @@ export function OpenBook({ s, profile }: { s: StrategyLab; profile?: string }) {
                 <h5 id={`open-${scope}`} className="mb-1 text-sm font-semibold text-foreground">
                   Open positions
                 </h5>
-                <PositionList rows={open} kind="open" scope={scope} />
+                <PositionList rows={open} total={profile ? profileSummary?.open_positions : sum?.open_positions} kind="open" scope={scope} />
               </section>
               <section aria-labelledby={`pending-${scope}`} className="min-w-0 lg:pl-8">
                 <h5 id={`pending-${scope}`} className="mb-1 text-sm font-semibold text-foreground">
                   Pending limit orders
                 </h5>
-                <PositionList rows={pending} kind="pending" scope={scope} />
+                <PositionList rows={pending} total={profile ? profileSummary?.pending_limit_orders : sum?.pending_limit_orders} kind="pending" scope={scope} />
               </section>
             </div>
           </Card.Content>

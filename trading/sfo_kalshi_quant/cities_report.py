@@ -308,7 +308,10 @@ def _all_city_books(conn: sqlite3.Connection, cutoff_iso: str) -> dict[str, dict
                               'PAPER_PARTIALLY_FILLED', 'PAPER_PARTIAL_EXPIRED'
                          )
                           AND settled_at IS NULL AND closed_at IS NULL
-                         THEN contracts * cost_per_contract ELSE 0
+                         THEN contracts * cost_per_contract
+                              + CASE WHEN status = 'PAPER_PARTIALLY_FILLED'
+                                     THEN COALESCE(reserved_cost, 0) ELSE 0 END
+                         ELSE 0
                        END), 0) AS open_exposure,
                    SUM(CASE WHEN status = 'PAPER_SETTLED' THEN 1 ELSE 0 END)
                        AS settled_orders,
