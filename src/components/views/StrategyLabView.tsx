@@ -7,6 +7,7 @@ import "../../styles/pro-strategy.css";
 import {
   activeProfiles,
   archivedProfiles,
+  m1Book,
   money,
   researchDailyTarget,
   useStrategyLab,
@@ -29,12 +30,14 @@ import { ResearchNotes } from "../strategy/ResearchNotes";
 import { StrategyPublicationNotice } from "../strategy/StrategyPublicationNotice";
 import { ArchivedPerformance } from "../strategy/ArchivedPerformance";
 import { HybridResearchPanel } from "../strategy/HybridResearchPanel";
+import { M1Trial } from "../strategy/M1Trial";
 import { mergedAlerts, policyMarker } from "../../lib/lab-format";
 import { useHashSub } from "../../lib/useHashRoute";
 
-type LabTab = "accounts" | "research" | "archive" | "system";
+type LabTab = "accounts" | "m1" | "research" | "archive" | "system";
 const LAB_TABS: { id: LabTab; label: string }[] = [
   { id: "accounts", label: "Accounts" },
+  { id: "m1", label: "M1 trial" },
   { id: "research", label: "Research" },
   { id: "archive", label: "Archive" },
   { id: "system", label: "System" },
@@ -229,25 +232,26 @@ export function LabNotices({ s }: { s: StrategyLab }) {
   );
 }
 
-const LINEAGE: Array<[string, string]> = [
-  ["research-target-v1", "Archived control"],
-  ["research-target-v3", "Rejected"],
-  ["research-target-v4", "Adopted"],
-  ["research-target-v5", "Superseded scale probe"],
-];
+const LINEAGE_NOTES: Record<string, string> = {
+  "research-target-v1": "Archived control",
+  "research-target-v3": "Rejected",
+  "research-target-v4": "Adopted",
+  "research-target-v5": "Superseded scale probe",
+};
 
 /** The research policy's version history, oldest first, ending at the policy
-    the research account runs now. */
+    the research account runs now. Rows come from the published archive, so a
+    version joins the trail on the day it is archived. */
 export function PolicyLineage({ s }: { s: StrategyLab }) {
-  const archive = new Map(archivedProfiles(s).map((profile) => [profile.risk_profile, profile] as const));
   const research = activeProfiles(s).find((profile) => profile.risk_profile === "research-target");
   const current = policyMarker(research ? researchDailyTarget(s, research)?.policy_version : undefined);
-  const rows = LINEAGE.flatMap(([key, note]) => {
-    const profile = archive.get(key);
-    if (!profile) return [];
+  const rows = archivedProfiles(s).flatMap((profile) => {
+    const key = profile.risk_profile;
+    const version = key.startsWith("research-target-") ? policyMarker(key) : null;
+    if (!version || version === current) return [];
     const resolved = profile.paper_trading?.summary?.closed_positions;
     const sample = key === "research-target-v5" && resolved != null ? ` · n=${resolved.toLocaleString()}` : "";
-    return [{ version: key.match(/v\d+$/i)?.[0] ?? key, note: `${note}${sample}`, current: false }];
+    return [{ version, note: `${LINEAGE_NOTES[key] ?? "Archived"}${sample}`, current: false }];
   });
   if (current) rows.push({ version: current, note: "Active research policy", current: true });
   if (!rows.length) return null;
@@ -360,10 +364,14 @@ export default function StrategyLabView() {
           publicationUnavailable
             ? "Strategy evidence is withheld while the runtime publication is unavailable."
             : pair
-              ? `Two separate ${start != null ? `${money(start, { digits: 0, sign: "negative-only" })} ` : ""}paper accounts trade the forecasts. They are never added together.`
+              ? `Two separate ${start != null ? `${money(start, { digits: 0, sign: "negative-only" })} ` : ""}paper accounts trade the forecasts${
+                  s && m1Book(s)?.available ? ", and the M1 trial runs as a third book" : ""
+                }. They are never added together.`
               : "Paper accounts trade the forecasts. Every figure comes from the AWS runtime."
         }
-        meta={s?.available ? <LabStatusChips s={s} /> : undefined}
+        // The chips wrap to three rows on a phone; holding that space stops the
+        // heading jumping down when the data lands.
+        meta={s?.available ? <LabStatusChips s={s} /> : !s && !error ? <div className="h-20 min-[430px]:h-13 md:h-6" /> : undefined}
       />
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 pb-20 sm:px-6 lg:px-8">
         <StrategyPublicationNotice generatedAt={s?.generated_at} />
@@ -398,7 +406,7 @@ export default function StrategyLabView() {
           <div className="fade-in flex min-w-0 flex-col gap-6">
             <LabNotices s={s} />
             <Tabs selectedKey={tab} onSelectionChange={(key) => selectTab(String(key) as LabTab)} className="min-w-0">
-              <Tabs.ListContainer className="self-start">
+              <Tabs.ListContainer className="max-w-full self-start">
                 <Tabs.List aria-label="Strategy Lab sections">
                   {LAB_TABS.map((item) => (
                     <Tabs.Tab key={item.id} id={item.id}>
@@ -412,6 +420,12 @@ export default function StrategyLabView() {
               <Tabs.Panel id="accounts" className="pt-4">
                 <div className="fade-in">
                   <ProfileExplorer s={s} />
+                </div>
+              </Tabs.Panel>
+
+              <Tabs.Panel id="m1" className="pt-4">
+                <div className="fade-in">
+                  <M1Trial s={s} />
                 </div>
               </Tabs.Panel>
 

@@ -50,6 +50,13 @@ export function CommandPalette({ open, onOpenChange, onToggleTheme, onNavigate, 
                     <span>{r.label}</span>
                   </Command.Item>
                 ))}
+                <Command.Item
+                  textValue="M1 paper trial"
+                  onAction={() => { window.location.hash = "#/lab/m1"; onOpenChange(false); }}
+                >
+                  <Icon icon="solar:test-tube-linear" className="size-4 text-muted" aria-hidden="true" />
+                  <span>M1 paper trial</span>
+                </Command.Item>
               </Command.Group>
               <Command.Group heading="Actions">
                 <Command.Item textValue="Toggle theme" onAction={() => { onToggleTheme(); onOpenChange(false); }}>

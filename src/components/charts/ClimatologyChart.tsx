@@ -1,5 +1,5 @@
 import { AreaChart } from "@heroui-pro/react/area-chart";
-import { useReducedMotion } from "motion/react";
+import { useChartDraw } from "../../lib/useChartDraw";
 import { ChartTooltip } from "@heroui-pro/react/chart-tooltip";
 import { Widget } from "@heroui-pro/react/widget";
 import {
@@ -17,7 +17,7 @@ const Y_GRID_F = 4;
 
 export function ClimatologyChart({ forecast }: { forecast: ForecastData }) {
   // Recharts grows series in on mount; reduced motion draws them in place.
-  const reduceMotion = useReducedMotion();
+  const draw = useChartDraw();
   const series = climatologySeries(forecast);
   const coverage = fixtureCoverage(forecast);
   // The band is drawn as a stack (an invisible p10 area carrying the p90−p10
@@ -64,9 +64,9 @@ export function ClimatologyChart({ forecast }: { forecast: ForecastData }) {
             allowDataOverflow
             tickFormatter={(v: number) => `${v}°`}
           />
-          <AreaChart.Area isAnimationActive={!reduceMotion} dataKey="p10" stackId="band" stroke="none" fill="transparent" type="monotone" dot={false} />
-          <AreaChart.Area isAnimationActive={!reduceMotion} dataKey="band" name="p10–p90" stackId="band" stroke="none" fill="url(#band-fill)" type="monotone" dot={false} />
-          <AreaChart.Area isAnimationActive={!reduceMotion} dataKey="mean" name="Mean high" stroke="var(--accent)" strokeWidth={2.75} fill="none" type="monotone" dot={false} />
+          <AreaChart.Area {...draw} dataKey="p10" stackId="band" stroke="none" fill="transparent" type="monotone" dot={false} />
+          <AreaChart.Area {...draw} dataKey="band" name="p10–p90" stackId="band" stroke="none" fill="url(#band-fill)" type="monotone" dot={false} />
+          <AreaChart.Area {...draw} dataKey="mean" name="Mean high" stroke="var(--accent)" strokeWidth={2.75} fill="none" type="monotone" dot={false} />
           <AreaChart.Tooltip
             content={({ active, payload }) => {
               if (!active || !payload?.length) return null;

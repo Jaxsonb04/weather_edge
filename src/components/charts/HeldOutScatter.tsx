@@ -1,5 +1,5 @@
 import { CartesianGrid, ReferenceLine, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from "recharts";
-import { useReducedMotion } from "motion/react";
+import { useChartDraw } from "../../lib/useChartDraw";
 import { ChartTooltip } from "@heroui-pro/react/chart-tooltip";
 import { Widget } from "@heroui-pro/react/widget";
 import { round1 } from "../../lib/data";
@@ -32,7 +32,7 @@ function scatterLabel(points: { actual: number; lstm: number }[]): string {
     y=x line is that day's residual. */
 export function HeldOutScatter({ diag }: { diag: Diagnostics }) {
   // Recharts grows series in on mount; reduced motion draws them in place.
-  const reduceMotion = useReducedMotion();
+  const draw = useChartDraw();
   const data = heldOutSeries(diag);
   const lo = 35;
   const hi = 100;
@@ -106,7 +106,7 @@ export function HeldOutScatter({ diag }: { diag: Diagnostics }) {
                   );
                 }}
               />
-              <Scatter isAnimationActive={!reduceMotion} data={data} fill="var(--accent)" fillOpacity={0.45} shape="circle" />
+              <Scatter {...draw} data={data} fill="var(--accent)" fillOpacity={0.45} shape="circle" />
             </ScatterChart>
           </ResponsiveContainer>
         </div>

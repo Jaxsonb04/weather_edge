@@ -128,7 +128,7 @@ function Accuracy({ data, otherCityCount }: { data: DashboardData; otherCityCoun
           )}
           {blocked && (
             <>
-              San Francisco never trades a target forecast into <strong className="font-semibold text-foreground">{cohortLabel(blocked.name)}</strong>{" "}
+              Live Stability never trades a San Francisco target forecast into <strong className="font-semibold text-foreground">{cohortLabel(blocked.name)}</strong>{" "}
               ({blocked.count.toLocaleString()} settled days in the study); the block is lifted for {otherCities}.
             </>
           )}

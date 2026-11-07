@@ -96,7 +96,7 @@ export function GateFunnel({ s }: { s: StrategyLab }) {
                       </span>
                     </div>
                     <div className="h-1.5 overflow-hidden rounded-full bg-default">
-                      <div className="h-full rounded-full bg-accent" style={{ width: `${Math.max(share * 100, 0.6)}%` }} />
+                      <div className="bar-grow h-full rounded-full bg-accent" style={{ width: `${Math.max(share * 100, 0.6)}%` }} />
                     </div>
                   </li>
                 );
@@ -112,13 +112,13 @@ export function GateFunnel({ s }: { s: StrategyLab }) {
               {rejections.map((r) => (
                 <li key={r.reason} className="min-w-0">
                   <div className="mb-1 flex items-baseline justify-between gap-3">
-                    <span className="min-w-0 truncate text-xs text-foreground" title={r.reason}>
+                    <span className="min-w-0 text-xs text-foreground" title={r.reason}>
                       {rejectionLabel(r.reason)}
                     </span>
                     <span className="tnum shrink-0 text-xs text-muted">{r.count.toLocaleString()}</span>
                   </div>
                   <div className="h-1 overflow-hidden rounded-full bg-default">
-                    <div className="h-full rounded-full bg-accent/70" style={{ width: `${Math.max((r.count / max) * 100, 1.5)}%` }} />
+                    <div className="bar-grow h-full rounded-full bg-accent/70" style={{ width: `${Math.max((r.count / max) * 100, 1.5)}%` }} />
                   </div>
                 </li>
               ))}

@@ -1,5 +1,4 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Card } from "@heroui/react/card";
 import { Chip } from "@heroui/react/chip";
 import { Segment } from "@heroui-pro/react/segment";
@@ -21,29 +20,26 @@ import {
   type Target,
 } from "../../lib/data";
 import { usePublication } from "../../lib/publication";
+import { AnimatedNumber } from "../ui/AnimatedNumber";
+import { DialScale } from "./DialScale";
 import { SourceBlend } from "./SourceBlend";
 
-const EASE = [0.165, 0.84, 0.44, 1] as const;
-
-/** The big temperature, swapped with a short rise when the day changes.
-    Transform and opacity only; reduced motion swaps it instantly. */
-function Reading({ id, value, color }: { id: string; value: number | null; color?: string }) {
-  const reduce = useReducedMotion();
+/** The big temperature. Its digits roll to the new value when the day or city
+    changes; screen readers get the settled figure once. */
+function Reading({ value, color }: { value: number | null; color?: string }) {
   return (
-    <AnimatePresence mode="popLayout" initial={false}>
-      <motion.p
-        key={id}
-        initial={reduce ? false : { opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={reduce ? undefined : { opacity: 0, y: -8 }}
-        transition={{ duration: 0.26, ease: EASE }}
-        className="tnum text-[5rem] font-semibold leading-none tracking-tighter sm:text-[5.5rem]"
-        style={color ? { color } : undefined}
-      >
-        {value == null ? "—" : Math.round(value)}
-        <span className="align-top text-2xl font-medium text-muted">°F</span>
-      </motion.p>
-    </AnimatePresence>
+    <p
+      className="tnum flex items-start text-[5rem] font-semibold leading-none tracking-tighter sm:text-[5.5rem]"
+      style={color ? { color } : undefined}
+    >
+      {value == null ? "—" : (
+        <>
+          <span className="sr-only">{Math.round(value)}</span>
+          <span aria-hidden="true"><AnimatedNumber value={Math.round(value)} /></span>
+        </>
+      )}
+      <span className="mt-1.5 text-2xl font-medium tracking-normal text-muted">°F</span>
+    </p>
   );
 }
 
@@ -110,8 +106,9 @@ function CityForecastDial({ city }: { city: City }) {
           <>
             <div>
               <p className="text-xs text-muted">Predicted high · {shortDateUTC(forecast.target_date)}</p>
-              <Reading id={`${city.slug}-${forecast.target_date}`} value={forecast.predicted_high_f} color={tempColor(forecast.predicted_high_f)} />
+              <Reading value={forecast.predicted_high_f} color={tempColor(forecast.predicted_high_f)} />
             </div>
+            <DialScale value={forecast.predicted_high_f} />
             <dl className="grid grid-cols-4 gap-3 border-t border-separator pt-4">
               <Figure label="Uncertainty">{forecast.sigma_f == null ? "—" : `±${round1(forecast.sigma_f)}°`}</Figure>
               <Figure label="Models">{forecast.n_models ?? "—"}</Figure>
@@ -206,7 +203,7 @@ export function ForecastDial({ targets, city }: { targets: Target[]; city?: City
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <p className="text-xs text-muted">Predicted high · {targetLabel(target.target_date)}</p>
-            <Reading id={`sfo-${idx}`} value={high} color={high == null ? undefined : tempColor(high)} />
+            <Reading value={high} color={high == null ? undefined : tempColor(high)} />
           </div>
           {currentStateAvailable && delta != null && mc && (
             <div className="mb-1 text-right">
@@ -214,18 +211,21 @@ export function ForecastDial({ targets, city }: { targets: Target[]; city?: City
                 {delta > 0 ? "+" : ""}{f1(delta)}
                 <TrendChip.Suffix>vs market</TrendChip.Suffix>
               </TrendChip>
-              <p className="mt-1.5 text-xs text-muted">
-                market implies <span className="tnum font-medium text-foreground">{f1(mc.implied_high_f)}</span>
+              <p className="mt-1.5 flex items-center justify-end gap-1.5 text-xs text-muted">
+                <span className="h-3 w-0.5 rounded-full bg-[color:var(--series-market)]" aria-hidden="true" />
+                <span>market implies <span className="tnum font-medium text-foreground">{f1(mc.implied_high_f)}</span></span>
               </p>
             </div>
           )}
         </div>
 
+        {high != null && <DialScale value={high} market={currentStateAvailable ? mc?.implied_high_f : null} />}
+
         {currentStateAvailable && intraday && !intraday.is_complete && (
           <div className="rounded-2xl bg-surface-secondary px-4 py-3">
             <p className="flex items-center gap-2 text-xs text-muted">
               <span className="relative inline-flex size-2 text-success">
-                <span className="live-dot absolute inset-0 rounded-full" />
+                <span key={intraday.observation_count} className="live-dot absolute inset-0 rounded-full" />
                 <span className="relative size-2 rounded-full bg-success" />
               </span>
               Live · {intraday.observation_count} obs

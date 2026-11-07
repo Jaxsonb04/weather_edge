@@ -21,7 +21,7 @@ export function ExitReasonBars({ reasons, emptyNote }: { reasons?: Record<string
           <li key={k} className="grid grid-cols-[minmax(0,8.5rem)_1fr_auto] items-center gap-3">
             <span className="truncate text-xs text-foreground">{EXIT_LABELS[k] ?? k.replace(/_/g, " ")}</span>
             <div className="h-1.5 overflow-hidden rounded-full bg-default">
-              <div className="h-full rounded-full bg-accent" style={{ width: `${(v / max) * 100}%` }} />
+              <div className="bar-grow h-full rounded-full bg-accent" style={{ width: `${(v / max) * 100}%` }} />
             </div>
             <span className="tnum w-6 text-right text-xs text-muted">{v}</span>
           </li>

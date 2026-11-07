@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
+import { flushSync } from "react-dom";
 
 const KEY = "weatheredge-theme";
 export type ThemeMode = "dark" | "light";
 type ThemePreference = ThemeMode | "system";
 
 /** Must stay in step with the two media-scoped tags in index.html. */
-const THEME_COLOR = { dark: "#0b0f14", light: "#f7f9fb" } as const;
+const THEME_COLOR = { dark: "#0c1310", light: "#f3f7f1" } as const;
 
 function applyMode(mode: ThemeMode) {
   document.documentElement.classList.toggle("dark", mode === "dark");
@@ -68,10 +69,16 @@ export function useTheme() {
     return () => media.removeEventListener("change", sync);
   }, [preference]);
 
-  const toggle = useCallback(
-    () => setPreference(mode === "dark" ? "light" : "dark"),
-    [mode],
-  );
+  // Where the browser supports it the page cross-fades between themes; anywhere
+  // else, or under reduced motion, the swap is instant.
+  const toggle = useCallback(() => {
+    const next = mode === "dark" ? "light" : "dark";
+    if (!document.startViewTransition || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setPreference(next);
+      return;
+    }
+    document.startViewTransition(() => flushSync(() => setPreference(next)));
+  }, [mode]);
 
   return { mode, toggle };
 }

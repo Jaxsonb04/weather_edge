@@ -46,68 +46,74 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /* ---------------------------------------------------------------------------
-   THEME: "Clear sky"
-   A calm instrument: a cool near-white canvas (light) or a deep ink-navy one
-   (dark), white raised surfaces, one cerulean accent, Inter throughout.
+   THEME: "Strip chart"
+   The look of a recording instrument. Light mode is the pale sage paper of a
+   chart recorder; dark mode is the pine-black of an instrument bay. Every
+   neutral carries that green tint on purpose. One copper pen (the accent) does
+   the writing. A second petrol pen is the market in model-vs-market charts.
+   Status hues sit well apart from the copper: carmine 20, ochre 92, spruce 155.
    Retinting is still one token: --accent drives buttons, soft chips, the
-   Segment indicator, focus and the Pro chart palette (--chart-1..5).
+   Segment indicator, focus and every chart series that names it. This build
+   has no --chart-1..5: the Pro chart sheets here never read them.
 
    Layer trap: HeroUI's variables live in a cascade layer, so these unlayered
    :root values win in BOTH modes. Everything set here is restated in .dark.
    Contrast figures below were measured with an oklch -> sRGB -> WCAG script.
 --------------------------------------------------------------------------- */
 :root {
-  /* Canvas and surfaces: a faint cool tint keeps white panels from glaring. */
-  --background: oklch(0.982 0.003 247);
-  --foreground: oklch(0.21 0.02 258);
-  --surface: oklch(1 0 0);
-  --surface-secondary: oklch(0.966 0.004 247);
-  --surface-tertiary: oklch(0.948 0.005 247);
-  --overlay: oklch(1 0 0);
-  --default: oklch(0.945 0.005 250);
+  /* Canvas and surfaces: recorder paper, with near-white panels laid on it. */
+  --background: oklch(0.972 0.009 132);
+  --foreground: oklch(0.235 0.022 165);
+  --surface: oklch(0.995 0.003 125);
+  --surface-secondary: oklch(0.956 0.011 132);
+  --surface-tertiary: oklch(0.936 0.013 134);
+  --overlay: oklch(0.995 0.003 125);
+  --default: oklch(0.938 0.013 134);
   --default-foreground: var(--foreground);
-  --segment: oklch(1 0 0);
+  --segment: oklch(0.995 0.003 125);
   --segment-foreground: var(--foreground);
-  --border: oklch(0.915 0.006 250);
-  --separator: oklch(0.93 0.005 250);
+  --border: oklch(0.885 0.015 135);
+  --separator: oklch(0.905 0.012 135);
   --field-background: var(--surface);
   --field-foreground: var(--foreground);
 
-  /* Cerulean accent. White on it reads 4.95:1, so filled buttons stay AA. */
-  --accent: oklch(0.54 0.105 232);
+  /* Copper pen. White on it reads 5.01:1, so filled buttons stay AA. */
+  --accent: oklch(0.555 0.135 48);
   --accent-foreground: oklch(1 0 0);
-  /* Accent as small text on light canvases: 6.1:1 on --surface-secondary. */
-  --accent-text: oklch(0.47 0.095 234);
-  /* Focus ring: the accent clears the 3:1 non-text floor on every canvas. */
+  /* Accent as small text on light canvases: 6.22:1 on --surface-tertiary. */
+  --accent-text: oklch(0.46 0.118 47);
+  /* Focus ring: the accent clears the 3:1 non-text floor on every canvas
+     (4.17:1 on --surface-tertiary, the worst case). */
   --focus: var(--accent);
 
-  /* Secondary text: 5.4:1 on --surface-secondary, 6.0:1 on --surface. */
-  --muted: oklch(0.5 0.02 258);
+  /* Secondary text: 6.08:1 on --surface-secondary, 6.80:1 on --surface. */
+  --muted: oklch(0.465 0.022 160);
 
   /* STATUS colours, LIGHT canvas. HeroUI's light defaults are display tints
      (1.8-3.6:1 as text), but every P&L figure, ROI and warning on this site is
-     status-coloured TEXT, so they are re-cut near L 0.50 on the same hues:
-     5.3-5.5:1 on --surface-secondary. Bright display values return in .dark. */
-  --success: oklch(0.49 0.13 150.8);
-  --warning: oklch(0.51 0.108 72.3);
-  --danger: oklch(0.52 0.2 25.7);
+     status-coloured TEXT, so they are cut dark: 5.66-6.10:1 on
+     --surface-secondary. Bright display values return in .dark. */
+  --success: oklch(0.455 0.105 155);
+  --warning: oklch(0.485 0.095 92);
+  --danger: oklch(0.5 0.175 20);
   /* A dark fill needs light text: HeroUI pairs these tokens with --eclipse,
      which was only legible while the fills were bright. */
   --success-foreground: var(--snow);
   --warning-foreground: var(--snow);
 
-  /* SERIES palette for comparison charts (model vs market). Violet sits apart
-     from both the accent and the thermal ramp; 3.9:1 as a mark on the canvas. */
+  /* SERIES palette for comparison charts (model vs market). The petrol pen sits
+     apart from the copper in hue and lightness; 6.97:1 as a mark on the canvas. */
   --series-model: var(--accent);
-  --series-market: oklch(0.6 0.12 295);
+  --series-market: oklch(0.44 0.07 210);
 
   /* THERMAL ramp, cool -> warm -> hot (no green/cyan). It colours only large
-     temperature figures (3:1 large-text floor) and small data marks; gradients
-     interpolate in oklab so the midpoint is a muted neutral. */
-  --temp-cold: oklch(0.62 0.14 252);
-  --temp-mild: oklch(0.63 0.035 248);
-  --temp-warm: oklch(0.62 0.13 74);
-  --temp-hot: oklch(0.6 0.21 30);
+     temperature figures (3:1 large-text floor; 3.69:1 at worst on the canvas)
+     and small data marks; gradients interpolate in oklab so the midpoint is a
+     muted neutral. */
+  --temp-cold: oklch(0.56 0.1 232);
+  --temp-mild: oklch(0.57 0.025 140);
+  --temp-warm: oklch(0.6 0.115 82);
+  --temp-hot: oklch(0.56 0.185 33);
 
   --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
   /* One family: the old display face is retired; `font-display` maps to Inter. */
@@ -117,45 +123,47 @@
   /* Motion vocabulary for everything this app adds (HeroUI parts keep their own). */
   --ease-enter: cubic-bezier(0.165, 0.84, 0.44, 1);
   --duration-enter: 260ms;
+  /* Instruments settling: needles, bars and chart draws. */
+  --duration-settle: 400ms;
 }
 
 .dark {
-  --background: oklch(0.165 0.014 258);
-  --foreground: oklch(0.968 0.004 250);
-  --surface: oklch(0.205 0.016 258);
-  --surface-secondary: oklch(0.238 0.016 258);
-  --surface-tertiary: oklch(0.265 0.016 258);
-  --overlay: oklch(0.225 0.016 258);
-  --default: oklch(0.262 0.016 258);
+  --background: oklch(0.178 0.013 168);
+  --foreground: oklch(0.95 0.009 115);
+  --surface: oklch(0.215 0.014 168);
+  --surface-secondary: oklch(0.247 0.015 168);
+  --surface-tertiary: oklch(0.277 0.016 168);
+  --overlay: oklch(0.235 0.015 168);
+  --default: oklch(0.277 0.016 168);
   --default-foreground: var(--foreground);
-  --segment: oklch(0.34 0.018 258);
+  --segment: oklch(0.355 0.018 168);
   --segment-foreground: var(--foreground);
-  --border: oklch(0.3 0.016 258);
-  --separator: oklch(0.27 0.014 258);
-  --field-background: oklch(0.238 0.016 258);
+  --border: oklch(0.325 0.017 168);
+  --separator: oklch(0.29 0.015 168);
+  --field-background: oklch(0.247 0.015 168);
   --field-foreground: var(--foreground);
 
-  /* Sky accent for the dark canvas: 9.2:1 on --surface; dark ink text on it. */
-  --accent: oklch(0.78 0.105 222);
-  --accent-foreground: oklch(0.2 0.035 240);
+  /* Copper for the dark canvas: 8.04:1 on --surface; dark ink text on it. */
+  --accent: oklch(0.765 0.115 58);
+  --accent-foreground: oklch(0.2 0.03 50);
   --accent-text: var(--accent);
   --focus: var(--accent);
 
-  --muted: oklch(0.73 0.018 255);
+  --muted: oklch(0.74 0.02 140);
 
-  /* HeroUI's bright dark-mode status tints, except danger: its stock value is
-     only 4.0:1 on this deeper surface, so it is lifted to 4.9:1. */
-  --success: oklch(0.7329 0.1935 150.81);
+  /* Bright display tints: 5.09:1 (danger on --surface-tertiary) or better. */
+  --success: oklch(0.75 0.15 152);
   --success-foreground: var(--eclipse);
-  --warning: oklch(0.8203 0.1388 76.34);
+  --warning: oklch(0.82 0.125 95);
   --warning-foreground: var(--eclipse);
-  --danger: oklch(0.64 0.19 24.6);
+  --danger: oklch(0.7 0.165 22);
 
-  --series-market: oklch(0.72 0.11 295);
+  --series-market: oklch(0.76 0.075 210);
 
-  --temp-cold: oklch(0.68 0.13 252);
-  --temp-mild: oklch(0.72 0.035 248);
-  --temp-warm: oklch(0.81 0.14 74);
+  --temp-cold: oklch(0.72 0.09 232);
+  --temp-mild: oklch(0.72 0.025 140);
+  --temp-warm: oklch(0.8 0.125 82);
+  --temp-hot: oklch(0.7 0.17 33);
 
   /* HeroUI's dark --surface-shadow is transparent, which leaves panels with no
      edge on this canvas; one inset hairline gives every surface the same edge. */
@@ -213,8 +221,9 @@
    Motion. Entrances are CSS (keyframes and IntersectionObserver-toggled
    transitions) so content always settles visible, even in a backgrounded or
    headless tab where requestAnimationFrame never fires. Interaction-driven
-   swaps (tabs, segments, account switches) use motion/react. Every rule here
-   has a reduced-motion path at the bottom of this block.
+   swaps (account switches) use motion/react. Everything moves on transform and
+   opacity, each animation says what changed, and nothing loops. The
+   reduced-motion block at the bottom of this section turns all of it off.
 --------------------------------------------------------------------------- */
 
 /* Route change: the incoming view rises 8px and fades in. */
@@ -248,7 +257,8 @@
   transform: none;
 }
 
-/* Live indicator: one soft ring for "data arriving now". */
+/* Live indicator: one soft ring when a new observation count arrives. The dot
+   is keyed by that count, so it never loops for attention. */
 @keyframes live-ring {
   0% { transform: scale(0.9); opacity: 0.6; }
   70% { transform: scale(2.4); opacity: 0; }
@@ -260,7 +270,7 @@
   inset: 0;
   border-radius: 9999px;
   background: currentColor;
-  animation: live-ring 2.4s var(--ease-enter) infinite;
+  animation: live-ring 1.2s var(--ease-enter) both;
 }
 
 /* Pop-in for small marks (forecast source dots). */
@@ -268,20 +278,58 @@
   opacity: 0;
   transform: scale(0.4);
   transition:
-    opacity 400ms ease,
-    transform 500ms var(--ease-enter);
+    opacity var(--duration-enter) ease,
+    transform var(--duration-settle) var(--ease-enter);
 }
 .pop.is-in {
   opacity: 1;
   transform: scale(1);
 }
 
-/* Navigation pill that slides under the active route (TopBar). */
+/* Navigation pill under the active route. TopBar slides it with a transform
+   (see PrimaryNav); only its first appearance fades here. */
 .nav-indicator {
-  transition:
-    transform 320ms var(--ease-enter),
-    width 320ms var(--ease-enter),
-    opacity 200ms ease;
+  transform-origin: left;
+  transition: opacity 200ms ease;
+}
+
+/* Bars fill from their zero: a value being measured out, not a box appearing. */
+@keyframes grow-x {
+  from { transform: scaleX(0); }
+  to { transform: none; }
+}
+.bar-grow {
+  transform-origin: left;
+  animation: grow-x var(--duration-settle) var(--ease-enter) both;
+}
+
+/* Scale needle (DialScale). The inline --at value is a percent of the track and
+   the element is track-wide, so translateX lands exactly on the reading. It
+   sweeps up from the bottom of the scale on arrival and between readings after. */
+.dial-needle {
+  transform: translateX(var(--at));
+  transition: transform var(--duration-settle) var(--ease-enter);
+}
+@starting-style {
+  .dial-needle { transform: translateX(0); }
+}
+
+/* The Fahrenheit ruler under the needle: a tick every 5 degrees, a longer one
+   every 10, across the 0-110 range DialScale fixes. Drawn as ruled paper. */
+.dial-scale {
+  background-image:
+    repeating-linear-gradient(to right, var(--muted) 0 1px, transparent 1px calc(100% / 11)),
+    repeating-linear-gradient(to right, var(--border) 0 1px, transparent 1px calc(100% / 22));
+  background-size: 100% 50%, 100% 30%;
+  background-position: left bottom, left bottom;
+  background-repeat: no-repeat;
+}
+
+/* Theme switch: the whole page cross-fades instead of snapping (see theme.ts). */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 200ms;
+  animation-timing-function: var(--ease-enter);
 }
 
 /* Hamburger mark: two bars that meet into one when the menu is open. */
@@ -341,6 +389,8 @@
 details[open] > summary .disclosure-chevron { transform: rotate(180deg); }
 details > summary { list-style: none; }
 details > summary::-webkit-details-marker { display: none; }
+/* A native disclosure snaps open, so its contents fade in to show what arrived. */
+details[open] > :not(summary) { animation: fade-in 220ms var(--ease-enter) both; }
 
 @media (prefers-reduced-motion: reduce) {
   .route-enter,
@@ -365,10 +415,67 @@ details > summary::-webkit-details-marker { display: none; }
     transition: none;
   }
   .nav-indicator,
+  .dial-needle,
   .menu-mark > span,
   .disclosure-chevron {
     transition: none;
   }
+  .bar-grow,
+  details[open] > :not(summary) {
+    animation: none;
+  }
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none;
+  }
+  /* The backstop: HeroUI's press scale, tab indicator and overlay animations
+     honour this query only in part, and "off" has to mean off. Transitions take
+     0s: any non-zero duration switches on `transition: all` for every element,
+     so Recharts' tick measurement reads a mid-transition size and drops labels. */
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0s !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* A tab label stays on one line; a bar too narrow for it scrolls instead.
+   Phone tap targets: every control reaches 44px, whatever size it wears on a
+   laptop. Layered so a component's own one-off utilities still win. */
+@layer components {
+  .tabs__tab { white-space: nowrap; }
+  @media (max-width: 767px) {
+    .button,
+    .select__trigger,
+    .segment__item,
+    .tabs__tab {
+      min-height: 44px;
+    }
+    .button { min-width: 44px; }
+    .segment { height: auto; }
+  }
+}
+
+@media (max-width: 767px) {
+  /* The tab bar's overflow chevrons ship at 16px and outrank the block above. */
+  .tabs__list-container > .tabs__list-container__scroll-prev,
+  .tabs__list-container > .tabs__list-container__scroll-next {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+/* HeroUI rings its React Aria buttons through data-focus-visible. A plain link
+   or button wearing .button never gets that attribute, so it needs this ring. */
+a.button:focus-visible,
+button.button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 /* Recharts: strokes and dots may sit on the plot edge without clipping. */

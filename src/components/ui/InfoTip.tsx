@@ -24,7 +24,9 @@ export function InfoTip({ label, children, title, placement = "top", className }
         size="sm"
         variant="ghost"
         aria-label={`About ${label}`}
-        className={`size-6 min-w-6 text-muted hover:text-foreground ${className ?? ""}`.trim()}
+        // 24px on a laptop. On a phone the target grows to 44px and the negative
+        // margin keeps it from pushing the label beside it.
+        className={`-m-2.5 size-11 min-w-11 text-muted hover:text-foreground md:m-0 md:size-6 md:min-w-6 ${className ?? ""}`.trim()}
       >
         <Icon icon="solar:info-circle-linear" aria-hidden="true" />
       </Button>

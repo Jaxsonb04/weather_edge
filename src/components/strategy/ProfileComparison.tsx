@@ -182,7 +182,7 @@ function BookColumn({ s, p, currentStateAvailable }: { s: StrategyLab; p: Profil
                 aria-valuenow={targetProgressState.value}
               >
                 <div
-                  className="h-full rounded-full bg-accent"
+                  className="bar-grow h-full rounded-full bg-accent"
                   style={{ width: `${targetProgressState.pct}%` }}
                 />
               </div>
@@ -237,7 +237,7 @@ function BookColumn({ s, p, currentStateAvailable }: { s: StrategyLab; p: Profil
               role="img"
               aria-label={`${displayLabel} approved ${gateCount.approved} of ${gateCount.signals} gate evaluations (${pct(approvalRate, 2)}).`}
             >
-              <div className={`h-full rounded-full ${barColor}`} style={{ width: `${Math.max((approvalRate ?? 0) * 100, 0.6)}%` }} />
+              <div className={`bar-grow h-full rounded-full ${barColor}`} style={{ width: `${Math.max((approvalRate ?? 0) * 100, 0.6)}%` }} />
             </div>
             <p className="mt-1 text-[11px] text-muted">
               {pct(approvalRate, 2)} published approval rate

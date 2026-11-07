@@ -19,7 +19,7 @@ const STEPS: Step[] = [
   {
     icon: "solar:tag-price-linear",
     title: "Price and gate",
-    text: "Bracket probabilities become fee- and liquidity-aware edge, gated on its lower confidence bound.",
+    text: "Bracket probabilities become fee- and liquidity-aware edge. The forecast accounts gate on its lower confidence bound.",
   },
   {
     icon: "solar:server-square-cloud-linear",

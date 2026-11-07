@@ -28,6 +28,8 @@ const routeDescriptions: Record<Route, string> = {
     route (a CSS transform transition, so it never waits on a frame callback). */
 function PrimaryNav({ route }: { route: Route }) {
   const navRef = useRef<HTMLElement>(null);
+  const pillRef = useRef<HTMLSpanElement>(null);
+  const previous = useRef<{ x: number; w: number } | null>(null);
   const [pill, setPill] = useState<{ x: number; w: number } | null>(null);
 
   useLayoutEffect(() => {
@@ -44,6 +46,20 @@ function PrimaryNav({ route }: { route: Route }) {
     return () => observer?.disconnect();
   }, [route]);
 
+  // The pill takes its new size at once and plays from the old one, so the
+  // slide is transform-only. Without Web Animations it simply lands.
+  useLayoutEffect(() => {
+    const from = previous.current;
+    previous.current = pill;
+    const el = pillRef.current;
+    if (!el?.animate || !from?.w || !pill?.w || (from.x === pill.x && from.w === pill.w)) return;
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    el.animate(
+      [{ transform: `translateX(${from.x}px) scaleX(${from.w / pill.w})` }, { transform: `translateX(${pill.x}px)` }],
+      { duration: 260, easing: getComputedStyle(el).getPropertyValue("--ease-enter") },
+    );
+  }, [pill]);
+
   return (
     <nav
       ref={navRef}
@@ -51,6 +67,7 @@ function PrimaryNav({ route }: { route: Route }) {
       className="relative hidden items-center rounded-full bg-default/70 p-1 md:flex"
     >
       <span
+        ref={pillRef}
         aria-hidden="true"
         className="nav-indicator absolute left-0 top-1 h-[calc(100%-0.5rem)] rounded-full bg-segment shadow-surface"
         style={{
@@ -106,11 +123,13 @@ export function TopBar({ mode, onToggleTheme, onOpenCommand, menuOpen, onMenuOpe
           <span className={`menu-mark ${menuOpen ? "is-open" : ""}`} aria-hidden="true"><span /><span /></span>
         </button>
 
-        <a href="#/overview" aria-label="WeatherEdge overview" className="mr-2 flex min-w-0 items-center gap-2.5 rounded-lg no-underline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[color:var(--focus)]">
+        <a href="#/overview" aria-label="WeatherEdge overview" className="mr-2 flex min-h-11 min-w-0 items-center gap-2.5 rounded-lg no-underline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[color:var(--focus)]">
           <img
             src={`${import.meta.env.BASE_URL}favicon.svg`}
             alt=""
             aria-hidden="true"
+            width={28}
+            height={28}
             className="size-7 shrink-0 rounded-lg"
           />
           <span className="hidden text-[15px] font-semibold tracking-tight text-foreground min-[360px]:inline">
@@ -147,10 +166,10 @@ export function TopBar({ mode, onToggleTheme, onOpenCommand, menuOpen, onMenuOpe
             target="_blank"
             rel="noreferrer"
             aria-label="WeatherEdge source on GitHub"
-            className={buttonVariants({ variant: "ghost", className: "gap-1.5 px-2.5" })}
+            className={buttonVariants({ variant: "ghost", className: "hidden gap-1.5 px-2.5 md:inline-flex" })}
           >
             <Icon icon="solar:code-square-linear" aria-hidden="true" />
-            <span className="hidden sm:inline">Source</span>
+            <span>Source</span>
           </a>
         </div>
       </div>

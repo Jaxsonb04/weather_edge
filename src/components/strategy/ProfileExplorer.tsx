@@ -24,10 +24,10 @@ export function ProfileExplorer({ s }: { s: StrategyLab }) {
         <AnimatePresence mode="wait" initial={false}>
           <motion.div
             key={active.risk_profile}
-            initial={reduce ? { opacity: 0 } : { opacity: 0, y: 8 }}
+            initial={reduce ? false : { opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={reduce ? { opacity: 0 } : { opacity: 0, y: -6 }}
-            transition={{ duration: reduce ? 0.12 : 0.22, ease: [0.165, 0.84, 0.44, 1] }}
+            exit={reduce ? undefined : { opacity: 0, y: -6 }}
+            transition={{ duration: 0.22, ease: [0.165, 0.84, 0.44, 1] }}
             className="min-w-0"
           >
             <ProfileDashboard s={s} p={active} />

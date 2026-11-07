@@ -1,4 +1,4 @@
-import { useReducedMotion } from "motion/react";
+import { useChartDraw } from "../../lib/useChartDraw";
 import {
   Bar,
   BarChart,
@@ -23,7 +23,7 @@ const AXIS_TICK = { fill: "var(--color-muted)", fontSize: 12 };
     diagonal are the brackets where the book disagrees with the crowd. */
 export function CandidateScatter({ points, targetDate }: { points: ScatterPoint[]; targetDate?: string }) {
   // Recharts grows series in on mount; reduced motion draws them in place.
-  const reduceMotion = useReducedMotion();
+  const draw = useChartDraw();
   const yes = points.filter((p) => p.side === "YES");
   const no = points.filter((p) => p.side !== "YES");
   return (
@@ -102,8 +102,8 @@ export function CandidateScatter({ points, targetDate }: { points: ScatterPoint[
                   );
                 }}
               />
-              <Scatter isAnimationActive={!reduceMotion} data={yes} fill="var(--accent)" fillOpacity={0.65} shape="circle" />
-              <Scatter isAnimationActive={!reduceMotion} data={no} fill="var(--series-market)" fillOpacity={0.65} shape="circle" />
+              <Scatter {...draw} data={yes} fill="var(--accent)" fillOpacity={0.65} shape="circle" />
+              <Scatter {...draw} data={no} fill="var(--series-market)" fillOpacity={0.65} shape="circle" />
             </ScatterChart>
           </ResponsiveContainer>
         </div>
@@ -116,7 +116,7 @@ export function CandidateScatter({ points, targetDate }: { points: ScatterPoint[
 /** Average model-minus-market edge grouped by 20¢ market-price buckets. */
 export function EdgeByPriceChart({ buckets }: { buckets: EdgeBucket[] }) {
   // Recharts grows series in on mount; reduced motion draws them in place.
-  const reduceMotion = useReducedMotion();
+  const draw = useChartDraw();
   const data = buckets.map((b) => ({ range: `${b.range}¢`, edge: Math.round(b.avg_edge * 1000) / 10, count: b.count }));
   return (
     <Widget className="h-full w-full">
@@ -162,7 +162,7 @@ export function EdgeByPriceChart({ buckets }: { buckets: EdgeBucket[] }) {
                   );
                 }}
               />
-              <Bar isAnimationActive={!reduceMotion} dataKey="edge" name="Avg edge" radius={[4, 4, 0, 0]} barSize={28}>
+              <Bar {...draw} dataKey="edge" name="Avg edge" radius={[4, 4, 0, 0]} barSize={28}>
                 {data.map((d) => (
                   <Cell key={d.range} fill={d.edge >= 0 ? "var(--accent)" : "var(--series-market)"} fillOpacity={0.85} />
                 ))}

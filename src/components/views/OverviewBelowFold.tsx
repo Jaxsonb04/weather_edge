@@ -129,11 +129,14 @@ export function OverviewBelowFold({ data, citiesData, citiesError, selected, onS
         {activeCity ? (
           <DeferredOverviewSlab>
             <Suspense fallback={<DetailSkeleton />}>
-              <CityDetail
-                city={activeCity}
-                flagshipTarget={flagshipTarget}
-                intradayLock={intradayLock}
-              />
+              {/* Keyed so picking a city fades the new detail in over the old. */}
+              <div key={activeCity.slug} className="fade-in">
+                <CityDetail
+                  city={activeCity}
+                  flagshipTarget={flagshipTarget}
+                  intradayLock={intradayLock}
+                />
+              </div>
             </Suspense>
           </DeferredOverviewSlab>
         ) : citiesError ? (

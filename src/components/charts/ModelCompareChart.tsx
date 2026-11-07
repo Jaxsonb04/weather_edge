@@ -1,5 +1,5 @@
 import { Cell } from "recharts";
-import { useReducedMotion } from "motion/react";
+import { useChartDraw } from "../../lib/useChartDraw";
 import { BarChart } from "@heroui-pro/react/bar-chart";
 import { ChartTooltip } from "@heroui-pro/react/chart-tooltip";
 import { Widget } from "@heroui-pro/react/widget";
@@ -15,7 +15,7 @@ const BAR_COLOR: Record<string, string> = {
     naive persistence baseline. Lower is better. */
 export function ModelCompareChart({ diag }: { diag: Diagnostics }) {
   // Recharts grows series in on mount; reduced motion draws them in place.
-  const reduceMotion = useReducedMotion();
+  const draw = useChartDraw();
   const series = modelCompareSeries(diag);
   const label = `Held-out mean absolute error by model, lower is better: ${series.map((d) => `${d.model} ${d.mae} degrees`).join(", ")}.`;
   return (
@@ -36,7 +36,7 @@ export function ModelCompareChart({ diag }: { diag: Diagnostics }) {
           <BarChart.Grid horizontal={false} />
           <BarChart.XAxis type="number" tickFormatter={(v: number) => `${v}°`} domain={[0, "dataMax"]} />
           <BarChart.YAxis type="category" dataKey="model" width={92} tickMargin={6} />
-          <BarChart.Bar isAnimationActive={!reduceMotion} dataKey="mae" name="MAE" radius={[0, 6, 6, 0]} barSize={26}>
+          <BarChart.Bar {...draw} dataKey="mae" name="MAE" radius={[0, 6, 6, 0]} barSize={26}>
             {series.map((d) => (
               <Cell key={d.model} fill={BAR_COLOR[d.model] ?? "var(--color-muted)"} />
             ))}

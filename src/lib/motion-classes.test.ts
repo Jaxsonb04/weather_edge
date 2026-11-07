@@ -25,6 +25,18 @@ describe("named motion fallbacks", () => {
     expect(city).toContain("motion-reduce:hover:translate-y-0");
   });
 
+  it("never loops an animation for attention", () => {
+    expect(read("src/index.css")).not.toMatch(/\binfinite\b/);
+  });
+
+  it("keeps the reduced-motion backstop from starting transitions", () => {
+    // A non-zero duration here made Recharts measure tick labels mid-transition
+    // and drop half of them from the charts.
+    const css = read("src/index.css");
+    const reduced = css.slice(css.indexOf("@media (prefers-reduced-motion: reduce)"));
+    expect(reduced).toContain("transition-duration: 0s !important");
+  });
+
   it("stops the loading shimmer sweep under reduced motion", () => {
     // HeroUI animates the shimmer on pseudo-elements and never stops it itself.
     const css = read("src/index.css");
