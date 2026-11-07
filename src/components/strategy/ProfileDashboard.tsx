@@ -4,7 +4,7 @@ import { Widget } from "@heroui-pro/react/widget";
 import { Icon } from "@iconify/react/offline";
 import { pct } from "../../lib/data";
 import { usePublication } from "../../lib/publication";
-import { dayRange, incidentsForDays } from "../../lib/incidents";
+import { dayRange, incidentsForDays, shortDay, trailingNoEntryRun } from "../../lib/incidents";
 import {
   decisionCountProvenance,
   ledgerByCity,
@@ -165,6 +165,13 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
   const windowEnd = p.daily_summary?.window_end ?? days?.at(-1)?.date;
   const windowLabel = windowStart && windowEnd ? dayRange(windowStart, windowEnd) : `${p.daily_summary?.window_days ?? 7}-day window`;
   const incidents = incidentsForDays(days);
+  // A fixed outage stays as a quiet caption where it explains the flat stretch.
+  const noEntries = trailingNoEntryRun(days, p.daily_summary?.window_end);
+  const chartNote = incidents.length
+    ? `${incidents.map((i) => `Entry scans were down ${dayRange(i.start, i.end)}; fixed ${shortDay(i.end)}.`).join(" ")}${
+        noEntries ? ` No new entries ${dayRange(noEntries.start, noEntries.end)}.` : ""
+      }`
+    : undefined;
   const rejections = (gate?.top_rejections_all?.length ? gate.top_rejections_all : gate?.top_rejections ?? []).slice(0, 5);
   const maxRejection = rejections[0]?.count ?? 1;
 
@@ -193,6 +200,7 @@ export function ProfileDashboard({ s, p }: { s: StrategyLab; p: ProfileEntry }) 
               description={`Realized, ${windowLabel}; hover a day for the account balance`}
               contributionMode
               incidents={incidents}
+              note={chartNote}
             />
           ) : (
             <div role="status" className="grid min-h-48 place-items-center rounded-3xl bg-surface-secondary px-4 text-center">

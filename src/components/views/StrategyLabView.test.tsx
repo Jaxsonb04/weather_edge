@@ -256,62 +256,53 @@ describe("PolicyLineage after an archive", () => {
 });
 
 describe("LabNotices", () => {
-  const withDays = (start: string, opened: number[]) =>
-    opened.map((count, index) => {
-      const date = new Date(Date.parse(`${start}T12:00:00Z`) + index * 86_400_000).toISOString().slice(0, 10);
-      return { date, cumulative_realized: 0, opened: count };
-    });
+  const alerts = [
+    { code: "settlement-pending", level: "warning", title: "Settlement pending", detail: "Positions for 2026-11-06 (1) are awaiting final truth." },
+    { code: "same-day-entry-blocked", level: "info", title: "Same-day entries blocked", detail: "live paper entry requires min_lead_days=1" },
+    { code: "emos-live-missing", level: "warning", title: "Live EMOS target missing", detail: "KLAX has no live EMOS distribution for 2026-11-09; x" },
+    { code: "emos-live-missing", level: "warning", title: "Live EMOS target missing", detail: "KSEA has no live EMOS distribution for 2026-11-09; x" },
+  ];
+  const lab = { ...twoAccounts, status: { alerts } } as unknown as StrategyLab;
 
-  it("summarizes a settlement backlog and labels an outage window as an outage", () => {
-    render(
-      <LabNotices
-        s={{
-          ...twoAccounts,
-          status: {
-            alerts: [{
-              code: "settlement-backlog",
-              level: "critical",
-              title: "Settlement backlog",
-              detail: "Paper positions are up to 35 days past settlement.",
-              action: "Run paper-auto-settle.",
-            }],
-          },
-          paper_trading: {
-            summary: { unresolved_past_targets: [{ open_orders: 3, target_date: "2026-09-27" }] },
-          },
-          profiles: twoAccounts.profiles!.map((profile) =>
-            profile.archived
-              ? profile
-              : {
-                  ...profile,
-                  daily_summary: {
-                    ...profile.daily_summary,
-                    window_start: "2026-10-26",
-                    window_end: "2026-11-01",
-                    days: withDays("2026-10-26", [2, 3, 0, 0, 0, 0, 0]),
-                  },
-                },
-          ),
-        } as unknown as StrategyLab}
-      />,
-    );
+  it("shows each notice only on the tab it affects, in plain words", () => {
+    const { container, rerender } = render(<LabNotices s={lab} tab="accounts" />);
+    expect(screen.getByText("Settlement pending")).toBeInTheDocument();
+    expect(screen.getByText("Live and V7 only enter next-day markets, so same-day signals are research-only.")).toBeInTheDocument();
+    expect(container.textContent).not.toMatch(/min_lead_days|EMOS/);
 
-    expect(screen.getByRole("alert")).toHaveTextContent("3 open positions from Sep 27 have not settled");
-    expect(screen.getByText(/No new entries Oct 28 – Nov 1/)).toBeInTheDocument();
-    expect(screen.getByText("Entry scanner outage")).toBeInTheDocument();
+    rerender(<LabNotices s={lab} tab="system" />);
+    expect(screen.getByText("KLAX, KSEA have no live forecast distribution yet and use a simpler fallback.")).toBeInTheDocument();
+    expect(screen.queryByText("Settlement pending")).not.toBeInTheDocument();
+
+    for (const tab of ["m1", "research", "archive"] as const) {
+      rerender(<LabNotices s={lab} tab={tab} />);
+      expect(container).toBeEmptyDOMElement();
+    }
   });
 
-  it("stays silent when no alert is active and no outage touches the window", () => {
-    const { container } = render(
-      <LabNotices
-        s={{
-          ...twoAccounts,
-          profiles: twoAccounts.profiles!.map((profile) =>
-            profile.archived ? profile : { ...profile, daily_summary: { ...profile.daily_summary, window_start: "2026-12-01", window_end: "2026-12-07" } },
-          ),
-        } as unknown as StrategyLab}
-      />,
-    );
+  it("summarizes a settlement backlog on Accounts and keeps a critical unknown alert on every tab", () => {
+    const s = {
+      ...twoAccounts,
+      status: {
+        alerts: [
+          { code: "settlement-backlog", level: "critical", title: "Settlement backlog", detail: "Paper positions are up to 35 days past settlement.", action: "Run paper-auto-settle." },
+          { code: "mystery", level: "critical", title: "Something broke", detail: "Check the runtime." },
+        ],
+      },
+      paper_trading: { summary: { unresolved_past_targets: [{ open_orders: 3, target_date: "2026-09-27" }] } },
+    } as unknown as StrategyLab;
+
+    const { rerender } = render(<LabNotices s={s} tab="accounts" />);
+    expect(screen.getAllByRole("alert")[0]).toHaveTextContent("3 open positions from Sep 27 have not settled");
+    expect(screen.getByText("Something broke")).toBeInTheDocument();
+
+    rerender(<LabNotices s={s} tab="m1" />);
+    expect(screen.queryByText("Settlement backlog")).not.toBeInTheDocument();
+    expect(screen.getByText("Something broke")).toBeInTheDocument();
+  });
+
+  it("stays silent when no alert is active, and never turns a finished outage into a notice", () => {
+    const { container } = render(<LabNotices s={twoAccounts as unknown as StrategyLab} tab="accounts" />);
     expect(container).toBeEmptyDOMElement();
   });
 });

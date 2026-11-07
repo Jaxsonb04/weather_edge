@@ -71,6 +71,21 @@ describe("M1Trial", () => {
     expect(screen.getByRole("img", { name: /Balance over 2 days, from \$2,000 to \$2,010/ })).toBeInTheDocument();
   });
 
+  it("shows a one-line empty state instead of a flat balance line before the first entry", () => {
+    render(<M1Trial s={lab({
+      ...book,
+      realized_equity: 2000,
+      trial: { ...book.trial, book: { entries: 0, settled_entries: 0 } },
+      days: [
+        { date: "2026-11-06", cumulative_realized: 0, closing_equity: 2000 },
+        { date: "2026-11-07", cumulative_realized: 0, closing_equity: 2000 },
+      ],
+    })} />);
+
+    expect(screen.getByText(/No entries yet/)).toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: /Balance over/ })).not.toBeInTheDocument();
+  });
+
   it("withholds every figure from a populated book the publisher could not verify", () => {
     render(<M1Trial s={lab({ ...book, available: false, reason: "M1 trial ledger is not active or not reconciled" })} />);
     expect(screen.getByText(/not active or not reconciled/)).toBeInTheDocument();

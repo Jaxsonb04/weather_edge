@@ -34,7 +34,7 @@ describe("cached decision analytics labels", () => {
   it("dates runtime collection counters", () => {
     render(<OpsHealth s={strategy} />);
     expect(screen.getByRole("status")).toHaveTextContent(
-      /historical counts as of 2026-09-01/i,
+      /window counts as of 2026-09-01/i,
     );
   });
 

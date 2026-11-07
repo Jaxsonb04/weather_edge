@@ -513,6 +513,15 @@ export function describeMethod(raw: unknown): string {
   return parts.join(" \u00b7 ");
 }
 
+/** A gate reason in plain words: drops the internal audit tag, e.g. "(audit MD-01)",
+    and the internal name of the nonfinal-observation check. */
+export function plainReason(raw: string): string {
+  return raw
+    .replace(/\s*\(audit [A-Za-z]+-\d+[a-z]?\)/g, "")
+    .replace(/^nonfinal-certainty gate:\s*/i, "Certainty check: ")
+    .replace(/\bnonfinal\b/gi, "not-yet-final");
+}
+
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /** Climatology table key ("03-14") → "Mar 14". Those keys carry no year. */
@@ -608,8 +617,18 @@ export function calibrationSeries(signal: TradingSignal) {
 export const round1 = (n: number) => Math.round(n * 10) / 10;
 export const f1 = (n: number | undefined | null) =>
   n == null || Number.isNaN(n) ? "—" : `${round1(n)}°`;
-export const pct = (n: number | undefined | null, digits = 0) =>
-  n == null || Number.isNaN(n) ? "—" : `${(n * 100).toFixed(digits)}%`;
+// Intl rounds the decimal value (0.2945 -> 29.5%); toFixed rounded the float
+// (29.449999... -> 29.4%), so the KPI strip, which uses Intl, disagreed with it.
+const pctFormats = new Map<number, Intl.NumberFormat>();
+export const pct = (n: number | undefined | null, digits = 0) => {
+  if (n == null || Number.isNaN(n)) return "—";
+  let format = pctFormats.get(digits);
+  if (!format) {
+    format = new Intl.NumberFormat("en-US", { style: "percent", minimumFractionDigits: digits, maximumFractionDigits: digits });
+    pctFormats.set(digits, format);
+  }
+  return format.format(n);
+};
 // Percent with an explicit "+" on positives, so favorable ≠ neutral by color alone.
 export const signedPct = (n: number | undefined | null, digits = 0) =>
   n == null || Number.isNaN(n) ? "—" : `${n > 0 ? "+" : ""}${(n * 100).toFixed(digits)}%`;

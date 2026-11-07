@@ -4,7 +4,7 @@ import { Chip } from "@heroui/react/chip";
 import { Separator } from "@heroui/react/separator";
 import { Sheet } from "@heroui-pro/react/sheet";
 import { Icon } from "@iconify/react/offline";
-import { pct, type Decision } from "../../lib/data";
+import { pct, plainReason, type Decision } from "../../lib/data";
 import { copyText } from "../../lib/clipboard";
 import { Stat } from "../ui/Stat";
 
@@ -74,7 +74,7 @@ export function BracketSheet({ decision, isOpen, onOpenChange }: BracketSheetPro
                       {(decision.reasons ?? []).map((r, i) => (
                         <li key={i} className="flex gap-2 rounded-xl bg-surface-secondary p-2.5 text-xs text-muted">
                           <Icon icon="solar:shield-warning-linear" className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden="true" />
-                          <span>{r}</span>
+                          <span>{plainReason(r)}</span>
                         </li>
                       ))}
                       {!decision.reasons?.length && (

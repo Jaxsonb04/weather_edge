@@ -112,6 +112,16 @@ function CheckRow({ c }: { c: ReadinessCheck }) {
   );
 }
 
+/** The kill-switch limit once, then what is left; "none used yet" when the
+    remaining amount still equals the limit, so one figure is not printed twice. */
+function killSwitchText(max: number, maxPct: number | undefined, remaining: number): string {
+  const limit = money(max, { sign: "negative-only" });
+  const share = maxPct == null
+    ? `${limit} of losses`
+    : `${new Intl.NumberFormat("en-US", { style: "percent", maximumFractionDigits: 1 }).format(maxPct)} of the configured risk capital (${limit})`;
+  return `${share}; ${remaining < max ? `${money(remaining, { sign: "negative-only" })} remaining` : "none used yet"}.`;
+}
+
 /** The engine's own answer to "would you trade real money with this?",
     published unedited, with the standing pilot limits. */
 export function ReadinessPanel({ s }: { s: StrategyLab }) {
@@ -162,9 +172,7 @@ export function ReadinessPanel({ s }: { s: StrategyLab }) {
             </div>
             {r.pilot_loss_remaining != null && policy.pilot_max_loss != null && (
               <p className="mt-3 text-xs text-muted">
-                Pilot kill-switch: {policy.pilot_max_loss_pct != null
-                  ? `${new Intl.NumberFormat("en-US", { style: "percent", maximumFractionDigits: 1 }).format(policy.pilot_max_loss_pct)} of the configured risk capital (${money(policy.pilot_max_loss, { sign: "negative-only" })})`
-                  : `${money(policy.pilot_max_loss, { sign: "negative-only" })} of losses`} ({money(r.pilot_loss_remaining, { sign: "negative-only" })} remaining).
+                Pilot kill-switch: {killSwitchText(policy.pilot_max_loss, policy.pilot_max_loss_pct, r.pilot_loss_remaining)}
               </p>
             )}
           </div>

@@ -245,7 +245,11 @@ export function M1Trial({ s }: { s: StrategyLab }) {
           </Widget.Content>
         </Widget>
 
-        {days.length > 1 && (
+        {trial?.book?.entries === 0 ? (
+          <p role="status" className="rounded-2xl bg-surface-secondary px-4 py-3 text-sm text-muted">
+            No entries yet. The balance chart starts with the first entry.
+          </p>
+        ) : days.length > 1 && (
           <EquityCurve
             s={s}
             days={days}
