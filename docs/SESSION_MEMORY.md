@@ -1,28 +1,150 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-11-07 (owner decision: $2,000 per paper account; billing lock cleared; PR 163 merged; deployment has NOT happened yet)
+Last updated: 2026-11-07 (backend at `c14d1a10c`, web at `372212b33`; $2,000 paper accounts live; repository audit and cleanup)
 
-Last complete production verification: 2026-10-05 23:04 PDT (bounded read-only verification)
+Last complete production verification: 2026-11-07 10:50 UTC (build record, 13 timers, flags, active accounts, one capital deposit, public manifest and strategy alerts)
 
-Last backend safety inspection: 2026-11-02 19:27 PST (read-only units, timers, scans, disk, flags, retention mode, indexes, accounts and new-station rows; ledgers reconciled to the published equities on November 1)
+Last public artifact inspection: 2026-11-07 10:51 UTC (guarded release verified the installed app, Pages deployment and public file hashes at Pages commit `e8a77acc`)
 
-Last public artifact inspection: 2026-10-11 13:05 PDT (independent stable manifest and all five runtime JSON hashes; no static release)
-
-Last public app verification: 2026-10-11 (read-only existing public app: desktop/mobile DOM, interactions and screenshots; last guarded static release October 6, 00:26 PDT)
+Last public app verification: 2026-11-07 (see the November 7 release snapshot below)
 
 This is the rolling cross-session handoff. Recheck AWS before making a current
 operational claim; all production observations below are dated snapshots.
 
 ## Session Brief
 
-- **November 7 owner update:** Live Stability, Research V7 and the M1 trial each
-  use $2,000 in separate paper accounts, never summed. This supersedes November
-  6's capital decision. GitHub's billing lock cleared at about 01:25 UTC on
-  November 7 after a payment method was added. PR #163 (M1) merged as
-  `10e58c270`. **Deployment has NOT happened yet.**
-  Documentation checks: 32 focused Python 3.13 tests passed; the README web
-  tests could not start because Vitest is absent. No ledger changes were made.
-- **Paper capital design (November 7; pending deploy):**
+- **November 7 repository audit and cleanup (after the release):**
+  - **Security:** Claude led and GPT gave independent second opinions. No
+    exploitable code issue, and no secret in the tree, the full history or
+    `gh-pages`. The dependency advisories (25 in the bun tree, including a
+    critical DOMPurify one, 14 for PyJWT, and certifi's revoked CA) were
+    build-time, test-time or unreachable code paths, and all are cleared by the
+    dependency refresh.
+  - **Pull requests:** one consolidated dependency refresh replaced Dependabot
+    PRs #148 to #152, #160 and #161. Held: `@heroui-pro/react` beta.7 (licensed),
+    `@iconify-json/solar` 1.2.5 (1.2.14 turns the used icons into aliases and the
+    icon generator fails), and every major. Fork PR #180 (°F/°C toggle by
+    fluid-design-io) was finished on a same-repo branch, because fork CI cannot
+    read `HEROUI_KEY`: the market panel converts, Fahrenheit brackets are marked
+    in °C mode, and rounding is fixed.
+  - **GitHub settings:** the description says 20 cities, the empty wiki is off,
+    merges are squash-only, "update branch" is on, CodeQL default setup is on and
+    `SECURITY.md` points to private vulnerability reporting. Non-provider secret
+    patterns could not be enabled on this plan.
+  - **Recovered work:** this release record and the installers' dpkg-lock wait
+    had been left uncommitted in a worktree; both ship with the audit. Every
+    other leftover worktree, branch and stash was superseded or abandoned and was
+    removed after its patch was archived in `.local/cleanup-20261107/`.
+  - **Not shipped, owner go needed (retention and settlement paths):** the
+    archived `stash-0.patch` adds a run-time budget to the nightly bounded-delete
+    prune (`--max-run-seconds`, `SFO_PRUNE_MAX_RUN_SECONDS`, default 2400 s) and
+    applies cleanly to main. `stash-1.patch` is partial September hardening of
+    the exchange-settlement check and needs a hand-port.
+  - **Pending publication:** main has web changes that are not on Pages yet:
+    #179 and the °C toggle. Publishing needs the owner's OK. The next backend
+    deploy also picks up the Python bumps (certifi, cryptography, numpy, PyJWT,
+    setuptools).
+- **November 7 release snapshot (read first):**
+  - **Deployed:** backend at `c14d1a10c` (PRs #163 to #178) and web at
+    `372212b33`; #178 changed no site code. Live, V7 and
+    M1 each hold $2,000 in separate paper accounts, never summed. Live took one
+    audited `CAPITAL_DEPOSIT` of +$1,000, and its high water stayed $2,070.26.
+    V6 and eight older accounts are archived. Paper only: there is no real-money
+    path, and `live_execution.py` ends in "not implemented".
+  - **Behavior:** `STRATEGY_BEHAVIOR_VERSION` is
+    `behavior-v5-audit-admission-2026-11-07`. It was not rotated for the #176
+    forecast fix because Live economics did not change. The M1 fingerprint must
+    stay `f0258953ff7eb55a1e9318b4`.
+  - **Seven deploy attempts:** r1 failed after install and account cutover on
+    macOS rsync `--chmod=F600`. r2 was refused by a stale lease. r3 failed at seed
+    publish because the daily report had the EMOS point but not its distribution.
+    PR #173 fixed both. r4 (`ba1512624`), r5 (`6ad154012`, 09:10 to about
+    10:47 UTC) and r6 (`372212b33`, 12:00 to 13:31 UTC) succeeded.
+  - **r7 failed, then recovered by hand:** r7 (`c14d1a10c`, started 13:58 UTC) lost
+    `apt-get install` to the dpkg lock at 15:12: `apt-daily` ran unattended-upgrade
+    at that moment. The source had landed, but the dead-man stayed in `mixed`, which
+    never re-enables timers. All 223 deployed files matched `main` by SHA-256 and the
+    diff from r6 was one line of `build.py` plus a test, so venv and units needed no
+    reinstall. The runbook's by-hand path restored 13 timers, released the marker and
+    cleared the dead-man at 15:14:53. Scans were dark for about 76 minutes. The local
+    snapshot was removed after its S3 size and SHA matched. The installers now wait
+    up to 600 s for the lock. Normal timers covered the seed publish, but the analysis
+    cache is bound to the source SHA, so the site warned `analysis-stale` until the
+    cache was rebuilt by hand from the S3 snapshot with the two disk watchdogs paused.
+  - **Pre-migration database image:** r1's local snapshot was removed after its
+    S3 size and SHA were verified, so
+    `database-snapshots/paper_trading-20261107T023410Z.sqlite3` is the only
+    pre-migration image. It and the later snapshots `...035511Z.sqlite3` and
+    `...055512Z.sqlite3` expire 35 days after creation, about December 12.
+  - **Same-day forecast bug, fixed in #176:** `_intraday_weight` blended the high
+    so far into the published high all morning, pulling it 2 to 4F cold. For
+    non-SFO cities there was never a remaining-heat anchor, and SFO lost its own
+    when Google stopped. Backtest over 41,784 station-hours, July to November:
+    MAE 2.47F before, 1.10F after, bias -2.17F to +0.02F. It reached public
+    `cities_data.json`, SFO `trading_signal.json`, journals, V7 SFO exits through
+    the ensemble and a narrow V7 SFO stale-quote pull. Live, V7 and M1 entries,
+    non-SFO exits and heartbeat reads were not affected. Not scored on P&L. Rerun
+    `.local/verify-20261107/intraday/` for the five new cities in 2 to 3 weeks.
+  - **Nightly dataset job:** IEM rate-limited the unpaced 20-station backfill
+    (HTTP 429). PR #174 paces requests 3 s apart with 30 s and 120 s retries.
+  - **Failure visibility, PR #176:** failed scans now publish a critical
+    `paper-scan-stale` alert, overdue M1 replay publishes `m1-reconcile-overdue`
+    and fails scheduler health, and the external watchdog reads Strategy Lab as
+    well as the manifest.
+  - **Lot 3687:** restated after cutover, high 72 to 71, P&L -$2.38 to +$0.62.
+    Only the archived V6 ledger moved, by +$3.00. It nudges the `warm_70_79f`
+    Kelly multiplier from 0.798 to 0.871.
+  - **Google Weather:** 403 PERMISSION_DENIED since September 2 (8,153 failures).
+    The owner must fix it in Google Cloud. EMOS does not use it and no public text
+    is false, so it can stay deferred. Live refuses SFO's EMOS fallback, so Live
+    does not trade SFO.
+  - **Income:** central case about $0 to $50/month, not distinguishable from zero.
+    M1 at $2,000 is capped by its $100 target-date limit, at most roughly
+    +$30/month, illustrative only.
+  - **Retention measured (archive-only, first run):** 15m16s, 1.4 GiB peak
+    including page cache, 19.6 MiB swap, gate and FK audit passed.
+  - **Slow observation read, found after release, fixed in #177:** `MIN(observed_at)`
+    (added by #162) and `ORDER BY observed_at` made SQLite walk about 35,000 rows
+    per station through the primary key instead of the `(station_id, local_date)`
+    index. The scan held `weather.db` shared for 3 to 6 s per city, which `/proc/locks`
+    sampling showed directly, and median scan time went from 18 s to about 68 s.
+    `weather.db` is in rollback-journal mode, so commits waited on those reads:
+    `database is locked` hit `nws_ground_truth.py` twice and `nwp_archive.py` once,
+    then the publisher under prune load, because PENDING blocks new readers. A
+    unary `+` fixes the plan. Writer timeouts stay at 5 s on purpose: raising them
+    moves the failure onto readers. WAL for `weather.db` was not needed.
+  - **Final audit at `6ad154012`:** Claude ran 10 areas and GPT 4 lanes, and each
+    verified the other. No P0. GPT's five P1 claims: one refuted (humidity as a
+    settlement high; its report layout was hand-written and the real Phoenix
+    `MAXIMUM MM` report never produced a row), three real at P2, one real at P1
+    (M1 failures invisible publicly). All fixes merged in #177.
+  - **Reboot test passed, November 7 11:16 UTC:** SSH back in 24 s, swap and 13
+    timers restored, 0 failed units, ledgers identical, scans and monitor resumed.
+  - **Nightly chain measured:** full twenty-city run 10m27s, 223 MB peak, against
+    the 2700 s limit. One SSL timeout on `open-meteo-historical-forecast` is
+    tolerated by the two-strike rule and cleared on the next run.
+  - **Observation tape:** hourly rather than 15-minute since October 22 at every
+    station, probably upstream. The high barely suffers: mean CLI minus tape 0.14F
+    before, 0.21F after. October 22 lost about 10.6 hours at every station; the CLI
+    finals for that day are right and the tape is what is short.
+  - **Live site QA, November 7:** 25 number checks matched the published JSON.
+    No console errors, no horizontal scroll at 390, no exchange name on the page.
+  - **Accepted limits from the final audit, not fixed on purpose:**
+    - Closing a partly filled quote can drop a late fill: 4 of 1,733 filled orders,
+      all archived V6. The fix changes exit timing, so it is a live-economics change.
+    - First-row settlement verification is lost if a settle tick dies midway. No
+      case seen; booked P&L is unaffected. The three unverified lots are the Phoenix
+      September 27 positions, settled by the owner-approved correction.
+    - No restart grace on the public scan alert: an outage over 20 minutes should
+      be reported.
+    - M1 fidelity halt can be missed in a millisecond crash window; next day's
+      reconcile restores it.
+    - Operator-only or unscheduled paths: tail-basket partial placement, research
+      lead clock, NOAA December 31 backfill, non-default `REMOTE_BASE`, replay's
+      partial-fill engine (masked on the database path).
+    - `forecast_health.py` NWP and EMOS reads scan their small tables; unproven as a
+      cause of anything.
+- **Paper capital design (November 7; deployed):**
   - **Live Stability:** keep its existing ledger and order history; record one
     audited +$1,000 deposit at deploy. `PAPER_BANKROLL=2000`. Per-trade cap stays
     $30; aggregate 20% = $400, city 5% = $100, region 8% = $160.
@@ -147,7 +269,7 @@ operational claim; all production observations below are dated snapshots.
     (central about +1%). Trades where the model agrees with M1 are the strongest
     lead and are pre-registered as a co-primary.
   - **Owner and implementation decisions:**
-    - $2,000 capital in a fresh ledger (November 7 decision; not deployed).
+    - $2,000 capital in a fresh ledger (November 7 decision; deployed November 7).
     - $10 per entry and a −$300 cumulative loss stop. Both were calibrated to $10
       stakes, and the 25-contract and displayed-size clamps bind first.
     - Daily-loss pause at 15% = $300 at the $2,000 capital basis; the cumulative
@@ -171,8 +293,8 @@ operational claim; all production observations below are dated snapshots.
       without a read, as before.
 
     F3/F4, the stop veto design, were refuted. F9 remains open. The PR was
-    reviewed per fix, by an integration panel and by ChatGPT, and is not deployed.
-  - **M1 (PR #163, merged as `10e58c270`; not deployed):** built (a new research
+    reviewed per fix, by an integration panel and by ChatGPT, and was deployed November 7 with V7.
+  - **M1 (PR #163, merged as `10e58c270`; deployed November 7):** built (a new research
     sleeve, its own ledger, stop rules, daily reconciliation and published book).
     Its review confirmed 12 findings
     and a focused re-review five more (Nov 3), all fixed: M1 never feeds Live or

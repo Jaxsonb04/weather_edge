@@ -26,10 +26,9 @@ agreement alone does not prove independent weather skill or economic edge.
 
 Entry, monitoring and settlement follow the original economic account identity.
 Archive histories remain visible, including zero-trade policies. V6 is archived with
-admission closed and monitoring/settlement preserved. By the November 7 owner
-decision, Live Stability, Research ROI V7 and M1 are each to run on $2,000
-initial paper capital in separate accounts, with no reserve. That is not
-deployed yet; the running backend still has its earlier capital. The three
+admission closed and monitoring/settlement preserved. Since the November 7
+deployment, Live Stability, Research ROI V7 and M1 each run on a $2,000 paper
+capital basis in separate accounts, with no reserve. The three
 accounts are economically separate and never summed into one bankroll. Past results are not relabeled as V7 or M1 results.
 
 ## Evidence and objectives
@@ -44,7 +43,7 @@ Inspect after-fee net P&L, initial-capital returns, daily/date-cluster uncertain
 drawdown, calibration, fill capture, slippage, and actual available depth.
 A high profitable-exit rate and many repeated scans do not establish returns.
 
-## Read-only local commands
+## Local commands that place no orders
 
 From the repository root after installing `.[dev]`:
 
@@ -58,10 +57,10 @@ From the repository root after installing `.[dev]`:
 ```
 
 `rolling` covers each city's today through today+2. `--cities sfo,lax` narrows
-analysis. A read-only analysis can fetch market data; it does not reproduce
-historical quotes or fill simulation. Calibration backtests have source-specific
-samples. The legacy LSTM study and clean prior-day blend do not establish the
-skill of every currently served multi-city distribution.
+analysis. Analysis can fetch market data and write journal snapshots; it does
+not reproduce historical quotes or fill simulation. Calibration backtests have
+source-specific samples. The legacy LSTM study and clean prior-day blend do not
+establish the skill of every currently served multi-city distribution.
 
 `daily-report` produces dashboard input without placing orders or recording new
 decision snapshots. Frequent Strategy publication can reuse cached historical

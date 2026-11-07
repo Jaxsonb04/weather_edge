@@ -24,18 +24,19 @@ an equivalent real order would fill.
 
 ## Current evidence and paper accounts
 
-Repository source covers twenty city markets. V7 and M1 activation and the
-November 7 capital changes have **NOT been deployed**. The **October 11,
-2026, 11:01 PDT backend snapshot** of `2a6432e3` and fifteen markets is historical.
+Repository source covers twenty city markets. V7, M1 and the November 7 capital
+changes were deployed on November 7, 2026: backend at `c14d1a10c`, web at
+`372212b33`. The **October 11, 2026, 11:01 PDT backend snapshot** of `2a6432e3`
+and fifteen markets is historical.
 Repository source, installed backend, SPA assets, and generated runtime data
 have separate provenance; a merged fix is not proof of a deployed fix.
 
 | Area | Source capability and observed deployment |
 |---|---|
 | Coverage | 20 city markets, with SFO as the flagship |
-| Policy | V7 and M1 activation pending in separate paper accounts; live execution disabled |
-| Website | V7 history/audit and hybrid research UI; October 11 manifest and all five runtime hashes matched; locked MapLibre 6.4.1 |
-| Backend cutover | Pending: activate V7 and M1; archive V6 with monitoring and settlement preserved |
+| Policy | Live, V7 and M1 in separate $2,000 paper accounts; live execution disabled |
+| Website | V7 history/audit and hybrid research UI; November 7 release verified the installed app, Pages deployment and public hashes; locked MapLibre 6.4.1 |
+| Backend cutover | Done November 7: V7 and M1 active; V6 archived with monitoring and settlement preserved |
 
 At the older **October 5, 19:52 PDT account snapshot**, the separate $1,000
 initial-capital accounts reported:
@@ -55,11 +56,11 @@ release gap, thin fill capture, concentrated losses, stale analysis, and
 reproduced forecast/exit evidence defects. Source corrections require verified
 deployment and prospective validation. The **November 7, 2026 owner decision**
 sets each active paper account's capital at $2,000: Live Stability, Research V7,
-and the M1 trial. At deploy, Live keeps its ledger and order history with one
-audited +$1,000 deposit; V7 and M1 get fresh ledgers. V7's reference equity is
+and the M1 trial. Live kept its ledger and order history with one audited
++$1,000 deposit; V7 and M1 got fresh ledgers. V7's reference equity is
 $2,000, with no reserve. These accounts are never summed into one bankroll.
 Archived V6 and older accounts keep their real $1,000 history and are never
-restated. See the [paper limits and pending cutover](docs/aws_deployment.md#november-7-paper-capital-decision).
+restated. See the [paper limits and completed cutover](docs/aws_deployment.md#november-7-paper-capital-decision).
 Strategy Lab shows the policy version in its artifact and all published archived
 profiles, including zero-trade experiments.
 
@@ -82,9 +83,9 @@ allocation remains **$0 until the owner explicitly authorizes real money**.
 The bounded Mac worker supports separate prospective weather research. As of
 October 10, its store held 489 immutable forecast distributions; 139 unique
 station/lead/date outcomes covered five completed dates, including day-ahead
-diagnostics. This is not net trading profit or a promoted model. Five cities
-still need training-history onboarding. Two later process-signaling failures
-remain under investigation. See the [October 11 consistency audit](docs/audits/2026-10-11-repo-consistency.md)
+diagnostics. This is not net trading profit or a promoted model. The five-city
+reconstructed training-history bundle was deployed November 7. Two later
+process-signaling failures remain under investigation. See the [October 11 consistency audit](docs/audits/2026-10-11-repo-consistency.md)
 and [session memory](docs/SESSION_MEMORY.md) for the dated operational limits
 and remaining recovery work.
 
@@ -115,10 +116,11 @@ WeatherKit is a temporary private shadow source with zero live weight; see
 [its boundary](docs/APPLE-WEATHERKIT.md). Neither provider's historical conditions
 should be treated as an original decision-time forecast vintage.
 
-Scheduled entry uses `portfolio-scan`: reservation-price maker limits and
-configured bounded taker crosses must pass exact fee, edge, lower-bound,
-liquidity, concentration, loss, and account admission checks. Monitoring and
-settlement preserve each account's identity. Final settlement uses the city's
+Scheduled entry uses `portfolio-scan`: Live Stability and V7 reservation-price
+maker limits and configured bounded taker crosses must pass exact fee, edge,
+lower-bound, liquidity, concentration, loss, and account admission checks; M1
+uses its frozen market-recalibration entry rule with separate risk checks.
+Monitoring and settlement preserve each account's identity. Final settlement uses the city's
 official final CLI truth; a partial or preliminary report cannot fabricate a
 resolved outcome.
 
@@ -153,7 +155,7 @@ The full Python gate runs the repository health check, Semgrep, the backend and
 forecaster suites, and compilation. Local Semgrep absence produces a warning;
 CI requires the scan. These checks do not build or validate the web app.
 
-Read-only analysis from the repository root:
+Analysis commands that place no orders, from the repository root:
 
 ```bash
 .venv-dev/bin/python -m sfo_kalshi_quant.cli --no-color analyze --target-date rolling --side both --cities all
@@ -223,7 +225,7 @@ MIT — see [LICENSE](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md)
 
 ## Local compute and cost
 
-V7 supports a six-hour Mac research worker for fresh read-only paper/forecast
+V7 supports a two-hour Mac research worker for fresh read-only paper/forecast
 audits and calibration comparisons, with preserved results and job-scoped
 `caffeinate`. AWS continues collection and paper execution. Full local replicas
 use transaction-aware SQLite copying; they do not bypass the durable deployment

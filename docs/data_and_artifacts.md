@@ -121,4 +121,6 @@ python -m sfo_kalshi_quant.cli --no-color --db-path trading/data/restored.db pap
 
 The restore verifies partition hashes, inserts parents before children, and
 rolls back on `PRAGMA foreign_key_check` failures. Never restore over the live
-journal.
+journal. It covers archived stream tables only, not accounts, orders or the
+ledger, so the baseline after a volume loss is the newest verified S3
+`database-snapshots/` backup.

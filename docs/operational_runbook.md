@@ -122,7 +122,7 @@ python -m sfo_kalshi_quant.cli --no-color strategy-research --output forecaster/
 ```
 
 This is read-only. It does not record snapshots, place paper orders, or expose
-private DB state. In production, `sfo-operational-publish.timer` runs every five
+private DB state. In production, `sfo-operational-publish.timer` runs every ten
 minutes: `build_public_trading_signal.sh` generates
 `forecaster/trading_signal.json`, `forecaster/cities_data.json`, and
 `forecaster/publication_manifest.json`, then the publisher validates and ships

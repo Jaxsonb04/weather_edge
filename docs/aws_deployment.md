@@ -176,14 +176,14 @@ $50/$20/$10 defaults; custom absolute overrides are retained.
 
 ## November 7 Paper Capital Decision
 
-**Owner decision, November 7, 2026; NOT deployed.** This replaces the November 6
-capital decision. Live Stability, Research V7 and the M1 trial each use $2,000
+**Owner decision, November 7, 2026; deployed that day.** This replaces the
+November 6 capital decision. Live Stability, Research V7 and the M1 trial each use $2,000
 in separate paper accounts. Never sum their capital, balances or P&L into one
 bankroll. All remain paper only.
 
-At deploy, keep Live's existing ledger and order history and record one audited
-+$1,000 deposit. Set `PAPER_BANKROLL=2000`. Create fresh $2,000 ledgers for V7
-and M1. There is no reserve: V7's reference equity is simply $2,000, with no
+The deploy kept Live's existing ledger and order history and recorded one audited
++$1,000 deposit, set `PAPER_BANKROLL=2000`, and created fresh $2,000 ledgers for
+V7 and M1. There is no reserve: V7's reference equity is simply $2,000, with no
 separate ledger or opening-capital setting. Archived V6 and older accounts keep
 their real $1,000 history; never restate them.
 
@@ -193,8 +193,7 @@ their real $1,000 history; never restate them.
 | Research V7 | Fixed per-entry cap $90; city 18% = $360; region 36% = $720; aggregate 75% = $1,500; daily loss pause 15% = $300; daily goal 5% = $100 |
 | M1 trial | Stake $10 and 25-contract cap; position 1.5% = $30; event 3% = $60; target date 5% = $100; daily loss pause 15% = $300; cumulative stop −$300 |
 
-The daily goal is a paper research KPI, not a promised return. These are pending
-deployment requirements, not verified runtime settings.
+The daily goal is a paper research KPI, not a promised return.
 
 ## Timers
 
@@ -491,7 +490,9 @@ and duplicate assignments are preserved rather than guessed at deployment time.
 For operator-only archive restoration, stop paper services, restore into a new
 database, and run the FK audit before any swap. The tested Python API is
 `sfo_kalshi_quant.archive.restore_archive_days(archive_dir, db_path, days=...)`;
-it verifies hashes and inserts FK parents before children.
+it verifies hashes and inserts FK parents before children. It restores archived
+stream tables only, not accounts, orders or the ledger, so the baseline after a
+volume loss is the newest verified S3 `database-snapshots/` backup.
 
 ## Security Group And Recovery
 

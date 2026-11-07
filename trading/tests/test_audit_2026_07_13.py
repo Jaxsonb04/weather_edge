@@ -1,6 +1,6 @@
 """Second-audit (2026-07-13) execution-integrity specification tests.
 
-Batch 0 of docs/AUDIT-PLAN-2026-07-13.md: these tests encode the REQUIRED
+Batch 0 of the 2026-07-13 audit plan (not kept in the repo): these tests encode the REQUIRED
 behavior for the ranked findings and were written red-first against the frozen
 audit baseline. Every fixture marked "production-derived" mirrors real rows
 read read-only from the AWS production paper_trading.db at the audit snapshot.

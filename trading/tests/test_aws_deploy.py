@@ -1340,7 +1340,7 @@ def test_project_docs_describe_split_publication_cadences():
     for text in documentation:
         normalized = " ".join(text.split())
         assert "sfo-operational-publish.timer" in normalized
-        assert "every five minutes" in normalized
+        assert "every ten minutes" in normalized
         assert "publication_manifest.json" in normalized
         assert "sfo-strategy-lab-refresh.timer" in normalized
         assert "wall-clock five-minute cadence" in normalized

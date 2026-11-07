@@ -24,11 +24,11 @@ Francisco as the deepest research case. It is intentionally paper-only.
 
 | Stage | Engineering work |
 |---|---|
-| Inputs | Point-in-time NWP archives, station observations, official NWS climate reports, and public prediction-market books |
+| Inputs | Stitched fixed-lead NWP reconstructions, station observations, official NWS climate reports, and public prediction-market books |
 | Forecasting | Eight NWP members feed rolling-origin EMOS models per station; SFO adds separate LSTM/XGBoost and optional-source research |
 | Probability | Gaussian and empirical uncertainty are converted into mutually exclusive settlement-bin probabilities |
 | Decisions | Model probabilities are compared with de-vigged market prices after fees, spread, liquidity, confidence, and exposure gates |
-| Execution research | November 7 decision, not yet deployed: Live Stability, Research V7 and M1 each use $2,000 in separate paper accounts for simulated fills, exits and settlement |
+| Execution research | Deployed November 7: Live Stability, Research V7 and M1 each use $2,000 in separate paper accounts for simulated fills, exits and settlement |
 | Operations | AWS EC2 and systemd timers run the pipeline unattended; watchdogs, backups, provenance checks, and atomic publication fail closed |
 | Product | A React/TypeScript dashboard exposes live forecasts, methodology, account-scoped paper evidence, data freshness, and limitations |
 
@@ -36,10 +36,10 @@ Francisco as the deepest research case. It is intentionally paper-only.
 
 ### Time leakage is treated as a correctness bug
 
-Historical NWP inputs are accepted only from model cycles that existed before
-the forecast target. Model evaluation uses rolling-origin splits, and clean
-next-day scoring excludes same-day observed-high adjustments. This prevents a
-good-looking backtest from learning information unavailable at decision time.
+Historical NWP inputs are stitched fixed-lead reconstructions. Model evaluation
+uses rolling-origin splits, and clean next-day scoring excludes same-day
+observed-high adjustments. This enforces a prior-truth boundary; original
+decision-time availability remains unestablished.
 
 ### Settlement truth is independent of the forecaster
 
@@ -50,20 +50,22 @@ series, and climate-day boundaries travel together through the pipeline.
 
 ### Risk is a gate, not a presentation layer
 
-Candidate trades must clear exact fees, liquidity, model/market disagreement,
-lower-confidence-bound edge, per-market and portfolio exposure, daily loss, and
-drawdown controls. Missing or stale evidence produces no trade. The dormant
-live path has no authenticated client and raises `LiveTradingDisabled`.
+Live Stability and V7 candidate trades must clear exact fees, liquidity,
+model/market disagreement, lower-confidence-bound edge, per-market and portfolio
+exposure, daily loss, and drawdown controls; M1 uses its frozen
+market-recalibration entry rule with separate risk checks. Missing or stale
+evidence produces no trade. The dormant live path has no authenticated client
+and raises `LiveTradingDisabled`.
 
 ### Research accounts are not combined
 
 Live Stability is the conservative readiness cohort. Research ROI V7 and the M1
 market-recalibration trial are separate, bounded experiments. Each account's
 balances, positions, and P&L remain economically separate in storage,
-publication, and UI and are never summed into one bankroll. At the pending
-deploy, Live keeps its ledger and order history with one audited +$1,000 deposit;
-V7 and M1 start fresh. V7's reference equity is $2,000, with no reserve. V6 will
-be archived with monitoring and settlement preserved. Archived V6 and older
+publication, and UI and are never summed into one bankroll. At the November 7
+deploy, Live kept its ledger and order history with one audited +$1,000 deposit;
+V7 and M1 started fresh. V7's reference equity is $2,000, with no reserve. V6 is
+archived with monitoring and settlement preserved. Archived V6 and older
 accounts keep their real $1,000 history and are never restated.
 
 ### Operational failures are part of the project

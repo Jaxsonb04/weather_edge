@@ -53,7 +53,8 @@ if [[ ! -f "$BASE_DIR/requirements/production.lock" ]]; then
 fi
 
 sudo apt-get update
-sudo apt-get install -y curl git python3 python3-venv python3-pip sqlite3 rsync
+# Unattended upgrades can hold the dpkg lock; on 2026-11-07 that killed a deploy mid-install.
+sudo apt-get install -o DPkg::Lock::Timeout=600 -y curl git python3 python3-venv python3-pip sqlite3 rsync
 
 mkdir -p "$TRADING_DIR/data" "$TRADING_DIR/logs" "$FORECASTER_DIR/logs"
 
