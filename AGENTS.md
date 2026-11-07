@@ -30,6 +30,15 @@ sensitive values in the tracked memory file; those remain in the gitignored
 `.local` operator state. High-level access decisions and sanitized operational
 outcomes belong in the tracked memory.
 
+## Paper Capital Decision (November 7, 2026; Not Deployed)
+
+Live Stability, Research V7 and M1 each use $2,000 in separate paper accounts;
+never sum them. At deploy, keep Live's ledger and order history with one audited
++$1,000 deposit; create fresh V7 and M1 ledgers. V7's reference equity is $2,000,
+with no reserve. Keep archived V6 and older accounts' real $1,000 history;
+never restate them. The limits are in
+[the deployment guide](docs/aws_deployment.md#november-7-paper-capital-decision).
+
 ## Design And Redesign Memory
 
 The public site is the React + HeroUI Pro SPA at the repo root (`src/`,

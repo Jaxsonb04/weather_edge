@@ -1,5 +1,5 @@
 [Unit]
-Description=SFO Kalshi paper trading auto-settlement
+Description=WeatherEdge multi-city paper auto-settlement
 Wants=network-online.target
 After=network-online.target
 OnFailure=sfo-alert@%n.service
@@ -12,7 +12,7 @@ EnvironmentFile=__ENV_FILE__
 ExecStart=__TRADING_DIR__/.venv/bin/python -m sfo_kalshi_quant.cli --no-color --forecaster-root __FORECASTER_DIR__ --db-path __TRADING_DIR__/data/paper_trading.db paper-auto-settle
 Nice=5
 # Contain a runaway process to this unit instead of letting the kernel
-# OOM-killer pick an arbitrary victim (4 GB box: containment, not
+# OOM-killer pick an arbitrary victim (t4g.small, 2 GiB RAM: containment, not
 # thrash-protection).
 MemoryHigh=400M
 MemoryMax=512M

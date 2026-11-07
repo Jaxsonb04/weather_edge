@@ -1,5 +1,5 @@
 [Unit]
-Description=SFO paper decision-journal archive and retention maintenance
+Description=WeatherEdge shared paper-journal archive and retention maintenance
 Wants=network-online.target
 After=network-online.target
 OnFailure=sfo-alert@%n.service
@@ -16,7 +16,7 @@ EnvironmentFile=__ENV_FILE__
 ExecStart=/usr/bin/env bash __TRADING_DIR__/deploy/aws/run_archive_then_prune.sh
 Nice=10
 # Contain a runaway process to this unit instead of letting the kernel
-# OOM-killer pick an arbitrary victim (4 GB box: containment, not
+# OOM-killer pick an arbitrary victim (t4g.small, 2 GiB RAM: containment, not
 # thrash-protection).
 #
 # MemoryHigh sizing (2026-08-09): cgroup memory accounting INCLUDES the page

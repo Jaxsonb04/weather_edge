@@ -17,24 +17,25 @@ settlement, AWS operations, and a React evidence dashboard.
 
 [![WeatherEdge dashboard](docs/assets/dashboard.png)](https://jaxsonb04.github.io/weather_edge/)
 
-**Paper trading only.** The engine reads real Kalshi public prices and records
+**Paper trading only.** The engine reads public prediction-market prices and records
 simulated orders. `live_execution.py` rejects non-dry orders; no authenticated
 real-money execution client is implemented. Paper fills do not establish that
 an equivalent real order would fill.
 
-## Current evidence and v7
+## Current evidence and paper accounts
 
-The **October 11, 2026, 11:01 PDT backend snapshot** still ran backend revision
-`2a6432e3`, with fifteen city markets. The current source registry covers twenty.
+Repository source covers twenty city markets. V7 and M1 activation and the
+November 7 capital changes have **NOT been deployed**. The **October 11,
+2026, 11:01 PDT backend snapshot** of `2a6432e3` and fifteen markets is historical.
 Repository source, installed backend, SPA assets, and generated runtime data
 have separate provenance; a merged fix is not proof of a deployed fix.
 
 | Area | Source capability and observed deployment |
 |---|---|
-| Coverage | 20 city markets, with fifteen deployed cities verified October 11 |
-| Policy | v7 source; October 11 production still used v6 with live execution disabled |
+| Coverage | 20 city markets, with SFO as the flagship |
+| Policy | V7 and M1 activation pending in separate paper accounts; live execution disabled |
 | Website | V7 history/audit and hybrid research UI; October 11 manifest and all five runtime hashes matched; locked MapLibre 6.4.1 |
-| Backend cutover | Pending canonical verified recovery within existing cost limits; installed backend remains `2a6432e3` |
+| Backend cutover | Pending: activate V7 and M1; archive V6 with monitoring and settlement preserved |
 
 At the older **October 5, 19:52 PDT account snapshot**, the separate $1,000
 initial-capital accounts reported:
@@ -52,10 +53,15 @@ balances must not be treated as one bankroll.
 The [v7 audit](docs/research/2026-10-05-v7-audit.md) records the measured baseline,
 release gap, thin fill capture, concentrated losses, stale analysis, and
 reproduced forecast/exit evidence defects. Source corrections require verified
-deployment and prospective validation. At verified backend cutover, v7 starts a
-separate research paper account; v6 and earlier histories keep their original
-attribution, policy, and settlement lifecycle. Strategy Lab shows the policy version in its artifact and
-all published archived profiles, including zero-trade experiments.
+deployment and prospective validation. The **November 7, 2026 owner decision**
+sets each active paper account's capital at $2,000: Live Stability, Research V7,
+and the M1 trial. At deploy, Live keeps its ledger and order history with one
+audited +$1,000 deposit; V7 and M1 get fresh ledgers. V7's reference equity is
+$2,000, with no reserve. These accounts are never summed into one bankroll.
+Archived V6 and older accounts keep their real $1,000 history and are never
+restated. See the [paper limits and pending cutover](docs/aws_deployment.md#november-7-paper-capital-decision).
+Strategy Lab shows the policy version in its artifact and all published archived
+profiles, including zero-trade experiments.
 
 The fresh [forecast baseline](docs/research/2026-10-05-v7-forecast-baseline.json)
 records 125,170 NWP member rows and 10,642 source-separated scored cases. Its
@@ -64,11 +70,11 @@ decision-time availability remains unestablished. The dated incident reports,
 unassigned losses, and older ML challenger are retained alongside the audit.
 
 The current objective is to gather meaningful evidence for or against
-profitability, without a preset bankroll or daily profit target. Earlier
-percentage/dollar targets remain historical research assumptions, not current
-requirements or achieved returns. October 31 is an engineering and evidence
-review date; readiness depends on the evidence. Increasing capital, requested
-size, or activity does not create an edge or displayed liquidity. Scaling
+profitability. The $2,000 paper capital and V7's 5% ($100) daily goal are research
+settings, not promised or achieved returns. Older targets remain dated research
+assumptions. October 31, 2026 was the engineering and
+evidence review date; readiness depends on the evidence. Increasing capital,
+requested size, or activity does not create an edge or displayed liquidity. Scaling
 requires account-scoped net P&L after fees, calibrated probabilities, realizable
 execution, drawdown evidence, and chronological holdout validation. Live
 allocation remains **$0 until the owner explicitly authorizes real money**.

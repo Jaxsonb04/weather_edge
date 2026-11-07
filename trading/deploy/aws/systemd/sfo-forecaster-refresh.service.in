@@ -16,7 +16,8 @@ TimeoutStartSec=900
 # the remaining refresh steps. The local re-blend runs on whatever cached data
 # did land; freshness is still gated by max_forecast_age_hours and the watchdog.
 # Station observations for every configured city (intraday context +
-# observed-high conditioning). Two local days keeps it ~30 requests per tick.
+# observed-high conditioning). Two local days for twenty stations require
+# approximately forty requests per tick.
 ExecStart=-__FORECASTER_DIR__/.venv/bin/python nws_ground_truth.py --days 2 --cities all
 # Refresh station-keyed CLI truth before EMOS reads its training/serve history.
 # Fail-soft: a transient product outage must not freeze live forecasts.
@@ -29,9 +30,9 @@ ExecStart=-__FORECASTER_DIR__/.venv/bin/python __FORECASTER_DIR__/city_truth.py 
 # (weatheredge-google-nonsfo-refresh.service/.timer: 56 events/day,
 # 1,736/31-day month; combined steady state 190 + 56 = 246/day,
 # 7,626/31-day month -- see that unit for the full arithmetic). A naive flip
-# of THIS high-frequency unit to `--cities all` would instead spend 61
-# events/cycle and exhaust the 260/day hard cap by the 5th cycle, starving
-# SFO for the rest of the day.
+# of THIS high-frequency unit to `--cities all` would instead spend 81
+# events/cycle for twenty cities and exhaust the 260/day hard cap by the 4th
+# cycle, starving SFO for the rest of the day.
 #
 # `--cities sfo` (the Task 6 orchestrator) replaces BOTH the legacy
 # `--refresh` SFO-only fetch and the separate legacy no-flag
@@ -55,7 +56,7 @@ ExecStart=-__FORECASTER_DIR__/.venv/bin/python __FORECASTER_DIR__/city_truth.py 
 ExecStart=__FORECASTER_DIR__/.venv/bin/python google_weather_cache.py --cities sfo
 Nice=5
 # Contain a runaway to this unit instead of letting the kernel OOM-killer
-# pick an arbitrary victim (4 GB box: containment, not thrash-protection).
+# pick an arbitrary victim (t4g.small, 2 GiB RAM: containment, not thrash-protection).
 # Tune after observing real peaks via `systemctl status`.
 MemoryHigh=800M
 MemoryMax=1100M

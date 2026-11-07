@@ -13,7 +13,7 @@ ExecStart=/bin/bash __TRADING_DIR__/deploy/aws/run_publication_cycle.sh operatio
 Nice=10
 CPUWeight=50
 # Contain a runaway process to this unit instead of letting the kernel
-# OOM-killer pick an arbitrary victim (4 GB box: containment, not
+# OOM-killer pick an arbitrary victim (t4g.small, 2 GiB RAM: containment, not
 # thrash-protection).
 MemoryHigh=800M
 MemoryMax=1100M

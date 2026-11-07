@@ -1,8 +1,9 @@
 # AWS EC2 Deployment
 
 These scripts operate the always-on WeatherEdge EC2 runtime at
-`/opt/weatheredge`. The current host is Ubuntu arm64 on a `t4g.medium` in
-`us-west-1` (migrated from `us-east-1` on 2026-07-11). This directory supports
+`/opt/weatheredge`. The current host is Ubuntu arm64 on a `t4g.small` Spot
+instance with a 60 GB disk and an Elastic IP in `us-west-1` (moved to Spot on
+2026-11-01). This directory supports
 deployment and local verification; it does not authorize production access or
 changes.
 
@@ -19,8 +20,8 @@ changes.
   quiesced for a clean retry. After all transfers succeed, it removes only the
   retired nested manifest, two stale service templates, and eleven audited
   pre-`research/` script paths; it never broadly deletes either runtime tree.
-  It then runs the timerless installer and restores exactly the timers that were
-  enabled before the deploy. A successful sync can no longer exit with an
+  It then runs the timerless installer and restores the timers that were enabled
+  before the deploy, leaving out the retired Apple refresh. A successful sync can no longer exit with an
   established host silently disabled, while intentional per-timer pauses remain
   intact. The optional historical Strategy Lab rescore is memory-capped in a
   transient systemd unit; failure leaves historical panels explicitly deferred
@@ -136,9 +137,8 @@ dependencies do not belong on the production box.
 
 - Forecast refresh: twice hourly from 05:10 through 18:40 PT and hourly
   overnight; all twenty cities, SFO flagship.
-- Apple WeatherKit research refresh: four fixed UTC vintages/day, one bundled
-  hourly+daily request per city. It is disabled by default, temporary-only,
-  and has zero live trading weight. See `docs/APPLE-WEATHERKIT.md`.
+- Apple WeatherKit research refresh: retired from the thirteen active timers;
+  manual operation only, temporary-only, with zero live trading weight. See `docs/APPLE-WEATHERKIT.md`.
 - Provider runtime purge: every ten minutes, independent of refresh success.
 - Operational publication: every ten minutes, offset to :02/:12/:22/:32/:42/:52; builds
   `trading_signal.json`, `cities_data.json`, and `publication_manifest.json`.

@@ -341,9 +341,10 @@ the explicit archive gate fails, pruning does not run.
 Production sets `SFO_PRUNE_FULL_DAYS=1`; last-per-market-side-day rows remain for
 45 days and approved rows remain indefinitely. Probability and paper-monitor
 streams, plus unreferenced forecast/market parents, remain online for the same
-45-day window; their older lossless copies stay in the archive. Fifteen cities
-otherwise write roughly 60k rejection snapshots (~0.5 GB) per day. Do not
-schedule or routinely run bare `paper-prune`: it is a low-level/manual command
+45-day window; their older lossless copies stay in the archive. The runtime
+covers twenty cities; estimate journal volume from measured runtime growth
+rather than extrapolating the old fifteen-city snapshot rate. Do not schedule
+or routinely run bare `paper-prune`: it is a low-level/manual command
 for recovery work only, after an operator has independently completed and
 verified the archive gate.
 
@@ -361,14 +362,16 @@ default.
 A host that predates this default does not start deleting on its own. Both
 installers run `migrate_weatheredge_env.py`, which appends
 `SFO_PRUNE_MODE=archive-only` under a comment pointing here when the key is
-absent, and leaves any existing value alone. Production has no key, so after the
-release deploy the nightly prune stays archive-only until an operator runs the
-supervised `quiesced-delete` catch-up and compaction
-(`trading/deploy/aws/README.md`, "Release deploy and rollback", step 5.5) and then
-deletes the `SFO_PRUNE_MODE` line, keeping the comment so a later deploy does not
-add it back. To turn deletion off again, set `SFO_PRUNE_MODE=archive-only`.
-Expect roughly an 88% collapse of `decision_snapshots` under the
-configured 45-day dedup, taking journal growth from ~0.67 GB/day to ~0.15 GB/day.
+absent, and leaves any existing value alone. The post-deploy production policy
+is explicit `SFO_PRUNE_MODE=bounded-delete`: archive first, verify, then delete
+only verified days. Keep that explicit setting through installation and
+migration; do not rely on an absent key. Supervised catch-up and compaction
+remain separate operator workflows (`trading/deploy/aws/README.md`, "Release
+deploy and rollback", step 5.5). To turn deletion off for recovery, set
+`SFO_PRUNE_MODE=archive-only`.
+Measure the effect of the configured 45-day dedup and ongoing journal growth
+on the twenty-city runtime; older reduction and daily-growth estimates are not
+capacity guarantees.
 Deletion frees SQLite pages but does not shrink the file; run the separately
 quiesced `compact_paper_db.sh` once when the filesystem needs the space back.
 

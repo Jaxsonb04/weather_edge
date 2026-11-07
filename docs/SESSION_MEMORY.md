@@ -1,6 +1,6 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-11-02 (Nov 1 scan-outage incident and hotfix, Spot migration, November audit fixes in review, M1 trial built; nothing deployed beyond the hotfix)
+Last updated: 2026-11-07 (owner decision: $2,000 per paper account; billing lock cleared; PR 163 merged; deployment has NOT happened yet)
 
 Last complete production verification: 2026-10-05 23:04 PDT (bounded read-only verification)
 
@@ -15,6 +15,47 @@ operational claim; all production observations below are dated snapshots.
 
 ## Session Brief
 
+- **November 7 owner update:** Live Stability, Research V7 and the M1 trial each
+  use $2,000 in separate paper accounts, never summed. This supersedes November
+  6's capital decision. GitHub's billing lock cleared at about 01:25 UTC on
+  November 7 after a payment method was added. PR #163 (M1) merged as
+  `10e58c270`. **Deployment has NOT happened yet.**
+  Documentation checks: 32 focused Python 3.13 tests passed; the README web
+  tests could not start because Vitest is absent. No ledger changes were made.
+- **Paper capital design (November 7; pending deploy):**
+  - **Live Stability:** keep its existing ledger and order history; record one
+    audited +$1,000 deposit at deploy. `PAPER_BANKROLL=2000`. Per-trade cap stays
+    $30; aggregate 20% = $400, city 5% = $100, region 8% = $160.
+  - **Research V7:** fresh $2,000 ledger; reference equity is simply $2,000,
+    with no reserve or separate ledger/opening-capital setting. Fixed per-entry
+    cap stays $90; city 18% = $360, region 36% = $720, aggregate 75% = $1,500,
+    daily loss pause 15% = $300, daily goal 5% = $100 (a research KPI).
+  - **M1 trial:** fresh $2,000 ledger; $10 stake and 25-contract cap stay.
+    Position 1.5% = $30, event 3% = $60, target date 5% = $100, daily loss pause
+    15% = $300; cumulative stop stays −$300.
+  - **Archived V6 and older:** keep their real $1,000 history; never restate
+    them. All accounts remain paper only.
+- **November 6 snapshot (billing resolved; capital superseded November 7):**
+  - **Incident, then open:** GitHub locked the owner's account over billing at
+    about 09:05 UTC. No Actions job could start, so CI could not run and Pages
+    stayed frozen at the 09:02 UTC publication. The host was healthy and kept
+    pushing to `gh-pages`; public-site recovery after billing clearance has
+    not been reverified here.
+  - **Owner decisions (capital superseded November 7):** merge #162 and M1 after
+    CI and deploy this one release, paper only. V7 and M1 open at $10,000; Live
+    stays $1,000. Archive first, then the nightly job may delete archived,
+    verified days (`bounded-delete`).
+  - **AWS budget, solved:** about $19.50/month steady, about $13.40 once the old
+    64 GB disk is deleted. S3 `paper_trading/` expiry is raised to 3650 days and
+    was read back.
+  - **Income expectation:** central case about $0 to +$50/month across all books,
+    not distinguishable from zero. M1 is the only positive signal, with a read at
+    60 to 65 days. Nothing here promises income.
+  - **Lot 3687 (+$3.00):** the apply path needs V6 archived, so it runs after
+    cutover. No active cash moves, but it feeds cross-book sizing inputs. On the
+    Nov 1 copy the `warm_70_79f` Kelly multiplier goes 0.798 to 0.871, research
+    sizing equity rises $3, and the 21-day pause ROI moves -4.8% to -4.4% against
+    a -25% limit.
 - **Owner scope (November 1–2):** find missing fixes, bugs and unfinished work.
   Explain the $43.34 October AWS bill and bring AWS under $20/month. Redesign the
   website and verify every number on `#/lab`. Make the model profitable again.
@@ -25,9 +66,9 @@ operational claim; all production observations below are dated snapshots.
   - publishing the redesign after review;
   - deploying main (V7 plus the November fixes) after CI;
   - correcting wrong settlements;
-  - a paper-only M1 market-recalibration trial in a NEW $10,000 paper account. M1's
-    entry rule replaces the model-based signal gates for that account only, and
-    every risk limit stays.
+  - a paper-only M1 market-recalibration trial in a new paper account, now $2,000
+    under the November 7 decision. M1's entry rule replaces the model-based signal
+    gates for that account only; its current limits are listed above.
 
   Alerts are skipped for now because there is no destination. Real-money
   trading, retention deletion beyond the November 1 trim, and weakened risk or
@@ -106,11 +147,11 @@ operational claim; all production observations below are dated snapshots.
     (central about +1%). Trades where the model agrees with M1 are the strongest
     lead and are pre-registered as a co-primary.
   - **Owner and implementation decisions:**
-    - $10,000 capital.
+    - $2,000 capital in a fresh ledger (November 7 decision; not deployed).
     - $10 per entry and a −$300 cumulative loss stop. Both were calibrated to $10
       stakes, and the 25-contract and displayed-size clamps bind first.
-    - Daily-loss pause at 15% of equity. It never binds; the −$300 stop is the
-      real control.
+    - Daily-loss pause at 15% = $300 at the $2,000 capital basis; the cumulative
+      stop remains −$300.
 - **November audit and fixes:**
   - **Audit (November 1, report-only):** found money-path defects in both
     `2a6432e3` and `main`, silent operational failures, combined account books,
@@ -131,13 +172,13 @@ operational claim; all production observations below are dated snapshots.
 
     F3/F4, the stop veto design, were refuted. F9 remains open. The PR was
     reviewed per fix, by an integration panel and by ChatGPT, and is not deployed.
-  - **M1 branch:** built (a new research sleeve, its own ledger, stop rules,
-    daily reconciliation and published book). Its review confirmed 12 findings
+  - **M1 (PR #163, merged as `10e58c270`; not deployed):** built (a new research
+    sleeve, its own ledger, stop rules, daily reconciliation and published book).
+    Its review confirmed 12 findings
     and a focused re-review five more (Nov 3), all fixed: M1 never feeds Live or
     V7 sizing, budgets, vetoes, heartbeat reads or reports, an archived M1 only
-    warns at the deploy gate, and scheduler health alerts on a stalled M1. It
-    ships as its own PR. Placement flag
-    `PAPER_PLACE_RESEARCH_M1` defaults to off.
+    warns at the deploy gate, and scheduler health alerts on a stalled M1.
+    Placement flag `PAPER_PLACE_RESEARCH_M1` defaults to off.
   - **Deploy plan:** main (V7) plus the fixes plus the five-city onboarding
     bundle. Pre-checks passed:
     - indexes current;
@@ -147,7 +188,10 @@ operational claim; all production observations below are dated snapshots.
   - **What the V7 deploy changes:**
     - 13 timers (the Apple refresh is retired).
     - V6 is archived, and its open lots still settle.
-    - V7 becomes active at $1,000.
+    - Live keeps its ledger and order history with one audited +$1,000 deposit,
+      for a $2,000 capital basis.
+    - V7 and M1 become active with fresh $2,000 ledgers; V7's reference equity
+      is $2,000, with no reserve. Archived V6 and older histories stay at $1,000.
     - behavior-v4 fingerprints.
     - Twenty published cities.
   - **Rollback:** after V7 migrates the journal, old code cannot run on it, so
