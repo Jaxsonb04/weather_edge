@@ -50,11 +50,12 @@ memory; it must not backfill or archive missing Apple hours.
 
 ## Cadence And Cost Boundary
 
-`weatheredge-apple-refresh.timer` schedules four fixed UTC vintages per day:
-02:17, 08:17, 14:17, and 20:17 UTC, with up to 60 seconds of jitter. One bundled
-request per city per vintage is 60 scheduled calls/day, or at most 1,860 calls
-in a 31-day month. A dedicated ten-minute Apple purge is an independent,
-alertable expiry safety net; it cannot be blocked by a Google purge failure.
+The retired `weatheredge-apple-refresh.timer` defines four fixed UTC vintages
+per day: 02:17, 08:17, 14:17, and 20:17 UTC, with up to 60 seconds of jitter. One
+bundled request per city per vintage for twenty cities would be 80 calls/day, or at most
+2,480 calls in a 31-day month if re-enabled. A dedicated ten-minute Apple purge
+is an independent, alertable expiry safety net; it cannot be blocked by a Google
+purge failure.
 
 The refresh timer is **no longer part of the canonical unit inventory**. It is **retired as of the 2026-09-03 audit (FC-4)**: its runtime cache had no reader anywhere outside `apple_weatherkit.py`, and Apple's terms do not permit retaining an archive, so it could not become a scored EMOS member either. The unit files are still installed and integrity-checked, so an operator can re-enable it with `sudo systemctl enable --now weatheredge-apple-refresh.timer`, but no deploy path turns it on.
 `weatheredge-apple-purge.timer` stays canonical and enabled: it makes no request

@@ -29,7 +29,7 @@ Do not add a second EMOS command to the main refresh unit or replace its SFO
 selection with all cities without measuring the provider budget.
 
 `sfo-operational-publish.timer` publishes the operational JSONs and
-`publication_manifest.json` every five minutes. The research-only
+`publication_manifest.json` every ten minutes. The research-only
 `sfo-strategy-lab-refresh.timer` follows a wall-clock five-minute cadence;
 its slower analysis is separate from operational publication.
 

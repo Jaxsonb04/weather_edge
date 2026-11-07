@@ -65,7 +65,6 @@ pairs. None was an independent redundant algorithm:
 | `forecaster/cities.py` / `trading/sfo_kalshi_quant/cities.py` | Independent deployed import roots; registry parity test prevents drift |
 | `forecaster/forecast_data.json` / `public/forecast_data.json` | Deploy input and Vite fallback fixture; neither is current live-data authority |
 | `forecaster/weather_story_data.json` / `public/weather_story_data.json` | Same deploy/Vite fixture boundary |
-| `public/licenses/magicui.txt` / `src/components/magicui/LICENSE.md` | Public distribution notice and component source license |
 
 The forecaster/trading source-selection helpers and recalibration functions also
 serve independent runtime/import boundaries. Their parity/numerical boundary

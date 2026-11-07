@@ -292,7 +292,10 @@ cat /var/lib/weatheredge/deploy-deadman/last-action 2>/dev/null || echo "no dead
   be half-synced, so do **not** enable timers on it. Re-sync from a clean `main`,
   or restore by hand exactly as in the stranded bullet once you have confirmed
   the tree, then `sudo /usr/local/libexec/weatheredge/deploy_deadman.sh clear
-  --force`. A deploy refuses to arm until the incident is cleared.
+  --force`. A deploy refuses to arm until the incident is cleared. If
+  `build_info.json` moved, the analysis cache no longer matches it and the site
+  warns `analysis-stale`, so keep the local snapshot and run
+  `refresh_strategy_analysis_cache.sh` on it before removing it.
 
 A leftover marker also stops the backup preflight from reclaiming what an
 interrupted backup left (`.restore-check.*` directories and unhashed
@@ -963,6 +966,12 @@ paths (for example `decision_snapshots/dt=YYYY-MM-DD.jsonl.gz`), before calling
 catalog and verifies partition hashes, counts and dependencies before restore;
 keep the recovered catalog and raw partitions together. `features/` contains
 the separate feature-store mirror, not the restore catalog.
+
+`restore_archive_days` restores only the seven archived stream tables. It never
+restores accounts, orders or the ledger, so a database built from it alone shows
+fresh balances and no order history, and still passes the FK audit. After a
+volume loss, start from the newest verified S3 `database-snapshots/` backup and
+use this API only to add archived stream days.
 
 If the nightly gate stops because a never-uploaded partition is missing and no
 copy survives, leave the gate blocked and escalate to the owner. Do not delete
