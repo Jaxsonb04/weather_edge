@@ -113,6 +113,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 from .cities import CITIES, CityConfig, city_for_market_ticker, city_for_station
+from .research_m1 import M1_ACCOUNT_ID
 from .settlement_truth import (
     SettlementKey,
     integer_settlement_high_f,
@@ -598,14 +599,16 @@ def traded_bins(conn: sqlite3.Connection, *, target_date: str) -> dict[tuple[str
     bare flag because there are two economically separate paper books, and a bin
     held only by the research sleeve is not the same evidence as one the live
     book held.  Legacy rows with no profile record ``live``, matching
-    ``_paper_profile_filter``'s ``COALESCE(risk_profile, 'live')``.
+    ``_paper_profile_filter``'s ``COALESCE(risk_profile, 'live')``.  The M1
+    trial writes ``research`` but is its own book, so it never marks a bin held.
     """
 
     rows = conn.execute(
         "SELECT DISTINCT market_ticker, side, COALESCE(risk_profile, 'live') "
         "FROM paper_orders "
-        f"WHERE target_date = ? AND status IN ({_TRADED_PLACEHOLDERS})",
-        (str(target_date), *TRADED_STATUSES),
+        f"WHERE target_date = ? AND status IN ({_TRADED_PLACEHOLDERS}) "
+        "AND COALESCE(account_id, '') != ?",
+        (str(target_date), *TRADED_STATUSES, M1_ACCOUNT_ID),
     ).fetchall()
     held: dict[tuple[str, str], set[str]] = {}
     for ticker, side, profile in rows:

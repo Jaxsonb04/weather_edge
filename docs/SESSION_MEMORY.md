@@ -132,8 +132,11 @@ operational claim; all production observations below are dated snapshots.
     F3/F4, the stop veto design, were refuted. F9 remains open. The PR was
     reviewed per fix, by an integration panel and by ChatGPT, and is not deployed.
   - **M1 branch:** built (a new research sleeve, its own ledger, stop rules,
-    daily reconciliation and published book). Its review confirmed 12 findings,
-    which are being fixed; it ships as its own PR. Placement flag
+    daily reconciliation and published book). Its review confirmed 12 findings
+    and a focused re-review five more (Nov 3), all fixed: M1 never feeds Live or
+    V7 sizing, budgets, vetoes, heartbeat reads or reports, an archived M1 only
+    warns at the deploy gate, and scheduler health alerts on a stalled M1. It
+    ships as its own PR. Placement flag
     `PAPER_PLACE_RESEARCH_M1` defaults to off.
   - **Deploy plan:** main (V7) plus the fixes plus the five-city onboarding
     bundle. Pre-checks passed:

@@ -1266,9 +1266,11 @@ def test_db01_concurrent_fresh_init_bootstraps_exactly_one_account(tmp_path: Pat
             integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
         # Legacy shared/shadow, the immutable v1 target control, and both
         # active isolated research sleeves are each bootstrapped exactly once
-        # at the unchanged $1,000 opening capital.
+        # at the unchanged $1,000 opening capital; the separate M1 trial
+        # ledger exactly once at its $10,000.
         assert sorted(accounts) == [
             ("paper-live-stability-v1", 1, 1000.0, 1000.0, 1000.0),
+            ("paper-research-m1-v1", 1, 10000.0, 10000.0, 10000.0),
             ("paper-research-motion-v1", 1, 1000.0, 1000.0, 1000.0),
             ("paper-research-roi-v3", 1, 1000.0, 1000.0, 1000.0),
             ("paper-research-roi-v4", 1, 1000.0, 1000.0, 1000.0),
@@ -1282,6 +1284,7 @@ def test_db01_concurrent_fresh_init_bootstraps_exactly_one_account(tmp_path: Pat
         ], f"attempt {attempt}: unexpected account rows {accounts}"
         assert sorted(openings) == [
             ("paper-live-stability-v1", 1, 1000.0),
+            ("paper-research-m1-v1", 1, 10000.0),
             ("paper-research-motion-v1", 1, 1000.0),
             ("paper-research-roi-v3", 1, 1000.0),
             ("paper-research-roi-v4", 1, 1000.0),

@@ -49,6 +49,8 @@ from ..research_policy import (
     TARGET_POLICY_V6,
 )
 from ..replay import replay_from_database
+from ..research_m1 import M1_ACCOUNT_ID, M1_POLICY, M1_PUBLISHED_PROFILE
+from ..research_m1_store import m1_trial_payload
 from ..summary import build_paper_summary
 from . import CHALLENGER_CALIBRATION_SOURCE
 from .calibration import (
@@ -1002,6 +1004,7 @@ def _accounting_payload(
     accounts: dict[str, Any] = {
         "live": live,
         "research_target": research_target,
+        "research_m1": _m1_trial_account(store, daily_summary=daily_summary),
     }
     for (
         key,
@@ -1083,7 +1086,69 @@ def _accounting_payload(
             TARGET_POLICY_V6.account_id,
             TARGET_POLICY.account_id,
             MOTION_POLICY.account_id,
+            M1_ACCOUNT_ID,
         ],
+    }
+
+
+def _m1_trial_account(
+    store: PaperStore,
+    *,
+    daily_summary: dict[str, Any],
+) -> dict[str, Any]:
+    """Publish the M1 paper trial as its own book, never merged with another.
+
+    The book is a separate $10,000 paper ledger. A missing or invalid M1
+    ledger publishes as unavailable here and never suppresses the live or
+    Research V7 accounting above.
+    """
+
+    base = {
+        "key": "research_m1",
+        "profile_key": M1_PUBLISHED_PROFILE,
+        "label": "M1 market-recalibration trial (paper only)",
+        "role": "research_m1_trial",
+        "paper_only": True,
+        "real_money_eligible": False,
+        "excluded_from": ["live_goal", "live_readiness", "real_money"],
+    }
+    try:
+        snapshot = _account_snapshot(
+            store,
+            M1_ACCOUNT_ID,
+            role="research_m1_trial",
+            daily_summary=daily_summary,
+        )
+        trial = m1_trial_payload(store)
+    except Exception as exc:  # noqa: BLE001 -- one book must not break the artifact
+        return {
+            **base,
+            "available": False,
+            "reason": f"M1 trial ledger unavailable ({type(exc).__name__})",
+        }
+    if snapshot is None:
+        return {
+            **base,
+            "available": False,
+            "reason": "M1 trial paper account has not been initialized",
+            "trial": trial,
+        }
+    valid = (
+        snapshot.get("status") == "ACTIVE"
+        and snapshot.get("reconciliation_status") == "reconciled"
+        and math.isclose(
+            _to_float(snapshot.get("initial_equity")),
+            M1_POLICY.reference_equity,
+            rel_tol=0.0,
+            abs_tol=1e-9,
+        )
+    )
+    return {
+        **snapshot,
+        **base,
+        "available": valid,
+        "reason": None if valid else "M1 trial ledger is not active or not reconciled",
+        "trial": trial,
     }
 
 
@@ -1353,10 +1418,6 @@ def _account_daily_balance_rows(
         key = resolved.astimezone(WEEKLY_GOAL_TZ).date().isoformat()
         pnl_by_day[key] = pnl_by_day.get(key, 0.0) + float(realized_pnl or 0.0)
 
-    first_day = day_keys[0]
-    cumulative = float(initial_equity) + sum(
-        pnl for key, pnl in pnl_by_day.items() if key < first_day
-    )
     output: list[dict[str, Any]] = []
     for key in day_keys:
         if created_day is not None and key < created_day:
@@ -1371,9 +1432,13 @@ def _account_daily_balance_rows(
                 }
             )
             continue
-        opening = cumulative
+        # Count P&L on days the shared summary does not list (M1 trades on
+        # days Live and V7 may not), so the running balance stays exact.
+        opening = float(initial_equity) + sum(
+            pnl for day, pnl in pnl_by_day.items() if day < key
+        )
         daily_pnl = pnl_by_day.get(key, 0.0)
-        cumulative += daily_pnl
+        cumulative = opening + daily_pnl
         output.append(
             {
                 "date": key,

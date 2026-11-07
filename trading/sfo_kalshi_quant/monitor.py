@@ -43,6 +43,7 @@ from .maker_fills import (
 )
 from .models import MarketBin
 from .probability import ResidualCalibrator, post_peak_cap_engaged
+from .research_m1 import M1_ACCOUNT_ID
 from .research_policy import ALL_RESEARCH_POLICIES, ResearchSleeve
 from .settlement_day import settlement_clock
 
@@ -183,6 +184,39 @@ def _monitor_thresholds_for_side(args: argparse.Namespace, side: str) -> tuple[f
 def _is_guaranteed_payoff_group_row(row) -> bool:
     group_id = row["group_id"] if "group_id" in row.keys() else None
     return bool(group_id and not str(group_id).startswith("DEGRADED-"))
+
+
+def _is_m1_hold_to_settlement_row(row) -> bool:
+    """M1 trial positions are held to settlement by pre-registered policy.
+
+    The monitor never stops, takes profit, holds on a model veto or
+    catastrophic-exits them; the normal account-scoped settle closes them.
+    """
+
+    account_id = row["account_id"] if "account_id" in row.keys() else None
+    return str(account_id or "") == M1_ACCOUNT_ID
+
+
+def _orders_with_snapshot_action(
+    store: PaperStore, order_ids: list[int], *, action: str
+) -> set[int]:
+    """Which of these orders already carry a monitor snapshot with ``action``."""
+
+    if not order_ids:
+        return set()
+    found: set[int] = set()
+    with store.connect() as conn:
+        for start in range(0, len(order_ids), 500):
+            chunk = order_ids[start : start + 500]
+            found.update(
+                int(row[0])
+                for row in conn.execute(
+                    "SELECT DISTINCT order_id FROM paper_monitor_snapshots "
+                    f"WHERE action=? AND order_id IN ({','.join('?' for _ in chunk)})",
+                    (action, *chunk),
+                ).fetchall()
+            )
+    return found
 
 
 def _settlement_first_no_min_cost_for_order(row) -> float | None:
@@ -437,12 +471,18 @@ def run_paper_monitor(
     if _env_enabled("PAPER_SAME_DAY_MODEL_HEARTBEAT_ENABLED"):
         refresh_model_reads(
             store,
-            rows,
+            # M1 lots hold to settlement; their reads would only feed Live/V7.
+            [row for row in rows if not _is_m1_hold_to_settlement_row(row)],
             forecaster_root=args.forecaster_root,
             log=lambda message: print(color.yellow(message), file=sys.stderr),
             held=held_same_day,
         )
-    quote_rows = [row for row in rows if not _is_guaranteed_payoff_group_row(row)]
+    quote_rows = [
+        row
+        for row in rows
+        if not _is_guaranteed_payoff_group_row(row)
+        and not _is_m1_hold_to_settlement_row(row)
+    ]
     quote_observed_at: dict[str, str] = {}
     market_lookup = _monitor_market_lookup(
         client,
@@ -467,12 +507,34 @@ def run_paper_monitor(
         print(f"HOLD order {row['id']} {row['market_ticker']} {side}: {reason}")
         unreadable_markets.setdefault(str(row["market_ticker"]), error)
 
+    # An M1 lot's hold is fixed by policy, so its snapshot is written once per
+    # lot, not on every two-minute tick.
+    m1_lots_already_held = _orders_with_snapshot_action(
+        store,
+        [int(row["id"]) for row in rows if _is_m1_hold_to_settlement_row(row)],
+        action="HOLD_TO_SETTLEMENT",
+    )
     closed = 0
     inspected = 0
     for row in rows:
         inspected += 1
         side = str(row["side"] or ("NO" if "NO" in str(row["action"]).upper() else "YES")).upper()
         group_id = row["group_id"] if "group_id" in row.keys() else None
+        if _is_m1_hold_to_settlement_row(row):
+            # Checked before every exit rule, quote fetch and model read: no
+            # exit path below can reach an M1 position.
+            if int(row["id"]) not in m1_lots_already_held:
+                store.record_monitor_snapshot(
+                    row,
+                    side=side,
+                    action="HOLD_TO_SETTLEMENT",
+                    reason="M1 market-recalibration trial: held to settlement by policy",
+                )
+                print(
+                    f"HOLD order {row['id']} {row['market_ticker']} {side}: "
+                    "M1 trial (held to settlement)"
+                )
+            continue
         if _is_guaranteed_payoff_group_row(row):
             # Legs of an arbitrage box/ladder or a tail basket form a single
             # guaranteed/worst-case-bounded payoff. Closing one leg early

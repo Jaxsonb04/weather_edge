@@ -1365,6 +1365,7 @@ def test_paper_scan_is_overlap_guarded_and_portfolio_allocated():
         "PAPER_PLACE_LIVE",
         "PAPER_PLACE_RESEARCH_TARGET",
         "PAPER_PLACE_RESEARCH_MOTION",
+        "PAPER_PLACE_RESEARCH_M1",
     ):
         assert f'{flag}="${{{flag}:-0}}"' in runner
         assert f"{flag}=0" in example_env

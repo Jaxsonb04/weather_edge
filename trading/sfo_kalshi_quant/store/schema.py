@@ -20,11 +20,13 @@ from .exchange_settlement_checks import (
     EXCHANGE_SETTLEMENT_CHECK_INDEXES,
     EXCHANGE_SETTLEMENT_CHECK_SCHEMA,
 )
+from .m1_trial import ensure_m1_trial_account, ensure_m1_trial_schema
 from .market_day_settlements import (
     MARKET_DAY_SETTLEMENT_INDEXES,
     MARKET_DAY_SETTLEMENT_SCHEMA,
     TRUTH_SOURCE_RANKS,
 )
+from ..research_m1 import M1_ACCOUNT_ID
 from ..research_policy import (
     ALL_RESEARCH_POLICIES,
     TARGET_POLICY,
@@ -1235,12 +1237,17 @@ def _ensure_research_sleeve_accounts(conn: sqlite3.Connection) -> None:
 
 
 def _enforce_active_account_set(conn: sqlite3.Connection) -> None:
-    """Archive every account outside the two deliberate post-cutover ledgers."""
+    """Archive every account outside the deliberate post-cutover ledgers.
+
+    Live Stability and Research V7 are the post-cutover ledgers; the M1
+    market-recalibration trial is a third, separately capitalized paper
+    ledger that never pools with either.
+    """
 
     conn.execute(
         "UPDATE paper_accounts SET status='ARCHIVED' "
-        "WHERE status='ACTIVE' AND account_id NOT IN (?, ?)",
-        (LIVE_STABILITY_ACCOUNT_ID, TARGET_POLICY.account_id),
+        "WHERE status='ACTIVE' AND account_id NOT IN (?, ?, ?)",
+        (LIVE_STABILITY_ACCOUNT_ID, TARGET_POLICY.account_id, M1_ACCOUNT_ID),
     )
 
 
@@ -1501,6 +1508,8 @@ def _init_store_locked(self) -> None:
         self._ensure_live_stability_account(conn)
         self._ensure_open_position_guard_index(conn)
         _ensure_research_sleeve_accounts(conn)
+        ensure_m1_trial_schema(conn)
+        ensure_m1_trial_account(conn)
         _enforce_active_account_set(conn)
 
 

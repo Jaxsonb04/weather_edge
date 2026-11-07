@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .research_m1 import M1_ACCOUNT_ID
 from .settlement_truth import settlement_key_for_market
 
 _DEFAULT_PRIOR_STRENGTH = 20.0
@@ -146,6 +147,14 @@ def _accumulate(rows: list[tuple[float, float, bool, float]]) -> tuple[
     return cohort_records, to_record(overall)
 
 
+def _not_m1(columns: set[str]) -> str:
+    """M1 is a separate trial book; its lots never feed the Live/V7 sizing model."""
+
+    if "account_id" not in columns:
+        return ""
+    return f" AND COALESCE(account_id, '') != '{M1_ACCOUNT_ID}'"
+
+
 def _date_settlement_highs(conn) -> dict[tuple[str, str], float]:
     """City/date authoritative CLI highs from recorded settlements."""
 
@@ -158,6 +167,7 @@ def _date_settlement_highs(conn) -> dict[tuple[str, str], float]:
             else "SELECT 'KXHIGHTSFO', target_date, settlement_high_f FROM paper_orders "
         )
         + "WHERE settlement_high_f IS NOT NULL"
+        + _not_m1(columns)
     ).fetchall()
     highs: dict[tuple[str, str], float] = {}
     for market_ticker, target_date, high in rows:
@@ -189,24 +199,25 @@ def load_posterior_kelly_model(
     from .clv import side_won  # counterfactual bin outcome (mirrors MarketBin)
 
     rows: list[tuple[float, float, bool, float]] = []
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(paper_orders)").fetchall()}
+    not_m1 = _not_m1(columns)
 
     for side, claimed, cost, resolved_yes, high in conn.execute(
         "SELECT side, probability, cost_per_contract, resolved_yes, settlement_high_f "
         "FROM paper_orders "
         "WHERE settled_at IS NOT NULL AND resolved_yes IS NOT NULL "
-        "AND settlement_high_f IS NOT NULL AND cost_per_contract IS NOT NULL"
+        "AND settlement_high_f IS NOT NULL AND cost_per_contract IS NOT NULL" + not_m1
     ).fetchall():
         won = (int(resolved_yes) == 1) if side.upper() == "YES" else (int(resolved_yes) == 0)
         rows.append((float(claimed), float(cost), won, float(high)))
 
     if include_counterfactual_closed:
         highs = _date_settlement_highs(conn)
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(paper_orders)").fetchall()}
         ticker_select = "market_ticker" if "market_ticker" in columns else "'KXHIGHTSFO'"
         for side, claimed, cost, ticker, target_date, strike_type, floor_strike, cap_strike in conn.execute(
             f"SELECT side, probability, cost_per_contract, {ticker_select}, target_date, strike_type, "
             "floor_strike, cap_strike FROM paper_orders "
-            "WHERE status = 'PAPER_CLOSED' AND cost_per_contract IS NOT NULL"
+            "WHERE status = 'PAPER_CLOSED' AND cost_per_contract IS NOT NULL" + not_m1
         ).fetchall():
             key = settlement_key_for_market(str(ticker), target_date)
             high = highs.get(key) if key is not None else None

@@ -5,12 +5,13 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import sqlite3
 import sys
 import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 from urllib.error import URLError
@@ -70,6 +71,7 @@ from ..research_policy import (
     canonical_research_lead_bucket,
     research_scan_city_rank,
 )
+from ..research_m1_store import run_m1_scan
 from ..research_portfolio import ResearchOpportunity, ResearchPlans, allocate_research_plans
 from ..research_entry_risk import target_remaining_daily_risk
 from ..risk import TradeEvaluator
@@ -112,10 +114,23 @@ def _research_placement_flags(args: argparse.Namespace) -> tuple[bool, bool]:
     )
 
 
+def _research_m1_placement_flag(args: argparse.Namespace) -> bool:
+    """M1 trial placement intent: research profile plus the explicit M1 flag.
+
+    ``--place-paper`` and ``--place-research-target`` never place M1 orders;
+    only ``--place-research-m1`` does, so the trial stays in shadow mode
+    unless it is enabled on purpose.
+    """
+
+    if _risk_profile_name(args) != "research":
+        return False
+    return bool(getattr(args, "place_research_m1", False))
+
+
 def _paper_placement_requested(args: argparse.Namespace) -> bool:
     if bool(getattr(args, "place_paper", False)):
         return True
-    return any(_research_placement_flags(args))
+    return any(_research_placement_flags(args)) or _research_m1_placement_flag(args)
 
 
 def _analysis_sides(side_arg: str) -> tuple[str, ...]:
@@ -321,6 +336,10 @@ class ScanContext:
     risk_profile: str
     paper_bankroll: float
     decisions: list[TradeDecision]
+    # When this context read its event and markets: the quotes behind every
+    # decision. The M1 trial stamps its evaluations with it, so its UTC hour,
+    # bucket, lead and listing hour describe the quote, not a later moment.
+    quote_observed_at: datetime | None = None
 
 
 def build_scan_context(
@@ -385,6 +404,7 @@ def build_scan_context(
             )
             event = None
 
+    quote_observed_at = datetime.now(UTC)
     if event:
         markets = event.active_markets or event.markets
         event_title = event.title
@@ -465,6 +485,7 @@ def build_scan_context(
         risk_profile=risk_profile,
         paper_bankroll=paper_bankroll,
         decisions=decisions,
+        quote_observed_at=quote_observed_at,
     )
 
 
@@ -1087,6 +1108,7 @@ def _research_portfolio_scan_from_context(
         market_snapshot_id=market_snapshot_id,
         kalshi_client=kalshi_client,
     )
+    _run_research_m1_scan(args, target, context, store, color)
     placed_ids = [*execution.target_order_ids, *execution.motion_order_ids]
     _print_portfolio_scan(
         context.event_title,
@@ -1100,6 +1122,68 @@ def _research_portfolio_scan_from_context(
         ensemble=context.ensemble,
         entry_block_reason=entry_block_reason,
         consensus=context.consensus,
+    )
+
+
+def _run_research_m1_scan(
+    args: argparse.Namespace,
+    target: date,
+    context: ScanContext,
+    store: PaperStore,
+    color: Color,
+) -> None:
+    """Feed this research scan to the isolated M1 paper trial.
+
+    The trial reads the scan's already-computed legs; it never changes the
+    target book's decisions. A failure is reported and contained so the
+    research target account keeps scanning.
+    """
+
+    try:
+        if context.event is None or not context.event.active_markets:
+            return  # no listed ladder: M1 never evaluates placeholder bins
+        entry_allowed, entry_block_reason = _paper_entry_gate_for_target(
+            target,
+            context.forecast,
+            context.intraday,
+            city=context.city,
+            risk_profile="research",
+        )
+        result = run_m1_scan(
+            store,
+            target_date=target,
+            city=context.city,
+            decisions=list(context.decisions),
+            markets=list(context.markets),
+            forecast=context.forecast,
+            entry_gate_reason=None if entry_allowed else entry_block_reason,
+            place=_research_m1_placement_flag(args),
+            now=getattr(context, "quote_observed_at", None),
+        )
+    except Exception as exc:  # noqa: BLE001 -- the trial must not stop the scan
+        from ..cli import _is_retryable_sqlite_lock  # cli imports this module
+
+        # Only a sqlite lock fails the tick, so the CLI exits 75 and the runner's
+        # bounded retry runs; the trial already marked its failed admissions.
+        if isinstance(exc, sqlite3.OperationalError) and _is_retryable_sqlite_lock(exc):
+            raise
+        print(
+            color.red(
+                f"[{context.city.slug}] {target.isoformat()}: M1 trial evaluation "
+                f"failed ({type(exc).__name__}: {exc}); the research target book "
+                "is unaffected"
+            ),
+            file=sys.stderr,
+        )
+        return
+    if result.skipped_reason is not None:
+        return
+    mode = "placing" if _research_m1_placement_flag(args) else "shadow"
+    print(
+        f"[{context.city.slug}] {target.isoformat()}: M1 trial ({mode}) "
+        f"sampled {result.sampled}/{result.legs} legs, "
+        f"{result.candidates} signal(s), {len(result.order_ids)} paper entr"
+        f"{'y' if len(result.order_ids) == 1 else 'ies'}"
     )
 
 

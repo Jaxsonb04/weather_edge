@@ -45,6 +45,8 @@ _COMMAND_NAMES = (
     "cmd_paper_close",
     "cmd_paper_features",
     "cmd_paper_ladder_outcomes",
+    "cmd_paper_m1_reconcile",
+    "cmd_paper_m1_status",
     "cmd_paper_monitor",
     "cmd_paper_prune",
     "cmd_paper_report",
@@ -375,6 +377,15 @@ def register_scan_commands(sub) -> None:
         help=(
             "Admit approved target-sleeve paper orders only. This flag has no "
             "effect on the live profile or the research motion sleeve."
+        ),
+    )
+    portfolio.add_argument(
+        "--place-research-m1",
+        action="store_true",
+        help=(
+            "Admit M1 market-recalibration trial paper entries into its own "
+            "$10,000 paper account. Without it the trial records every decision "
+            "in shadow mode. Research profile only; paper only."
         ),
     )
     portfolio.add_argument(
@@ -955,6 +966,38 @@ def register_paper_commands(sub) -> None:
         ),
     )
     auto_settle.set_defaults(func=cmd_paper_auto_settle)
+
+    m1_status = sub.add_parser(
+        "paper-m1-status",
+        help=(
+            "Print the M1 market-recalibration paper trial's pre-registration, "
+            "stop-rule status and evidence as JSON (read-only)"
+        ),
+    )
+    m1_status.add_argument(
+        "--final-read",
+        action="store_true",
+        help=(
+            "Use the pre-registered 10,000 date-clustered bootstrap resamples "
+            "(the live view uses 2,000)"
+        ),
+    )
+    m1_status.set_defaults(func=cmd_paper_m1_status)
+
+    m1_reconcile = sub.add_parser(
+        "paper-m1-reconcile",
+        help=(
+            "Replay one complete UTC day of recorded M1 evaluations through the "
+            "frozen rule, compare with the paper entries, record the report once "
+            "and apply the fidelity halt (the settle timer runs this daily)"
+        ),
+    )
+    m1_reconcile.add_argument(
+        "--day",
+        default=None,
+        help="UTC day YYYY-MM-DD (default: yesterday UTC)",
+    )
+    m1_reconcile.set_defaults(func=cmd_paper_m1_reconcile)
 
     backfill_outcomes = sub.add_parser(
         "paper-backfill-market-day-settlements",

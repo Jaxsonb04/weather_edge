@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import temperature_cohort
+from .research_m1 import M1_ACCOUNT_ID
 from .settlement_truth import (
     bin_resolves_yes,
     load_cli_settlement_truth,
@@ -210,10 +211,17 @@ def load_order_clv(
     highs = _authoritative_highs(weather_conn)
     marks = _closing_marks(conn)
     conn.row_factory = sqlite3.Row
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(paper_orders)")}
+    # M1 writes 'research' but is its own book; it never joins the research bucket.
+    not_m1 = (
+        f" WHERE COALESCE(account_id, '') != '{M1_ACCOUNT_ID}'"
+        if "account_id" in columns
+        else ""
+    )
     rows = conn.execute(
         "SELECT id, target_date, market_ticker, status, side, risk_profile, contracts, "
         "cost_per_contract, realized_pnl, strike_type, floor_strike, cap_strike "
-        "FROM paper_orders"
+        "FROM paper_orders" + not_m1
     ).fetchall()
 
     records: list[OrderCLV] = []
