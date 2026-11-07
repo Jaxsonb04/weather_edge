@@ -173,7 +173,9 @@ def _run(args: argparse.Namespace, notes: Notes) -> int:
         strategy = fetch_manifest_with_retries(strategy_url(args.manifest_url), now, notes=notes)
         if strategy.manifest is None:
             # Unknown is not healthy: staying fresh here would close an open incident.
-            verdict = replace(verdict, state=STATE_UNREADABLE, detail=f"Strategy Lab: {strategy.error}")
+            # A structural failure (404, not our document) is a dead artifact, not a blip.
+            state = STATE_UNHEALTHY if strategy.structural else STATE_UNREADABLE
+            verdict = replace(verdict, state=state, detail=f"Strategy Lab: {strategy.error}")
         elif problem := strategy_problem(strategy.manifest, now):
             verdict = replace(verdict, state=STATE_UNHEALTHY, detail=problem)
     print(f"{verdict.state.upper()}: {verdict.detail}")
@@ -228,7 +230,7 @@ def _run(args: argparse.Namespace, notes: Notes) -> int:
         # Only now is the extra read worth making: an issue closed by hand
         # minutes ago was an acknowledgement, not an invitation to file again.
         human_close_after = None
-        if verdict.published_at is not None:
+        if verdict.published_at is not None and verdict.state != STATE_UNHEALTHY:
             # Later than this, a close cannot have been the monitor's own
             # recovery close -- which only ever fires below the close threshold.
             human_close_after = verdict.published_at + timedelta(

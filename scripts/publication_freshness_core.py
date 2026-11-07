@@ -463,7 +463,9 @@ def strategy_problem(document: dict[str, Any], now: datetime) -> str | None:
     if critical:
         return f"Strategy Lab reports a critical alert: {'; '.join(critical)}"
     generated_at = parse_timestamp(document.get("generated_at"))
-    if generated_at is not None and now - generated_at > timedelta(minutes=STRATEGY_MAX_AGE_MINUTES):
+    if generated_at is None:
+        return "Strategy Lab has no parseable generated_at"
+    if now - generated_at > timedelta(minutes=STRATEGY_MAX_AGE_MINUTES):
         return f"Strategy Lab has not refreshed since {generated_at.isoformat()}"
     return None
 

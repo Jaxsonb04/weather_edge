@@ -13,7 +13,7 @@ from .._util import (
     _round,
     _to_float,
 )
-from ..config import StrategyConfig
+from ..config import StrategyConfig, normalize_risk_profile_name
 from ..settlement_day import settlement_today
 from . import ACTIVE_CALIBRATION_SOURCE, CHALLENGER_CALIBRATION_SOURCE
 from .readiness import _stale_analysis_readiness
@@ -381,7 +381,11 @@ def _scan_failure_alerts(db_path: Path, now: datetime) -> list[dict[str, str]]:
         return []
     configured = os.getenv("PAPER_RISK_PROFILES") or os.getenv("PAPER_RISK_PROFILE") or ""
     stale = []
-    for profile in filter(None, map(str.strip, configured.split(","))):
+    for raw in filter(None, map(str.strip, configured.split(","))):
+        try:
+            profile = normalize_risk_profile_name(raw)
+        except ValueError:
+            profile = raw  # the scan script rejects it too, so no stamp exists: stale
         stamp = db_path.parent / ".paper-scan-state" / f"last-success-{profile}"
         try:
             finished = datetime.fromtimestamp(int(stamp.read_text(encoding="ascii")), UTC)
@@ -397,7 +401,7 @@ def _scan_failure_alerts(db_path: Path, now: datetime) -> list[dict[str, str]]:
         "Entry scans are failing",
         f"No successful scan in the last {SCAN_MAX_AGE.seconds // 60} minutes for: "
         f"{', '.join(stale)}. Entries may be missing or partial until scans recover.",
-        "Read sfo-kalshi-paper-scan.service logs on the host.",
+        "Read the paper scan service logs on the host.",
     )]
 
 

@@ -4046,8 +4046,17 @@ def test_failed_scans_become_a_public_critical_alert(tmp_path, monkeypatch):
     assert "research" in alert["detail"] and "live" not in alert["detail"]
     assert "retired" not in alert["detail"]
 
+    assert "kalshi" not in alert["action"].lower() and "kalshi" not in alert["detail"].lower()
+
     (stamps / "last-success-research").write_text("garbled", encoding="ascii")
     assert "research" in codes()["paper-scan-stale"]["detail"]
+
+    # An alias is stamped under its canonical name, so it must not read as missing.
+    monkeypatch.setenv("PAPER_RISK_PROFILES", "live,exploratory")
+    (stamps / "last-success-research").write_text(str(int(now.timestamp()) - 60), encoding="ascii")
+    assert "paper-scan-stale" not in codes()
+    monkeypatch.setenv("PAPER_RISK_PROFILES", "live,research")
+    (stamps / "last-success-research").write_text("garbled", encoding="ascii")
 
     # A clock that stepped back must not make an old stamp look fresh forever.
     (stamps / "last-success-research").write_text(str(int(now.timestamp()) + 86400), encoding="ascii")
