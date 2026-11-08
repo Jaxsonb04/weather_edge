@@ -1,10 +1,10 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-11-07 (backend at `c14d1a10c`, web at `372212b33`; $2,000 paper accounts live; repository audit and cleanup)
+Last updated: 2026-11-07 (backend at `c14d1a10c`, web at `d24005332`; $2,000 paper accounts live; repository audit and cleanup)
 
 Last complete production verification: 2026-11-07 10:50 UTC (build record, 13 timers, flags, active accounts, one capital deposit, public manifest and strategy alerts)
 
-Last public artifact inspection: 2026-11-07 10:51 UTC (guarded release verified the installed app, Pages deployment and public file hashes at Pages commit `e8a77acc`)
+Last public artifact inspection: 2026-11-07 evening (guarded release verified the installed app, Pages deployment and public file hashes at Pages commit `e2e94a357`)
 
 Last public app verification: 2026-11-07 (see the November 7 release snapshot below)
 
