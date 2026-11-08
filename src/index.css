@@ -286,13 +286,6 @@
   transform: scale(1);
 }
 
-/* Navigation pill under the active route. TopBar slides it with a transform
-   (see PrimaryNav); only its first appearance fades here. */
-.nav-indicator {
-  transform-origin: left;
-  transition: opacity 200ms ease;
-}
-
 /* Bars fill from their zero: a value being measured out, not a box appearing. */
 @keyframes grow-x {
   from { transform: scaleX(0); }
@@ -414,7 +407,6 @@ details[open] > :not(summary) { animation: fade-in 220ms var(--ease-enter) both;
     transform: none;
     transition: none;
   }
-  .nav-indicator,
   .dial-needle,
   .menu-mark > span,
   .disclosure-chevron {
