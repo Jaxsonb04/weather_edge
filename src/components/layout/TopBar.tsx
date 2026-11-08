@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect } from "react";
 import { Button } from "@heroui/react/button";
 import { Modal } from "@heroui/react/modal";
 import { Tooltip } from "@heroui/react/tooltip";
@@ -26,68 +26,28 @@ const routeDescriptions: Record<Route, string> = {
   lab: "Paper accounts and trades",
 };
 
-/** The three routes as a pill group; one indicator slides under the current
-    route (a CSS transform transition, so it never waits on a frame callback). */
+/** The three routes as plain text links. The current one is marked by a line
+    that sits on the header's bottom border, under its label. Each link fills
+    the bar's height so the line can reach that border; the focus ring stays
+    on the label. */
 function PrimaryNav({ route }: { route: Route }) {
-  const navRef = useRef<HTMLElement>(null);
-  const pillRef = useRef<HTMLSpanElement>(null);
-  const previous = useRef<{ x: number; w: number } | null>(null);
-  const [pill, setPill] = useState<{ x: number; w: number } | null>(null);
-
-  useLayoutEffect(() => {
-    const nav = navRef.current;
-    if (!nav) return;
-    const measure = () => {
-      const active = nav.querySelector<HTMLElement>('[aria-current="page"]');
-      setPill(active ? { x: active.offsetLeft, w: active.offsetWidth } : null);
-    };
-    measure();
-    // Webfont swaps and zoom change link widths after the first measurement.
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
-    observer?.observe(nav);
-    return () => observer?.disconnect();
-  }, [route]);
-
-  // The pill takes its new size at once and plays from the old one, so the
-  // slide is transform-only. Without Web Animations it simply lands.
-  useLayoutEffect(() => {
-    const from = previous.current;
-    previous.current = pill;
-    const el = pillRef.current;
-    if (!el?.animate || !from?.w || !pill?.w || (from.x === pill.x && from.w === pill.w)) return;
-    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
-    el.animate(
-      [{ transform: `translateX(${from.x}px) scaleX(${from.w / pill.w})` }, { transform: `translateX(${pill.x}px)` }],
-      { duration: 260, easing: getComputedStyle(el).getPropertyValue("--ease-enter") },
-    );
-  }, [pill]);
-
   return (
-    <nav
-      ref={navRef}
-      aria-label="Primary navigation"
-      className="relative hidden items-center rounded-full bg-default/70 p-1 md:flex"
-    >
-      <span
-        ref={pillRef}
-        aria-hidden="true"
-        className="nav-indicator absolute left-0 top-1 h-[calc(100%-0.5rem)] rounded-full bg-segment shadow-surface"
-        style={{
-          width: pill?.w ?? 0,
-          transform: `translateX(${pill?.x ?? 0}px)`,
-          opacity: pill ? 1 : 0,
-        }}
-      />
+    <nav aria-label="Primary navigation" className="hidden items-stretch self-stretch md:flex">
       {ROUTES.map((item) => (
         <a
           key={item.id}
           href={`#/${item.id}`}
           aria-current={route === item.id ? "page" : undefined}
-          className={`relative z-10 rounded-full px-4 py-1.5 text-sm font-medium no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] ${
+          className={`group relative flex items-center whitespace-nowrap text-sm font-medium no-underline outline-none transition-colors ${
             route === item.id ? "text-foreground" : "text-muted hover:text-foreground"
           }`}
         >
-          {item.label}
+          <span className="rounded-md px-3 py-1.5 group-focus-visible:outline-2 group-focus-visible:outline-offset-2 group-focus-visible:outline-[color:var(--focus)]">
+            {item.label}
+          </span>
+          {route === item.id && (
+            <span aria-hidden="true" className="absolute inset-x-3 -bottom-px h-0.5 rounded-full bg-foreground" />
+          )}
         </a>
       ))}
     </nav>
@@ -157,20 +117,21 @@ export function TopBar({ mode, onToggleTheme, onOpenCommand, menuOpen, onMenuOpe
           </span>
         </a>
 
+        <span aria-hidden="true" className="mr-1 hidden h-5 w-px bg-separator md:block" />
         <PrimaryNav route={route} />
 
         <div className="ml-auto flex min-w-0 items-center gap-1">
           <button
             type="button"
             onClick={onOpenCommand}
-            className="hidden h-9 cursor-pointer items-center gap-2 rounded-full bg-default/70 pl-3 pr-1.5 text-sm text-muted transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] md:inline-flex"
+            className="hidden h-9 cursor-pointer items-center gap-2 rounded-full bg-default/70 pl-3 pr-1.5 text-sm text-muted transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus)] lg:inline-flex"
           >
             <Icon icon="solar:magnifer-linear" className="size-4" aria-hidden="true" />
             <span>Search</span>
             <kbd className="rounded-full bg-surface px-2 py-0.5 font-sans text-xs text-muted">⌘K</kbd>
           </button>
           <Tooltip delay={600}>
-            <Button isIconOnly variant="ghost" aria-label="Open command palette" className="md:hidden" onPress={onOpenCommand}>
+            <Button isIconOnly variant="ghost" aria-label="Open command palette" className="lg:hidden" onPress={onOpenCommand}>
               <Icon icon="solar:magnifer-linear" aria-hidden="true" />
             </Button>
             <Tooltip.Content>Search</Tooltip.Content>
@@ -190,7 +151,8 @@ export function TopBar({ mode, onToggleTheme, onOpenCommand, menuOpen, onMenuOpe
             className={buttonVariants({ variant: "ghost", className: "hidden gap-1.5 px-2.5 md:inline-flex" })}
           >
             <Icon icon="solar:code-square-linear" aria-hidden="true" />
-            <span>Source</span>
+            {/* The label waits for lg: at 768px the full bar overflowed by ~13px. */}
+            <span className="hidden lg:inline">Source</span>
           </a>
         </div>
       </div>
