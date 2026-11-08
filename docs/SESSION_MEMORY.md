@@ -1,10 +1,10 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-11-07 (backend at `c14d1a10c`, web at `372212b33`; $2,000 paper accounts live; repository audit and cleanup)
+Last updated: 2026-11-07 (backend at `c14d1a10c`, web at `d24005332`; $2,000 paper accounts live; repository audit and cleanup)
 
 Last complete production verification: 2026-11-07 10:50 UTC (build record, 13 timers, flags, active accounts, one capital deposit, public manifest and strategy alerts)
 
-Last public artifact inspection: 2026-11-07 10:51 UTC (guarded release verified the installed app, Pages deployment and public file hashes at Pages commit `e8a77acc`)
+Last public artifact inspection: 2026-11-07 evening (guarded release verified the installed app, Pages deployment and public file hashes at Pages commit `e2e94a357`)
 
 Last public app verification: 2026-11-07 (see the November 7 release snapshot below)
 
@@ -12,6 +12,29 @@ This is the rolling cross-session handoff. Recheck AWS before making a current
 operational claim; all production observations below are dated snapshots.
 
 ## Session Brief
+
+- **November 7 evening web release (owner authorized in chat):**
+  - **Shipped:** PR #191 (`d24005332`) replaces the pill-group top nav with plain
+    text links and a static 2px line on the header's bottom border under the
+    current route. The sliding indicator code and `.nav-indicator` CSS are gone.
+    At 768–1023px the search pill becomes the icon button and Source loses its
+    label, which fixes a wrapped "Strategy Lab". ChatGPT approved in round 1 and
+    CI passed.
+  - **Design decision:** Jaxson rejected a glass, glow and gradient restyle as "AI
+    slop". The site's direction is minimal and clean, with one design idea and no
+    effects. The rejected patch is not kept in the repo.
+  - **Deployed:** web at `d24005332` via the guarded `deploy_web_app.sh` from a
+    clean checkout of that SHA. It printed "Public app and runtime JSON hashes
+    verified at Pages commit `e2e94a357`" and exited 0. The live bundle changed
+    from `index-CxHV2rxz.js` to `index-XFvsppka.js`. This also published the
+    previously pending #179, the °F/°C toggle (#183), the dependency refreshes
+    (#182, #190) and #184's site-file hygiene. The backend was not touched.
+  - **Verified live:**
+    - Real Chrome 155: desktop, plus 1024, 768 and 390px frames. The line sits on
+      the border, there's no overflow and no console errors.
+    - iOS Simulator Safari: the live site on iPhone 16, and the new nav and route
+      switch on iPad Pro 11 (local build).
+    - Firefox was not tested: it isn't installed and the owner declined downloads.
 
 - **November 7 repository audit and cleanup (after the release):**
   - **Security:** Claude led and GPT gave independent second opinions. No
@@ -40,10 +63,10 @@ operational claim; all production observations below are dated snapshots.
     prune (`--max-run-seconds`, `SFO_PRUNE_MAX_RUN_SECONDS`, default 2400 s) and
     applies cleanly to main. `stash-1.patch` is partial September hardening of
     the exchange-settlement check and needs a hand-port.
-  - **Pending publication:** main has web changes that are not on Pages yet:
-    #179 and the °C toggle. Publishing needs the owner's OK. The next backend
-    deploy also picks up the Python bumps (certifi, cryptography, numpy, PyJWT,
-    setuptools, pandas 3.1.1, python-dateutil 4.0.0; the full suite matched on
+  - **Pending publication:** the web changes (#179, the °C toggle) were
+    published in the evening web release above. The next backend deploy picks
+    up the Python bumps (certifi, cryptography, numpy, PyJWT, setuptools,
+    pandas 3.1.1, python-dateutil 4.0.0; the full suite matched on
     the old and new lock). Dependabot ignores, with reasons in
     `.github/dependabot.yml`: `@heroui-pro/react` (licensed), `@types/node`
     majors (match Node 24), jsdom majors (needs Node 22.22+ or 24.15+; the Mac
