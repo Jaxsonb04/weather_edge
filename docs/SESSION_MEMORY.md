@@ -1,8 +1,8 @@
 # WeatherEdge Session Memory
 
-Last updated: 2026-11-07 (backend at `c14d1a10c`, web at `d24005332`; $2,000 paper accounts live; repository audit and cleanup)
+Last updated: 2026-11-09 (backend at `db34b8a80`, web at `d24005332`; Apple WeatherKit weighted into next-day+ forecasts)
 
-Last complete production verification: 2026-11-07 10:50 UTC (build record, 13 timers, flags, active accounts, one capital deposit, public manifest and strategy alerts)
+Last complete production verification: 2026-11-09 19:55 UTC (build record, 13 timers, no failed units, Apple nudges in live vintages, public manifest, job exits)
 
 Last public artifact inspection: 2026-11-07 evening (guarded release verified the installed app, Pages deployment and public file hashes at Pages commit `e2e94a357`)
 
@@ -12,6 +12,47 @@ This is the rolling cross-session handoff. Recheck AWS before making a current
 operational claim; all production observations below are dated snapshots.
 
 ## Session Brief
+
+- **November 9 Apple WeatherKit release (owner authorized in chat):**
+  - **Decision:** Google has returned 403 since Sept 2 and Apple had zero weight,
+    so neither was ever tested. Jaxson chose a fixed Apple weight with scoring,
+    then raised it to 50%. This is a personal, non-commercial paper project, and
+    he accepts the license gray area (storing the per-forecast nudge). Details
+    are in `docs/APPLE-WEATHERKIT.md` "Current State".
+  - **Rule:** next-day and later targets move 50% toward Apple's station-day
+    high, capped at 3.5°F. Apple is ignored at a 7°F or larger gap. Same-day
+    targets and sigma are unchanged. Apple is fetched in memory, with a 5 s
+    timeout per city and a 60 s budget per run. Each live vintage records
+    `apple_adjustment_f` and `apple_action`; raw Apple highs are never stored.
+  - **Shipped:** PR #193 (`db34b8a80`). GPT reviewed the design, the diff and
+    the final version. ChatGPT approved in round 3, CI passed, and the full suite
+    passed (4369). `STRATEGY_BEHAVIOR_VERSION` was rotated to
+    `behavior-v6-apple-forecast-2026-11-09` with owner approval, which restarts
+    Live's 30-day readiness clock. M1's fingerprint does not depend on it.
+  - **Deployed:** `sync_to_box.sh` from a clean clone of `db34b8a80` exited 0.
+    The backup and S3 copy of the 22 GB paper database took about two hours.
+    This deploy also installed the Nov 7 Python bumps.
+  - **Verified 19:55 UTC:**
+    - Build record `db34b8a80`, not dirty. 13 timers, no failed units, no
+      maintenance marker, disk at 58%.
+    - The first refresh logged `served=60 ... apple_cities=20`.
+    - All 40 next-day and two-day vintages say `applied` (mean −0.63°F, range
+      −1.71 to +0.75). The 20 same-day vintages carry no Apple fields.
+    - The public manifest was 2 minutes old, and the `gh-pages` commit names
+      source `db34b8a80`. Scan, monitor, publish, Strategy refresh, freshness
+      and scheduler health all exited 0, with no scan errors.
+  - **Regression (deferred, owner decision):** the historical Strategy Lab
+    rescore hit its 1800 s limit during the deploy, using only 2.5 min of CPU,
+    so it was starved for disk I/O. Nov 7 runs took 11–20 min. The deploy
+    continued as designed, and the public `strategy_research.json` now marks
+    replay, scorecards and shadow analysis `analysis_deferred`. Before the
+    deploy it showed the Nov 7 analysis. The verified copy was removed as
+    designed. A rerun needs a fresh 22 GB copy with producers paused (25 GB is
+    free), so it is effectively another deploy, possibly with a higher
+    `SFO_STRATEGY_FULL_ANALYSIS_TIMEOUT_SECONDS`. Paper trading is unaffected.
+  - **Remaining:** read `python emos_forecast.py --apple-score` after about 3
+    weeks of settled days. If "with Apple" MAE isn't clearly below "without",
+    set `ENABLE_APPLE_WEATHER=0`.
 
 - **November 7 evening web release (owner authorized in chat):**
   - **Shipped:** PR #191 (`d24005332`) replaces the pill-group top nav with plain
@@ -64,8 +105,8 @@ operational claim; all production observations below are dated snapshots.
     applies cleanly to main. `stash-1.patch` is partial September hardening of
     the exchange-settlement check and needs a hand-port.
   - **Pending publication:** the web changes (#179, the °C toggle) were
-    published in the evening web release above. The next backend deploy picks
-    up the Python bumps (certifi, cryptography, numpy, PyJWT, setuptools,
+    published in the evening web release above. The Nov 9 backend deploy
+    installed the Python bumps (certifi, cryptography, numpy, PyJWT, setuptools,
     pandas 3.1.1, python-dateutil 4.0.0; the full suite matched on
     the old and new lock). Dependabot ignores, with reasons in
     `.github/dependabot.yml`: `@heroui-pro/react` (licensed), `@types/node`
