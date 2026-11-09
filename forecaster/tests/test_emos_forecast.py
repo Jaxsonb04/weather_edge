@@ -817,3 +817,31 @@ def test_serve_rolling_passes_apple_highs_and_survives_failure(tmp_path, monkeyp
     with redirect_stdout(io.StringIO()):
         assert ef.main(["--db", str(db_path), "--serve-rolling", "--cities", "sfo"]) == 0
     assert calls == [(0, None), (1, None), (2, None)]
+
+
+def test_apple_budget_counts_only_apple_time_not_nwp_time(tmp_path, monkeypatch):
+    import apple_weatherkit
+    import emos_forecast as ef
+
+    clock = [0.0]
+    monkeypatch.setattr(ef.time, "monotonic", lambda: clock[0])
+
+    def slow_nwp(**_kw):
+        clock[0] += 10_000  # far beyond the Apple budget
+        return {}
+
+    calls: list[float | None] = []
+    monkeypatch.setattr(
+        ef, "serve_live_emos",
+        lambda conn, target, *, apple_high_f=None, **kw: calls.append(apple_high_f) or (70.0, 3.0),
+    )
+    monkeypatch.setattr(apple_weatherkit, "client_from_env", lambda **kw: object())
+    monkeypatch.setattr(ef, "fetch_live_model_forecasts_multi", slow_nwp)
+    monkeypatch.setattr(apple_weatherkit, "live_highs", lambda client, city: {
+        (ef._settlement_today() + timedelta(days=1)).isoformat(): 80.0
+    })
+    db_path = tmp_path / "weather.db"
+    _mark_onboarded(db_path, ["KSFO"])
+    with redirect_stdout(io.StringIO()):
+        assert ef.main(["--db", str(db_path), "--serve-rolling", "--cities", "sfo"]) == 0
+    assert 80.0 in calls

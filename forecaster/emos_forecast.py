@@ -655,7 +655,9 @@ def apple_score(conn: sqlite3.Connection) -> dict[int, dict[str, float]]:
     truth_by_station: dict[str, dict[str, float]] = {}
     out: dict[int, dict[str, float]] = {}
     for (station, target, lead), pairs in vintages.items():
-        truth = truth_by_station.setdefault(station, load_clisfo_truth(conn, station))
+        if station not in truth_by_station:
+            truth_by_station[station] = load_clisfo_truth(conn, station)
+        truth = truth_by_station[station]
         if target not in truth:
             continue
         actual = truth[target]
@@ -742,7 +744,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.serve or args.serve_rolling
             else None
         )
-        apple_deadline = time.monotonic() + APPLE_TIME_BUDGET_SECONDS
+        apple_spent = 0.0  # only time inside Apple calls counts, not NWP or fitting
         apple_cities = 0
         for city in cities:
             if args.serve or args.serve_rolling:
@@ -787,12 +789,14 @@ def main(argv: list[str] | None = None) -> int:
                 else {}
             )
             apple_highs: dict[str, float] = {}
-            if apple_client is not None and time.monotonic() < apple_deadline:
+            if apple_client is not None and apple_spent < APPLE_TIME_BUDGET_SECONDS:
+                apple_started = time.monotonic()
                 try:
                     apple_highs = apple_weatherkit.live_highs(apple_client, city)
                     apple_cities += bool(apple_highs)
                 except apple_weatherkit.WeatherKitError:
                     print(f"apple weather [{city.slug}]: unavailable, serving without it")
+                apple_spent += time.monotonic() - apple_started
 
             for target, lead in serve_targets:
                 result = (
