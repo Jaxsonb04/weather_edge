@@ -106,7 +106,7 @@ def test_only_research_execution_fingerprint_changes_and_fixed_goal_is_preserved
     # 88e417a64d8be9b1bb933b3b / 92934c133d00d85deb078b3c; under behaviour-v3
     # before the 2026-09-13 `limit_taker_cross_max_levels` field it was
     # 93326de538852004fc08aa99.
-    assert strategy_fingerprint(live, entry_mode="limit") == "3125d138f5c7d8b49982c841"
+    assert strategy_fingerprint(live, entry_mode="limit") == "24319aeda35fdd71e5c977e5"
     # Research without research_entry_risk_version hashes to
     # 4d812e63727caf1b3de6b127 under behaviour-v3; with it, the research
     # identity moves. Under research-entry-risk-v2-scaled-2026-09-12 (PR #121)
@@ -124,7 +124,7 @@ def test_only_research_execution_fingerprint_changes_and_fixed_goal_is_preserved
     # pins also include the November 7 $2,000 paper_bankroll decision:
     assert strategy_fingerprint(research, entry_mode="limit") != "40806599ad7acb21eab44c8d"
     assert strategy_fingerprint(research, entry_mode="limit") != "0db3fd6d76056f7f7b141ff2"
-    assert strategy_fingerprint(research, entry_mode="limit") == "7e35ebf8038d643114c5e238"
+    assert strategy_fingerprint(research, entry_mode="limit") == "1d8965ceeb0f5d424aa103d3"
     assert TARGET_POLICY.policy_fingerprint == "428de2dc0b33923a909d8eb3"
     assert TARGET_POLICY.reference_equity == 2000.0
     assert TARGET_POLICY.target_pnl == 100.0

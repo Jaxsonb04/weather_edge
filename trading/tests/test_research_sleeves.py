@@ -314,8 +314,11 @@ def test_live_account_cutover_preserves_strategy_fingerprints() -> None:
     # a StrategyConfig field.
     # v7 rotates behavior again for forecast validity and shared exit depth.
     # The November 7 capital decision changes only paper_bankroll in these pins.
-    assert strategy_fingerprint(config, entry_mode="limit") == "3125d138f5c7d8b49982c841"
-    assert strategy_fingerprint(config, entry_mode="market") == "e7d59c3e8d78db644a3d4c5b"
+    # behavior-v6 (2026-11-09, Apple forecast nudge) moved them again; under
+    # behavior-v5 they were 3125d138f5c7d8b49982c841 / e7d59c3e8d78db644a3d4c5b,
+    # non-SFO 14f08838b5be66ff0ce62366, research 7e35ebf8038d643114c5e238.
+    assert strategy_fingerprint(config, entry_mode="limit") == "24319aeda35fdd71e5c977e5"
+    assert strategy_fingerprint(config, entry_mode="market") == "b3eddca68a4f4fd29d69fa7a"
     # Production stamps rows PER CITY: strategy_lab/build.py keys live readiness
     # by strategy_fingerprint(config_for_city(live_config, city)), and
     # config_for_city leaves SFO alone but changes the other cities. So the 19
@@ -327,14 +330,14 @@ def test_live_account_cutover_preserves_strategy_fingerprints() -> None:
         city.slug: strategy_fingerprint(config_for_city(config, city), entry_mode="limit")
         for city in CITIES
     }
-    assert live_by_city.pop("sfo") == "3125d138f5c7d8b49982c841"
+    assert live_by_city.pop("sfo") == "24319aeda35fdd71e5c977e5"
     assert len(live_by_city) == 19
-    assert set(live_by_city.values()) == {"14f08838b5be66ff0ce62366"}
+    assert set(live_by_city.values()) == {"a808d56c85fbddd5e4a094bd"}
     research = strategy_config_for_profile("research")
     assert {
         strategy_fingerprint(config_for_city(research, city), entry_mode="limit")
         for city in CITIES
-    } == {"7e35ebf8038d643114c5e238"}
+    } == {"1d8965ceeb0f5d424aa103d3"}
 
 
 def test_target_attainment_locks_only_target_allocation_while_motion_continues() -> None:
@@ -1391,7 +1394,7 @@ def test_live_recording_uses_fresh_account_and_preserves_fingerprints(
     # Rotated 2026-09-07 with STRATEGY_BEHAVIOR_VERSION and moved again on
     # 2026-09-13 by the `limit_taker_cross_max_levels` config field; see
     # test_live_account_cutover_preserves_strategy_fingerprints.
-    assert row["strategy_fingerprint"] == "e7d59c3e8d78db644a3d4c5b"
+    assert row["strategy_fingerprint"] == "b3eddca68a4f4fd29d69fa7a"
 
 
 def test_atomic_admission_rejects_objective_day_pause_bypass(tmp_path: Path) -> None:

@@ -892,15 +892,16 @@ def test_m1_identity_is_pinned_to_this_release_and_independent_of_its_versions(
 ) -> None:
     """The M1 fingerprint is computed by this release and never rotates with it.
 
-    This release stamps orders with exec-v5 and runs strategy behavior-v5,
-    which moved the live and research strategy fingerprints. M1's policy
+    This release stamps orders with exec-v5 and runs strategy behavior-v6
+    (the Apple forecast nudge), which moved the live and research strategy
+    fingerprints. M1's policy
     fingerprint hashes only its pre-registered constants, so it is the same
     value for the new capital decision, and a later release-wide version bump
     cannot orphan M1's open lots from their published book.
     """
 
     assert EXECUTION_MODEL_VERSION == "exec-v5-2026-10-05"
-    assert STRATEGY_BEHAVIOR_VERSION == "behavior-v5-audit-admission-2026-11-07"
+    assert STRATEGY_BEHAVIOR_VERSION == "behavior-v6-apple-forecast-2026-11-09"
     assert m1.M1_POLICY.policy_fingerprint == "f0258953ff7eb55a1e9318b4"
     import sfo_kalshi_quant.account as account_module
     import sfo_kalshi_quant.maker_fills as maker_fills_module
