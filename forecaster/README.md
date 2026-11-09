@@ -41,8 +41,9 @@ research challengers and paired evidence. Historical legacy blend tables are
 not proof that the current orchestrator keeps permanently archiving raw Google
 weather. Public artifacts undergo provider-field checks.
 
-Apple WeatherKit stays outside serving, EMOS training and trading decisions.
-Its temporary cache has provider-expiry and purge boundaries. Read
+Apple WeatherKit, when enabled, nudges next-day+ live EMOS means with a fixed,
+capped rule (`emos_forecast.py --apple-score` compares with/without). It stays
+outside EMOS training. Its retired refresh cache keeps provider-expiry and purge boundaries. Read
 [APPLE-WEATHERKIT.md](../docs/APPLE-WEATHERKIT.md) before using it for research;
 retrospective conditions are not original forecast vintages.
 

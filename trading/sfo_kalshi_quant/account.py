@@ -69,7 +69,9 @@ ACCOUNTING_POLICY_VERSION = "acct-v4-account-scoped-2026-07-14"
 # Rotated to behavior-v5 for the 2026-11-07 audit fixes, which change Live
 # admission: directional spend counts partial closes and reservations, and the
 # allocator charges what placement can book.
-STRATEGY_BEHAVIOR_VERSION = "behavior-v5-audit-admission-2026-11-07"
+# Rotated to behavior-v6 for the 2026-11-09 Apple WeatherKit nudge (50%, capped
+# at 3.5F) on next-day+ live forecasts, which Live and research trade on.
+STRATEGY_BEHAVIOR_VERSION = "behavior-v6-apple-forecast-2026-11-09"
 WEEKLY_RETURN_TARGET = 0.05
 WEEKLY_GOAL_TZ = ZoneInfo("America/Los_Angeles")
 WEEKLY_GOAL_ROLLOVER = time(0, 0)

@@ -112,8 +112,8 @@ Google Weather runs through a budgeted, provider-expiring private runtime store.
 The scheduled orchestrator serves the non-Google baseline first. Research
 challengers and legacy SFO interfaces have explicit boundaries; optional source
 availability does not establish a promoted forecast improvement. Apple
-WeatherKit is a temporary private shadow source with zero live weight; see
-[its boundary](docs/APPLE-WEATHERKIT.md). Neither provider's historical conditions
+WeatherKit, when enabled, nudges next-day and later forecasts with a fixed,
+capped weight that is recorded for scoring; see [its boundary](docs/APPLE-WEATHERKIT.md). Neither provider's historical conditions
 should be treated as an original decision-time forecast vintage.
 
 Scheduled entry uses `portfolio-scan`: Live Stability and V7 reservation-price

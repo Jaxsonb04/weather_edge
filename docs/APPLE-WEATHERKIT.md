@@ -1,18 +1,33 @@
-# Apple WeatherKit Research Source
+# Apple WeatherKit Source
 
 ## Current State
 
-WeatherEdge has a credential-ready Apple WeatherKit REST source for all twenty
-settlement stations. It is disabled by default, has **zero live trading
-weight**, and has not been deployed to production as of 2026-08-10. Enabling
-the source fetches data; it does not change the NWP→EMOS forecast, calibrated
-market probabilities, risk gates, sizing, or paper decisions.
+Owner decision, 2026-11-09 (personal paper-trading project; the owner accepts
+the license gray area described below): Apple WeatherKit nudges the live
+forecast with a **fixed, capped weight**, and every nudge is recorded so it can
+be scored. It is off until `ENABLE_APPLE_WEATHER=1` and the credentials below
+are set on the server.
 
-This separation is deliberate. A new provider is a hypothesis, not an edge.
-The trading decision remains the calibrated WeatherEdge probability versus the
-market price after fees, uncertainty, liquidity, and risk gates. Apple can only
-be promoted after it demonstrates incremental out-of-sample value rather than
-duplicating information already present in the NWP ensemble.
+How it works (`forecaster/emos_forecast.py`):
+
+- Each live EMOS serve fetches Apple in memory (`apple_weatherkit.live_highs`),
+  one call per city, 5 s timeout, at most 60 s of Apple calls per run. A failed
+  or slow city simply serves without Apple.
+- Only next-day and later targets take Apple. Same-day targets never do: they
+  belong to the intraday path, and Apple's current day is incomplete anyway.
+- The rule (`apple_weatherkit.apple_nudge_f`): move the EMOS mean 50% toward
+  Apple's station-day high, never more than 3.5°F, and ignore Apple when it
+  disagrees by 7°F or more. Sigma is unchanged. 50% was the owner's choice; it
+  makes Apple count as much as all the NWP models combined.
+- The nudged mean is what trading and the public JSON see. The serve's
+  `forecast_emos_live_vintages.serve_policy_json` records `apple_adjustment_f`
+  and `apple_action`, so the baseline is always `predicted_high_f - apple_adjustment_f`.
+- `python emos_forecast.py --apple-score` prints, per lead, settled MAE with
+  and without Apple on the same vintages. Raw Apple highs are never stored.
+
+The weight is a guess, not a fit. Read `--apple-score` after a few weeks of
+settled days; if "with" is not clearly below "without", set
+`ENABLE_APPLE_WEATHER=0`.
 
 ## Runtime Contract
 
@@ -35,9 +50,10 @@ duplicating information already present in the NWP ensemble.
 - emits counts and status only, never Apple temperatures, tokens, response
   bodies, credential identifiers, or key paths.
 
-The source never writes Apple values to `weather.db`,
+The source never writes raw Apple values to `weather.db`,
 `nwp_model_forecasts`, forecast archives, paper-decision snapshots, model
-training data, or public JSON. In particular, inserting Apple rows into
+training data, or public JSON. The only Apple-derived values stored are the
+nudged live mean and its `apple_adjustment_f` (see Current State). Inserting Apple rows into
 `nwp_model_forecasts` would silently alter EMOS fitting and is prohibited by
 the release boundary.
 
@@ -95,11 +111,10 @@ database, while caching is allowed only on a temporary and limited basis to
 improve WeatherKit API performance. Consequently, WeatherEdge does not retain
 Apple-only forecast vintages or residuals for historical scoring.
 
-That prevents an honest long-horizon promotion study today. Durable Apple
-forecast evidence, Apple-specific error histories, inferred residuals, and any
-nonzero model/trading weight remain deliberately deferred until Apple gives
-written clarification or qualified counsel approves a compliant evidence
-design. WeatherKit authentication and endpoint behavior should continue to be
+The 2026-11-09 fixed weight stores the Apple-derived nudge per served forecast,
+which this conservative reading treats as an inferred residual. The owner chose
+to accept that for a personal, non-commercial paper project. Raw Apple highs and
+the runtime cache rules above are unchanged. WeatherKit authentication and endpoint behavior should continue to be
 checked against Apple's official
 [request-authentication](https://developer.apple.com/documentation/WeatherKitRESTAPI/request-authentication-for-weatherkit-rest-api)
 and

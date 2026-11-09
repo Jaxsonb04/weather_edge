@@ -347,9 +347,9 @@ def test_existing_policy_and_strategy_fingerprints_are_unchanged() -> None:
     assert MOTION_POLICY.policy_fingerprint == "1c50d872ce278b403a6ad80e"
     live = strategy_config_for_profile("live")
     research = strategy_config_for_profile("research")
-    assert strategy_fingerprint(live, entry_mode="limit") == "3125d138f5c7d8b49982c841"
-    assert strategy_fingerprint(live, entry_mode="market") == "e7d59c3e8d78db644a3d4c5b"
-    assert strategy_fingerprint(research, entry_mode="limit") == "7e35ebf8038d643114c5e238"
+    assert strategy_fingerprint(live, entry_mode="limit") == "24319aeda35fdd71e5c977e5"
+    assert strategy_fingerprint(live, entry_mode="market") == "b3eddca68a4f4fd29d69fa7a"
+    assert strategy_fingerprint(research, entry_mode="limit") == "1d8965ceeb0f5d424aa103d3"
 
 
 def test_pinned_risk_limits_match_the_research_profile_they_were_copied_from() -> None:

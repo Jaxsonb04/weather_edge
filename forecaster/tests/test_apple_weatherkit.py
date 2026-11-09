@@ -920,3 +920,42 @@ def test_malformed_optional_daily_product_does_not_hide_hourly_high(tmp_path) ->
     assert snapshot.hourly_high_f == pytest.approx(68.0)
     assert snapshot.daily_high_f is None
     assert snapshot.expires_at == datetime(2026, 7, 18, 20, 0, tzinfo=timezone.utc)
+
+
+def test_live_highs_keep_only_complete_unexpired_rows_and_client_timeout_is_capped(
+    monkeypatch,
+) -> None:
+    import apple_weatherkit as aw
+
+    now = datetime.now(timezone.utc)
+
+    def snap(day, *, complete=True, expires=timedelta(minutes=30)):
+        return AppleHighSnapshot(
+            city_slug="sfo", station_id="KSFO", target_date=day, fetched_at=now,
+            issued_at=now, expires_at=now + expires, hourly_high_f=70.0,
+            daily_high_f=None, covered_hours=24, complete=complete,
+        )
+
+    class FakeClient:
+        def fetch(self, city, *, now, now_provider):
+            return (
+                snap("2026-01-01"),
+                snap("2026-01-02", complete=False),
+                snap("2026-01-03", expires=timedelta(seconds=-1)),
+            )
+
+    assert aw.live_highs(FakeClient(), get_city("sfo")) == {"2026-01-01": 70.0}
+
+    key = "key.p8"
+    for name, value in {
+        "ENABLE_APPLE_WEATHER": "1",
+        "APPLE_WEATHER_TEAM_ID": "t",
+        "APPLE_WEATHER_SERVICE_ID": "s",
+        "APPLE_WEATHER_KEY_ID": "k",
+        "APPLE_WEATHER_PRIVATE_KEY_PATH": key,
+        "APPLE_WEATHER_HTTP_TIMEOUT_SECONDS": "99",
+    }.items():
+        monkeypatch.setenv(name, value)
+    assert aw.client_from_env(max_timeout_seconds=5)._timeout == 5
+    monkeypatch.setenv("ENABLE_APPLE_WEATHER", "0")
+    assert aw.client_from_env() is None

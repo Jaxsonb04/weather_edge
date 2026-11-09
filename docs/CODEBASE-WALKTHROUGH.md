@@ -274,7 +274,7 @@ despite partial extraction into `store/`.
 | Open-Meteo current, previous-runs, ensemble, and archive APIs | Multi-model hourly/daily forecast inputs | Public read; coverage and cycle identity matter |
 | NOAA NCEI/NOMADS | Historical/research weather datasets | Public read; mainly backfill/research paths |
 | Google Weather | Paid current/hourly/daily research data | Budgeted request ledger; content kept in private TTL storage |
-| Apple WeatherKit | Temporary all-city shadow forecasts | ES256 in memory; redirect refusal; provider-expiring private cache; zero weight |
+| Apple WeatherKit | Fixed, capped nudge on next-day+ live EMOS means (when enabled) | ES256 in memory; redirect refusal; raw highs never stored; nudge recorded for `--apple-score` |
 | Prediction-market public API | Events, bracket markets, order books, and public trades | Unauthenticated read path only; live order client intentionally absent |
 | GitHub/GitHub Pages | Source/CI and published static dashboard branch | Publisher promotes a coherent manifest-stamped snapshot |
 | AWS EC2/systemd/S3 | Runtime processes, durable SQLite, archives, backups | Operator-only; sensitive details stay in ignored local state |
@@ -322,11 +322,10 @@ implementation details.
 - Official final NWS CLI truth settles positions; raw observations do not.
 - SFO is the flagship evidence base; the other 19 cities have a shorter
   operational history and should not inherit SFO claims automatically.
-- Apple currently has zero model/trading weight and a strict non-durable
-  boundary. The owner has directed that the later batch give Apple a genuine
-  path into the combined forecast to improve accuracy. D001-D002 in the review
-  dialogue record that accepted direction; exact weight, uncertainty handling,
-  evidence, and rollout remain open design work.
+- Apple, when enabled, nudges next-day+ live forecasts with a fixed, capped
+  weight (2026-11-09, following the owner direction in D001-D002). The weight
+  is a guess; each nudge is recorded and `emos_forecast.py --apple-score` shows
+  whether it helps. Raw Apple highs are never stored.
 - AWS-generated data is production authority after sync; ignored local state is
   disposable.
 
