@@ -32,8 +32,8 @@ strength and must stay labeled.
 SFO retains optional legacy blend/residual adapters and offline ML research.
 Their historical scores do not describe every serving city or today's method.
 Google's orchestrator serves the all-city non-Google baseline first, then uses
-budgeted private expiring provider storage. Apple remains a temporary shadow
-source with no live weight. Provider-data retention and promotion boundaries
+budgeted private expiring provider storage. Apple, when enabled, nudges next-day+
+live means with a fixed, capped, recorded weight. Provider-data retention and promotion boundaries
 are documented in [data and artifacts](data_and_artifacts.md) and
 [WeatherKit](APPLE-WEATHERKIT.md).
 

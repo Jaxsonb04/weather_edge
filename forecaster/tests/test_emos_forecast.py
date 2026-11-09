@@ -14,6 +14,7 @@ from emos_forecast import (
     main,
     serve_live_emos,
 )
+import city_truth
 from nwp_archive import ensure_schema as ensure_nwp_schema
 from nwp_archive import upsert_forecasts
 
@@ -751,3 +752,68 @@ def test_serve_live_emos_applies_trailing_bias_recalibration(monkeypatch):
     # correction is exactly 2.0 * 45/55 and sigma is untouched (bias-only).
     assert abs((raw[0] - recal[0]) - 2.0 * 45 / 55) < 1e-9
     assert abs(raw[1] - recal[1]) < 1e-9
+
+
+def test_apple_nudge_is_fixed_capped_recorded_and_scored(monkeypatch):
+    import emos_forecast as ef
+
+    conn = sqlite3.connect(":memory:")
+    _seed(conn)
+    target = date(2024, 6, 1)
+    monkeypatch.setattr(ef, "_settlement_today", lambda city=ef.DEFAULT_CITY: target - timedelta(days=1))
+    live = {"gfs_seamless": 71.0, "ecmwf_ifs025": 70.0, "ncep_nbm_conus": 72.0}
+    base, sigma = serve_live_emos(conn, target, live_models=live, recalibrate=False)
+
+    # A 7F+ disagreement leaves the forecast alone; a 4F gap moves it 50% (2.0F).
+    blocked, _ = serve_live_emos(conn, target, live_models=live, recalibrate=False, apple_high_f=base + 20)
+    nudged, nudged_sigma = serve_live_emos(conn, target, live_models=live, recalibrate=False, apple_high_f=base + 4)
+    assert blocked == base
+    assert abs(nudged - (base + 2.0)) < 1e-9 and nudged_sigma == sigma
+    # Once the target is today (e.g. the run crossed midnight), Apple is ignored.
+    monkeypatch.setattr(ef, "_settlement_today", lambda city=ef.DEFAULT_CITY: target)
+    same_day, _ = serve_live_emos(conn, target, live_models=live, recalibrate=False, apple_high_f=base + 4)
+    assert same_day == base
+    assert ef.apple_weatherkit.apple_nudge_f(70.0, float("nan")) is None  # bad input never moves mu
+
+    truth = round(base) + 2
+    city_truth.upsert_settlement(conn, "KSFO", target.isoformat(), truth)
+    (row,) = ef.apple_score(conn).values()
+    # One station-day; its two Apple vintages (skipped, nudged) are averaged.
+    assert row["n"] == 1 and row["applied"] == 1
+    assert abs(row["mae_without"] - abs(base - truth)) < 1e-9
+    assert abs(row["mae_with"] - (abs(base - truth) + abs(base + 2.0 - truth)) / 2) < 1e-9
+
+
+def test_serve_rolling_passes_apple_highs_and_survives_failure(tmp_path, monkeypatch):
+    import apple_weatherkit
+    import emos_forecast as ef
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        ef, "serve_live_emos",
+        lambda conn, target, *, store_lead_days=None, apple_high_f=None, **kw: (
+            calls.append((store_lead_days, apple_high_f)) or (70.0, 3.0)
+        ),
+    )
+    monkeypatch.setattr(apple_weatherkit, "client_from_env", lambda **kw: object())
+    monkeypatch.setattr(ef, "fetch_live_model_forecasts_multi", lambda **_kw: {})
+    db_path = tmp_path / "weather.db"
+    _mark_onboarded(db_path, ["KSFO"])
+    today = ef._settlement_today()
+    highs = {(today + timedelta(days=d)).isoformat(): 80.0 + d for d in range(3)}
+
+    monkeypatch.setattr(apple_weatherkit, "live_highs", lambda client, city: highs)
+    out = io.StringIO()
+    with redirect_stdout(out):
+        assert ef.main(["--db", str(db_path), "--serve-rolling", "--cities", "sfo"]) == 0
+    assert calls == [(0, 80.0), (1, 81.0), (2, 82.0)]  # serve_live_emos drops same-day
+    assert "apple_cities=1" in out.getvalue()
+
+    def fail(client, city):
+        raise apple_weatherkit.WeatherKitError("down")
+
+    calls.clear()
+    monkeypatch.setattr(apple_weatherkit, "live_highs", fail)
+    with redirect_stdout(io.StringIO()):
+        assert ef.main(["--db", str(db_path), "--serve-rolling", "--cities", "sfo"]) == 0
+    assert calls == [(0, None), (1, None), (2, None)]

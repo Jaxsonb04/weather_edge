@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Temporary Apple WeatherKit forecast source for WeatherEdge.
+"""Apple WeatherKit forecast source for WeatherEdge.
 
-Apple's WeatherKit terms prohibit building a secondary historical database
-from Apple Weather Data.  This module therefore keeps only the current,
-normalized station-day high in a mode-0600 runtime cache and expires it at the
-earliest ``metadata.expireTime`` of the products used to derive it.  It never
-writes Apple values to ``weather.db`` or a public artifact.
+``live_highs`` feeds the live EMOS serve in memory: emos_forecast.py nudges
+next-day+ forecasts toward Apple with a fixed, capped rule and records the
+nudge in the live forecast evidence so it can be scored (docs/APPLE-WEATHERKIT.md).
+Raw Apple highs themselves are never written to ``weather.db``.  The retired
+refresh CLI below keeps only the current normalized station-day high in a
+mode-0600 runtime cache and expires it at the earliest ``metadata.expireTime``.
 """
 
 from __future__ import annotations
@@ -748,6 +749,69 @@ def _credentials_from_env() -> WeatherKitCredentials | None:
     )
 
 
+def client_from_env(
+    *,
+    transport=_weatherkit_urlopen,
+    now_provider: Callable[[], datetime] | None = None,
+    max_timeout_seconds: int = 15,
+) -> WeatherKitClient | None:
+    """A WeatherKit client when Apple is enabled and fully configured, else None."""
+
+    credentials = _credentials_from_env()
+    if not _env_enabled("ENABLE_APPLE_WEATHER") or credentials is None:
+        return None
+    ttl_seconds = _env_int(
+        "APPLE_WEATHER_TOKEN_TTL_SECONDS", 900, minimum=120, maximum=3600
+    )
+    timeout = _env_int(
+        # Sequential city calls must remain inside the caller's deadline even
+        # when every endpoint times out.
+        "APPLE_WEATHER_HTTP_TIMEOUT_SECONDS",
+        max_timeout_seconds,
+        minimum=1,
+        maximum=max_timeout_seconds,
+    )
+    token_provider = WeatherKitTokenProvider(
+        credentials,
+        now_provider=now_provider,
+        ttl=timedelta(seconds=ttl_seconds),
+    )
+    return WeatherKitClient(
+        token_provider=token_provider.token,
+        transport=transport,
+        timeout=timeout,
+    )
+
+
+# Fixed, unfitted nudge toward Apple (owner's choice, 2026-11-09). With the 7F
+# skip, the largest real move is 0.5 * 7 = 3.5F.
+APPLE_SHARE = 0.5
+APPLE_CAP_F = 3.5
+APPLE_SKIP_GAP_F = 7.0
+
+
+def apple_nudge_f(mu: float, apple_high_f: float) -> float | None:
+    """How far to move the EMOS mean toward Apple; None when Apple disagrees by 7F+."""
+
+    gap = apple_high_f - mu
+    if not math.isfinite(gap) or abs(gap) >= APPLE_SKIP_GAP_F:
+        return None
+    return max(-APPLE_CAP_F, min(APPLE_CAP_F, APPLE_SHARE * gap))
+
+
+def live_highs(client: WeatherKitClient, city: CityConfig) -> dict[str, float]:
+    """Complete, unexpired Apple station-day highs by target date, in memory only."""
+
+    clock = lambda: datetime.now(timezone.utc)
+    rows = client.fetch(city, now=clock(), now_provider=clock)
+    accepted_at = clock()  # a slow response must not deliver an already-expired high
+    return {
+        row.target_date: row.hourly_high_f
+        for row in rows
+        if row.complete and row.expires_at > accepted_at
+    }
+
+
 def run_cli(
     argv: Sequence[str] | None = None,
     *,
@@ -795,27 +859,7 @@ def run_cli(
         )
         return 2
 
-    ttl_seconds = _env_int(
-        "APPLE_WEATHER_TOKEN_TTL_SECONDS", 900, minimum=120, maximum=3600
-    )
-    timeout = _env_int(
-        # Fifteen sequential city calls must remain inside the service's
-        # five-minute deadline even when every endpoint times out.
-        "APPLE_WEATHER_HTTP_TIMEOUT_SECONDS",
-        15,
-        minimum=1,
-        maximum=15,
-    )
-    token_provider = WeatherKitTokenProvider(
-        credentials,
-        now_provider=now_provider,
-        ttl=timedelta(seconds=ttl_seconds),
-    )
-    client = WeatherKitClient(
-        token_provider=token_provider.token,
-        transport=transport,
-        timeout=timeout,
-    )
+    client = client_from_env(transport=transport, now_provider=now_provider)
     try:
         cities = parse_city_slugs(args.cities)
     except (KeyError, ValueError):

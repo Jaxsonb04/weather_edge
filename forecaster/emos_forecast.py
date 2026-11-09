@@ -19,12 +19,15 @@ initialization and hourly completeness remain unknown for daily-only responses.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import sqlite3
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 
+import apple_weatherkit
 from cities import CITIES, CityConfig, get_city, parse_city_slugs
 from emos_recalibration import correction_for_serve
 from emos_sources import ROLLING_ORIGIN_V2_SOURCE
@@ -57,6 +60,8 @@ DEFAULT_SOURCE = ROLLING_ORIGIN_V2_SOURCE
 def _method_tag(weight_mode: str) -> str:
     return "emos_wmean" if weight_mode == "inv_var" else "emos_ngr"
 LIVE_SOURCE = "live"
+# Total seconds one serve run may spend on WeatherKit calls (slow or failing).
+APPLE_TIME_BUDGET_SECONDS = 60
 OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 
 # Serve-time trailing recalibration toggles (emos_recalibration.py). Bias
@@ -424,6 +429,7 @@ def serve_live_emos(
     weight_mode: str = DEFAULT_WEIGHT_MODE,
     store_lead_days: int | None = None,
     recalibrate: bool = True,
+    apple_high_f: float | None = None,
 ) -> tuple[float, float] | None:
     """Fit EMOS on all settled history strictly before ``target_date`` and apply
     it to the current-run multi-model forecast, persisting (mu, sigma).
@@ -445,6 +451,11 @@ def serve_live_emos(
     serve input is the current run -- biases are dominated by lead-invariant model
     offsets. The immutable live evidence now preserves current-run inputs so a
     future replay can measure this train/serve mismatch. It does not remove it.
+
+    ``apple_high_f`` (an Apple WeatherKit station-day high, when available)
+    nudges the final mean of a future-day target with the fixed rule in
+    ``apple_weatherkit.apple_nudge_f``; the nudge is recorded in the live evidence so
+    ``--apple-score`` can compare with/without.
     """
 
     ensure_schema(conn)
@@ -506,6 +517,20 @@ def serve_live_emos(
         )
         mu, sigma = correction.apply(mu, sigma)
 
+    serve_policy = {
+        "bias_recalibration": recalibrate and SERVE_RECAL_BIAS,
+        "sigma_recalibration": recalibrate and SERVE_RECAL_SIGMA,
+        "borrowed_lead_sigma_scale": _borrowed_lead_sigma_scale(station, stored_lead, lead_days),
+    }
+    # Same-day targets never take Apple (checked now, so a run that crosses
+    # settlement midnight cannot nudge what has become today's market).
+    if apple_high_f is not None and target_date > _settlement_today(city):
+        # 50% toward Apple, capped at 3.5F, ignored on a 7F+ disagreement. Sigma unchanged.
+        nudge = apple_weatherkit.apple_nudge_f(mu, apple_high_f)
+        mu += nudge or 0.0
+        serve_policy["apple_adjustment_f"] = nudge or 0.0
+        serve_policy["apple_action"] = "skipped_disagreement" if nudge is None else "applied"
+
     stamp = fetched_at or datetime.now(timezone.utc).isoformat(timespec="microseconds")
     record_live_forecast(
         conn, city=city, target_date=target_date, recorded_at=stamp,
@@ -513,9 +538,7 @@ def serve_live_emos(
         fit_lead_days=lead_days, legacy_lead_days=stored_lead, method=_method_tag(weight_mode),
         training=training,
         fit_params={name: getattr(params, name) for name in params.__slots__},
-        serve_policy={"bias_recalibration": recalibrate and SERVE_RECAL_BIAS,
-                      "sigma_recalibration": recalibrate and SERVE_RECAL_SIGMA,
-                      "borrowed_lead_sigma_scale": _borrowed_lead_sigma_scale(station, stored_lead, lead_days)},
+        serve_policy=serve_policy,
     )
     conn.execute(
         """
@@ -608,6 +631,56 @@ def awaiting_onboarding(conn: sqlite3.Connection, city: CityConfig) -> int | Non
 ROLLING_SERVE_DAYS = 3
 
 
+def apple_score(conn: sqlite3.Connection) -> dict[int, dict[str, float]]:
+    """Settled MAE per lead of Apple-nudged live forecasts vs their own baselines.
+
+    Every vintage served with an Apple high is paired with itself minus its
+    nudge, so both arms share issuance, target and truth. Paired errors are
+    averaged within each (station, target, lead) first, so a station-day counts
+    once however many refreshes it had.
+    """
+
+    if not conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='forecast_emos_live_vintages'"
+    ).fetchone():
+        return {}
+    vintages: dict[tuple[str, str, int], list[tuple[float, float]]] = {}
+    for station, target, lead, mu, policy in conn.execute(
+        "SELECT station_id, target_date, lead_days, predicted_high_f, serve_policy_json "
+        "FROM forecast_emos_live_vintages WHERE serve_policy_json LIKE '%apple_adjustment_f%'"
+    ):
+        adjustment = json.loads(policy).get("apple_adjustment_f")
+        if adjustment is not None:
+            vintages.setdefault((station, target, lead), []).append((mu, adjustment))
+    truth_by_station: dict[str, dict[str, float]] = {}
+    out: dict[int, dict[str, float]] = {}
+    for (station, target, lead), pairs in vintages.items():
+        truth = truth_by_station.setdefault(station, load_clisfo_truth(conn, station))
+        if target not in truth:
+            continue
+        actual = truth[target]
+        row = out.setdefault(lead, {"n": 0, "applied": 0, "mae_without": 0.0, "mae_with": 0.0})
+        row["n"] += 1
+        row["applied"] += any(adjustment != 0.0 for _mu, adjustment in pairs)
+        row["mae_without"] += sum(abs(mu - adj - actual) for mu, adj in pairs) / len(pairs)
+        row["mae_with"] += sum(abs(mu - actual) for mu, _adj in pairs) / len(pairs)
+    for row in out.values():
+        row["mae_without"] /= row["n"]
+        row["mae_with"] /= row["n"]
+    return out
+
+
+def print_apple_score(conn: sqlite3.Connection) -> None:
+    scores = apple_score(conn)
+    if not scores:
+        print("apple score: no settled Apple-nudged forecasts yet")
+    for lead, row in sorted(scores.items()):
+        print(
+            f"apple score lead {lead}: n={row['n']} applied={row['applied']} "
+            f"MAE without={row['mae_without']:.2f}F with={row['mae_with']:.2f}F"
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", default=str(DB_PATH))
@@ -620,7 +693,16 @@ def main(argv: list[str] | None = None) -> int:
         help="serve live EMOS for today..today+2 (the scan's rolling window)",
     )
     parser.add_argument("--cities", default="all", help="'all' or comma slugs (e.g. sfo,nyc)")
+    parser.add_argument(
+        "--apple-score",
+        action="store_true",
+        help="print settled MAE of live forecasts with vs without the Apple nudge",
+    )
     args = parser.parse_args(argv)
+    if args.apple_score:
+        with sqlite3.connect(args.db, timeout=30) as conn:
+            print_apple_score(conn)
+        return 0
     if not (args.backfill or args.serve or args.serve_rolling):
         parser.error("nothing to do; pass --backfill, --serve, or --serve-rolling")
 
@@ -652,6 +734,16 @@ def main(argv: list[str] | None = None) -> int:
         # 5-day NWP window needs to reach EMOS_MIN_TRAIN, while the other
         # cities' rows were written normally.
         awaiting: list[str] = []
+        # Apple is fetched in-process (its data expires within about an hour, so
+        # a separate refresh cache is empty most of the time). A short timeout and
+        # a total time budget keep the serve inside its 300 s subprocess deadline.
+        apple_client = (
+            apple_weatherkit.client_from_env(max_timeout_seconds=5)
+            if args.serve or args.serve_rolling
+            else None
+        )
+        apple_deadline = time.monotonic() + APPLE_TIME_BUDGET_SECONDS
+        apple_cities = 0
         for city in cities:
             if args.serve or args.serve_rolling:
                 pending = awaiting_onboarding(conn, city)
@@ -694,6 +786,13 @@ def main(argv: list[str] | None = None) -> int:
                 if any(lead >= 0 for _, lead in serve_targets)
                 else {}
             )
+            apple_highs: dict[str, float] = {}
+            if apple_client is not None and time.monotonic() < apple_deadline:
+                try:
+                    apple_highs = apple_weatherkit.live_highs(apple_client, city)
+                    apple_cities += bool(apple_highs)
+                except apple_weatherkit.WeatherKitError:
+                    print(f"apple weather [{city.slug}]: unavailable, serving without it")
 
             for target, lead in serve_targets:
                 result = (
@@ -706,6 +805,7 @@ def main(argv: list[str] | None = None) -> int:
                         lead_days=max(lead, 1),
                         store_lead_days=lead,
                         live_models=live_models_by_target.get(target, {}),
+                        apple_high_f=apple_highs.get(target.isoformat()),
                     )
                     if lead >= 0
                     else None
@@ -726,7 +826,7 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"live EMOS rolling summary: served={served} targets={total_targets} "
                 f"cities={len(cities)} leads=0..{ROLLING_SERVE_DAYS - 1} "
-                f"awaiting={len(awaiting)}"
+                f"awaiting={len(awaiting)} apple_cities={apple_cities}"
             )
         # A scheduled serve is only healthy when every requested city/target
         # was refreshed. Partial coverage is still a forecast outage: a single
