@@ -4,7 +4,7 @@ Last updated: 2026-11-11 (backend at `db34b8a80`, web at `d24005332`; public sit
 
 Last complete production verification: 2026-11-09 19:55 UTC (build record, 13 timers, no failed units, Apple nudges in live vintages, public manifest, job exits)
 
-Last partial production check: 2026-11-11 03:00 UTC (13 timers, scans, failed units, disk, public manifest age, Pages job annotations)
+Last partial production check: 2026-11-11 04:01 UTC (Pages deploys, public manifest age, freshness and scheduler health, failed units, 13 timers, live page)
 
 Last public artifact inspection: 2026-11-07 evening (guarded release verified the installed app, Pages deployment and public file hashes at Pages commit `e2e94a357`)
 
@@ -35,9 +35,9 @@ operational claim; all production observations below are dated snapshots.
     Nov 7).
   - **Not WeatherEdge usage:** the billing API shows the free plan, every
     Actions line at net $0 (public repo) and no Copilot premium requests.
-  - **What GitHub shows (read in the owner's signed-in browser, Nov 11):**
-    the Licensing page says "This account is disabled because we have not been
-    able to charge it for another month" and asks for a payment method update.
+  - **What GitHub showed (read in the owner's signed-in browser, Nov 11):**
+    the Licensing page said "This account is disabled because we have not been
+    able to charge it for another month" and asked for a payment method update.
     Security log: Nov 6 01:03 PST `billing.lock` by GitHub System (the academic
     coupon had expired and no payment method was on file, per GitHub's email);
     Nov 6 17:24 PST card added and `billing.unlock`; Nov 9 23:57 PST
@@ -45,8 +45,8 @@ operational claim; all production observations below are dated snapshots.
     was empty, all five $0 budgets showed "Usage blocked", and no GitHub email
     had arrived since Nov 8. The owner fixed billing; the exact failed charge
     was never seen, so the lock could recur.
-  - **Host check, 03:00 UTC Nov 11:** 13 timers, only the freshness unit
-    failed, 288 of 288 scans OK in 24 h, disk 60%. Four Spot stop/starts since
+  - **Host check, 03:00 UTC Nov 11:** 13 timers; the freshness unit was failed
+    and scheduler health had failed 57 times in 24 h; 288 of 288 scans OK in 24 h, disk 60%. Four Spot stop/starts since
     Nov 9 (about a minute each) recovered on their own.
   - **If it recurs:** nothing to run on the host after the unlock. The next
     push triggers the Pages workflow within 10 minutes.
@@ -267,11 +267,11 @@ operational claim; all production observations below are dated snapshots.
   - **Archived V6 and older:** keep their real $1,000 history; never restate
     them. All accounts remain paper only.
 - **November 6 snapshot (billing resolved; capital superseded November 7):**
-  - **Incident, then open:** GitHub locked the owner's account over billing at
+  - **Incident, resolved Nov 7 01:23 UTC:** GitHub locked the owner's account over billing at
     about 09:05 UTC. No Actions job could start, so CI could not run and Pages
     stayed frozen at the 09:02 UTC publication. The host was healthy and kept
-    pushing to `gh-pages`; public-site recovery after billing clearance has
-    not been reverified here.
+    pushing to `gh-pages`. Pages deploys succeeded again from 01:23 UTC Nov 7,
+    after a card was added (see the Nov 10–11 incident above).
   - **Owner decisions (capital superseded November 7):** merge #162 and M1 after
     CI and deploy this one release, paper only. V7 and M1 open at $10,000; Live
     stays $1,000. Archive first, then the nightly job may delete archived,
