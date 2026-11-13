@@ -65,7 +65,10 @@ function ForecastPanel({ city, intradayLock }: { city: City; intradayLock: Intra
   // The flagship signal republishes SFO's settlement-day high after the intraday
   // update, so this panel must show the same number the hero dial does.
   const display = lead ? lockedHigh(city.slug, lead, intradayLock) : null;
-  const fromMarket = lead?.forecast_source === "market";
+  // The flagship number can replace the coverage one, so the label follows whichever is shown.
+  const fromMarket = display?.source === "flagship"
+    ? intradayLock?.market === true
+    : lead?.forecast_source === "market";
 
   return (
     <Card className="h-full min-w-0 rounded-3xl">

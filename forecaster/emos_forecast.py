@@ -536,7 +536,7 @@ def serve_live_emos(
         serve_policy["apple_action"] = "skipped_disagreement" if nudge is None else "applied"
 
     carry, carry_policy = _carry_adjustment(
-        conn, city, target_date, stored_lead, now or datetime.now(timezone.utc)
+        conn, city, target_date, stored_lead, now or datetime.now(timezone.utc), truth
     )
     mu += carry
     serve_policy.update(carry_policy)
@@ -583,7 +583,12 @@ CARRY_MIN_OFFSET_DAYS = 20
 
 
 def _carry_adjustment(
-    conn: sqlite3.Connection, city: CityConfig, target_date: date, stored_lead: int, now: datetime
+    conn: sqlite3.Connection,
+    city: CityConfig,
+    target_date: date,
+    stored_lead: int,
+    now: datetime,
+    truth: dict[str, float],
 ) -> tuple[float, dict]:
     """Evening carry-over for a next-day mean: -0.20 * (yesterday's served mean for
     today - (today's high so far + trailing offset)). Never raises: any data
@@ -639,7 +644,6 @@ def _carry_adjustment(
         today_hsf = hsf(today.isoformat())
         if today_hsf is None:
             return skip("thin_observations")
-        truth = load_clisfo_truth(conn, station)
         gaps = [
             truth[d] - h
             for i in range(1, CARRY_OFFSET_DAYS + 1)

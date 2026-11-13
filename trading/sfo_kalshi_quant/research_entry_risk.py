@@ -27,8 +27,8 @@ TARGET_OPEN_RISK_CHARGE_FRACTION = 0.0
 # Resting maker TTL (2026-09-13). Since 2026-11-12 the v8 target book is
 # taker-only, so the 30 minutes below now reaches only replayed history; the
 # stale-quote guard it once needed was removed.
-# Every book rested 15 minutes. Measured on the research target sleeve: maker fill delays run to 15.4 min and 8 of 43
-# maker fills landed in the LAST 3 minutes of the window, i.e. the fill
+# Every book rested 15 minutes. Measured on the research target sleeve: maker
+# fill delays run to 15.4 min and 8 of 43 maker fills landed in the LAST 3 minutes of the window, i.e. the fill
 # hazard is not exhausted at expiry; and the fresh public tape shows
 # day-ahead seller flow BUILDING through the US evening (22Z-07Z hours each
 # carry 1.5-4x the 14Z open hour, which is only 8.9% of day-ahead volume),

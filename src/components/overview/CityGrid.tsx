@@ -30,6 +30,8 @@ export interface IntradayLock {
   targetDate: string;
   /** The intraday-updated high (°F) — the number the hero dial shows. */
   highF: number;
+  /** True when that high is the flagship's market-implied headline. */
+  market?: boolean;
 }
 
 /** Below this the two artifacts agree at any precision the page renders. */
@@ -42,7 +44,12 @@ export function flagshipIntradayLock(targets: Target[]): IntradayLock | null {
     if (!target.intraday) continue;
     const high = predictedHigh(target);
     if (high == null) continue;
-    return { slug: "sfo", targetDate: target.target_date, highF: high };
+    return {
+      slug: "sfo",
+      targetDate: target.target_date,
+      highF: high,
+      market: target.forecast?.forecast_source === "market",
+    };
   }
   return null;
 }

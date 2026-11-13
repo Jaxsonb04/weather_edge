@@ -441,6 +441,7 @@ def build_cities_data(
     paper_conn = sqlite3.connect(paper_db) if Path(paper_db).exists() else None
     try:
         all_books = _all_city_books(paper_conn, cutoff_iso) if paper_conn is not None else None
+        store = PaperStore(paper_db, init=False) if paper_conn is not None else None
         for city in CITIES:
             city_today = settlement_today(generated_at, city)
             entry: dict = {
@@ -465,7 +466,7 @@ def build_cities_data(
                     city,
                     city_today,
                     forecaster_root=Path(forecaster_root),
-                    store=PaperStore(paper_db, init=False) if paper_conn is not None else None,
+                    store=store,
                     now=generated_at,
                 )
                 entry["latest_settlement"] = _city_settlement(weather_conn, city)
