@@ -592,10 +592,11 @@ def _carry_adjustment(
     def skip(reason: str) -> tuple[float, dict]:
         return 0.0, {"carry_adjustment_f": 0.0, "carry_action": f"skipped_{reason}"}
 
-    if stored_lead != 1 or target_date != _settlement_today(city) + timedelta(days=1):
-        return skip("not_next_day")
     tz = city.fixed_standard_timezone()
     now_lst = now.astimezone(tz)
+    # Today comes from the injected clock, like the hour gate and the observation cutoff.
+    if stored_lead != 1 or target_date != now_lst.date() + timedelta(days=1):
+        return skip("not_next_day")
     if now_lst.hour < CARRY_FROM_HOUR_LST:
         return skip("before_17_lst")
     today = target_date - timedelta(days=1)
@@ -609,8 +610,11 @@ def _carry_adjustment(
         ).fetchone()
         if row is None:
             return skip("no_yesterday_forecast")
-        # Subtract yesterday's Apple nudge so the error measures the model, not the nudge.
-        today_mu = row[0] - (json.loads(row[1]).get("apple_adjustment_f") or 0.0)
+        # Strip yesterday's Apple nudge and own carry so the error measures the model.
+        yesterday = json.loads(row[1])
+        today_mu = row[0] - (yesterday.get("apple_adjustment_f") or 0.0) - (
+            yesterday.get("carry_adjustment_f") or 0.0
+        )
 
         # Offset and today's high-so-far share one cutoff: reports at or before
         # this same local standard clock time on each day.

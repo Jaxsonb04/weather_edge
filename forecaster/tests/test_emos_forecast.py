@@ -965,7 +965,44 @@ def test_evening_carry_skip_reasons_never_change_the_mean(monkeypatch):
 
     # Lead 0 (today) and lead 2 are never carried.
     conn, _ = _carry_setup(monkeypatch)
-    for target, stored in ((date(2024, 5, 31), 0), (date(2024, 6, 2), 2)):
+    for target, stored in ((date(2024, 5, 31), 0), (date(2024, 6, 2), 2), (date(2024, 6, 2), 1)):
         _, policy = _carry_serve(conn, target=target, store_lead_days=stored)
         assert policy["carry_action"] == "skipped_not_next_day"
         assert policy["carry_adjustment_f"] == 0.0
+
+
+def _edit_vintages(conn, sql):
+    # The vintage table is append-only by trigger; tests that need a corrupt row drop them.
+    for (name,) in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='forecast_emos_live_vintages'"
+    ).fetchall():
+        conn.execute(f"DROP TRIGGER {name}")
+    conn.execute(sql)
+
+
+def test_evening_carry_strips_yesterdays_own_carry(monkeypatch):
+    conn, mu_today = _carry_setup(monkeypatch)
+    # Yesterday's vintage was served with Apple +2 (already stripped) and a carry of -1.0.
+    _edit_vintages(
+        conn,
+        "UPDATE forecast_emos_live_vintages SET predicted_high_f=predicted_high_f-1.0, "
+        "serve_policy_json=json_set(serve_policy_json,'$.carry_adjustment_f',-1.0) "
+        "WHERE target_date='2024-05-31' AND recorded_at='2024-05-31T02:01:00+00:00'",
+    )
+    _, policy = _carry_serve(conn)
+    assert abs(policy["carry_today_mu_f"] - mu_today) < 1e-9
+
+
+def test_evening_carry_data_error_skips_without_dropping_the_serve(monkeypatch):
+    conn, _ = _carry_setup(monkeypatch)
+    base, _ = _carry_serve(conn, now="2024-06-01T00:00:00+00:00")
+    _edit_vintages(
+        conn, "UPDATE forecast_emos_live_vintages SET serve_policy_json='not json' WHERE target_date='2024-05-31'"
+    )
+    mu, policy = _carry_serve(conn)
+    assert mu == base and policy["carry_action"] == "skipped_data_error"
+
+    conn, _ = _carry_setup(monkeypatch)
+    conn.execute("UPDATE nws_station_observations SET observed_at='garbage' WHERE rowid=(SELECT MIN(rowid) FROM nws_station_observations WHERE local_date='2024-05-31')")
+    mu, policy = _carry_serve(conn)
+    assert mu == base and policy["carry_action"] == "skipped_data_error"
