@@ -845,3 +845,127 @@ def test_apple_budget_counts_only_apple_time_not_nwp_time(tmp_path, monkeypatch)
     with redirect_stdout(io.StringIO()):
         assert ef.main(["--db", str(db_path), "--serve-rolling", "--cities", "sfo"]) == 0
     assert 80.0 in calls
+
+# --- evening carry-over -----------------------------------------------------
+
+CARRY_TARGET = date(2024, 6, 1)  # next day; "today" is 2024-05-31 (KSFO, UTC-8)
+CARRY_NOW = "2024-06-01T02:00:00+00:00"  # 18:00 local standard time on 2024-05-31
+LIVE = {"gfs_seamless": 71.0, "ecmwf_ifs025": 70.0, "ncep_nbm_conus": 72.0}
+
+
+def _carry_setup(monkeypatch, *, today_bump=4.0, obs_from=date(2024, 3, 1), yesterday=True):
+    """Hourly obs peaking at 70F (hour 15) on past days, CLI final 72F (offset +2);
+    today peaks at 70+today_bump. Yesterday's lead-1 serve for today is stored
+    with an Apple nudge of +2, which the carry must subtract."""
+    import emos_forecast as ef
+    from datetime import datetime, timezone
+    from nws_ground_truth import init_db
+
+    conn = sqlite3.connect(":memory:")
+    _seed(conn)
+    init_db(conn)
+    city_truth.ensure_schema(conn)
+    tz =timezone(timedelta(hours=-8))
+    day = obs_from
+    while day <= date(2024, 5, 31):
+        bump = today_bump if day == date(2024, 5, 31) else 0.0
+        for hour in range(24):
+            at = datetime(day.year, day.month, day.day, hour, tzinfo=tz).astimezone(timezone.utc)
+            conn.execute(
+                "INSERT INTO nws_station_observations VALUES ('KSFO','KSFO',?,?,?,NULL,NULL,'{}','x')",
+                (at.isoformat(), day.isoformat(), 70.0 - abs(hour - 15) + bump),
+            )
+        if day < date(2024, 5, 31):
+            city_truth.upsert_settlement(conn, "KSFO", day.isoformat(), 72)
+        day += timedelta(days=1)
+    conn.commit()
+    today = date(2024, 5, 31)
+    monkeypatch.setattr(ef, "_settlement_today", lambda city=ef.DEFAULT_CITY: today - timedelta(days=1))
+    mu_today = None
+    if yesterday:
+        stamp = "2024-05-31T02:00:00+00:00"  # 18:00 LST on 5/30 -> true lead 1
+        mu_today, _ = serve_live_emos(
+            conn, today, live_models=LIVE, recalibrate=False, fetched_at=stamp, now=_dt(stamp)
+        )
+        serve_live_emos(
+            conn, today, live_models=LIVE, recalibrate=False, apple_high_f=mu_today + 4,
+            fetched_at="2024-05-31T02:01:00+00:00", now=_dt(stamp),
+        )
+    monkeypatch.setattr(ef, "_settlement_today", lambda city=ef.DEFAULT_CITY: today)
+    return conn, mu_today
+
+
+def _dt(iso):
+    from datetime import datetime
+
+    return datetime.fromisoformat(iso)
+
+
+def _carry_serve(conn, now=CARRY_NOW, **kwargs):
+    kwargs.setdefault("target", CARRY_TARGET)
+    target = kwargs.pop("target")
+    result = serve_live_emos(
+        conn, target, live_models=LIVE, recalibrate=False, fetched_at=now, now=_dt(now), **kwargs
+    )
+    (policy,) = conn.execute(
+        "SELECT serve_policy_json FROM forecast_emos_live_vintages WHERE target_date=? "
+        "ORDER BY recorded_at DESC LIMIT 1", (target.isoformat(),)
+    ).fetchone()
+    return result[0], json.loads(policy)
+
+
+def test_evening_carry_adjusts_next_day_mean_and_is_scored(monkeypatch):
+    import emos_forecast as ef
+
+    conn, mu_today = _carry_setup(monkeypatch)
+    base, skipped = _carry_serve(conn, now="2024-06-01T00:00:00+00:00")  # 16:00 LST
+    assert skipped["carry_action"] == "skipped_before_17_lst" and skipped["carry_adjustment_f"] == 0.0
+
+    mu, policy = _carry_serve(conn)
+    # hsf 74 (peak at hour 15 on a +4 day), offset 72 - 70 = 2, Apple's +2 removed from yesterday's mean.
+    e = mu_today - 76.0
+    assert policy["carry_action"] == "applied"
+    assert abs(policy["carry_e_f"] - e) < 1e-9 and policy["carry_hsf_f"] == 74.0
+    assert abs(policy["carry_offset_f"] - 2.0) < 1e-9 and abs(policy["carry_today_mu_f"] - mu_today) < 1e-9
+    assert policy["carry_hour_lst"] == 18.0
+    assert abs(mu - (base - 0.2 * e)) < 1e-9 and abs(policy["carry_adjustment_f"] + 0.2 * e) < 1e-9
+
+    truth = round(base) + 3
+    city_truth.upsert_settlement(conn, "KSFO", CARRY_TARGET.isoformat(), truth)
+    (row,) = ef.apple_score(conn, "carry_adjustment_f").values()
+    # Two vintages (skipped, applied) for one station-day; "without" is mu minus the carry.
+    assert row["n"] == 1 and row["applied"] == 1
+    assert abs(row["mae_without"] - abs(base - truth)) < 1e-9
+    assert abs(row["mae_with"] - (abs(base - truth) + abs(mu - truth)) / 2) < 1e-9
+
+
+def test_evening_carry_is_clipped(monkeypatch):
+    conn, _ = _carry_setup(monkeypatch, today_bump=30.0)
+    base, _ = _carry_serve(conn, now="2024-06-01T00:00:00+00:00")
+    mu, policy = _carry_serve(conn)
+    assert policy["carry_adjustment_f"] == 1.5 and abs(mu - (base + 1.5)) < 1e-9
+
+
+def test_evening_carry_skip_reasons_never_change_the_mean(monkeypatch):
+    conn, _ = _carry_setup(monkeypatch, yesterday=False)
+    base, _ = _carry_serve(conn, now="2024-06-01T00:00:00+00:00")
+    mu, policy = _carry_serve(conn)
+    assert mu == base and policy["carry_action"] == "skipped_no_yesterday_forecast"
+
+    conn, _ = _carry_setup(monkeypatch, obs_from=date(2024, 5, 20))  # 11 prior days < 20
+    base, _ = _carry_serve(conn, now="2024-06-01T00:00:00+00:00")
+    mu, policy = _carry_serve(conn)
+    assert mu == base and policy["carry_action"] == "skipped_thin_offset_history"
+
+    conn, _ = _carry_setup(monkeypatch)
+    conn.execute("DELETE FROM nws_station_observations WHERE local_date='2024-05-31'")
+    base, _ = _carry_serve(conn, now="2024-06-01T00:00:00+00:00")
+    mu, policy = _carry_serve(conn)
+    assert mu == base and policy["carry_action"] == "skipped_thin_observations"
+
+    # Lead 0 (today) and lead 2 are never carried.
+    conn, _ = _carry_setup(monkeypatch)
+    for target, stored in ((date(2024, 5, 31), 0), (date(2024, 6, 2), 2)):
+        _, policy = _carry_serve(conn, target=target, store_lead_days=stored)
+        assert policy["carry_action"] == "skipped_not_next_day"
+        assert policy["carry_adjustment_f"] == 0.0
