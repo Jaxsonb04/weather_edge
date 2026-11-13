@@ -445,3 +445,38 @@ def _target_report(target: str, *, market_available: bool, quality: float, edge_
             }
         ],
     }
+
+
+def test_report_publishes_market_mean_as_headline_and_keeps_model(emos_report_inputs, monkeypatch):
+    target = emos_report_inputs[0]
+
+    def row(label, strike_type, floor, cap, bid, ask):
+        return MarketBin.from_kalshi(
+            {
+                "ticker": f"KXHIGHTSFO-X-{label}", "event_ticker": "KXHIGHTSFO-X",
+                "yes_sub_title": label, "strike_type": strike_type,
+                "floor_strike": floor, "cap_strike": cap,
+                "yes_bid_dollars": bid, "yes_ask_dollars": ask,
+                "no_bid_dollars": round(1 - ask, 2), "no_ask_dollars": round(1 - bid, 2),
+                "status": "active",
+            }
+        )
+
+    event = EventSnapshot(
+        event_ticker="KXHIGHTSFO-X", title="t", target_date=target,
+        markets=[
+            row("T63", "less", 63, 63, 0.19, 0.21),
+            row("B64", "between", 63, 64, 0.59, 0.61),
+            row("G73", "greater", 73, 73, 0.19, 0.21),
+        ],
+    )
+    monkeypatch.setattr(report, "_event_for_report", lambda *args, **kwargs: (event, None))
+    forecast = _build_emos_report(emos_report_inputs, enabled=True)["forecast"]
+    assert forecast["forecast_source"] == "market"
+    assert forecast["predicted_high_f"] == pytest.approx(65.3, abs=0.05)
+    assert forecast["model_high_f"] == 72.0
+
+    # No live event: the fallback paper ladder has no prices, so the model stays.
+    monkeypatch.setattr(report, "_event_for_report", lambda *args, **kwargs: (None, None))
+    fallback = _build_emos_report(emos_report_inputs, enabled=True)["forecast"]
+    assert (fallback["forecast_source"], fallback["predicted_high_f"]) == ("model", 72.0)
