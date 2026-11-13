@@ -54,12 +54,12 @@ describe("CityDetail publication truthfulness", () => {
     fetchMock.mockReset();
   });
 
-  async function renderDetail(generatedAt: string) {
+  async function renderDetail(generatedAt: string, shown: City = city) {
     fetchMock.mockResolvedValue(ok(publication(generatedAt)));
     render(
       <PublicationProvider>
         <PublicationLoaded artifacts={["trading_signal.json", "cities_data.json"]} />
-        <CityDetail city={city} />
+        <CityDetail city={shown} />
       </PublicationProvider>,
     );
     await act(async () => vi.advanceTimersByTimeAsync(0));
@@ -71,6 +71,14 @@ describe("CityDetail publication truthfulness", () => {
     expect(within(screen.getByRole("row", { name: /Open positions/i })).getAllByText("Unavailable")).toHaveLength(2);
     expect(within(screen.getByRole("row", { name: /Open \+ resting exposure/i })).getAllByText("Unavailable")).toHaveLength(2);
     expect(screen.getByRole("row", { name: /Settled orders/i })).toHaveTextContent("4");
+  });
+
+  it("labels a market headline and keeps the model value beside it", async () => {
+    const forecasts = [{ ...city.forecasts![0], forecast_source: "market" as const, model_high_f: 71.4 }];
+    await renderDetail("2026-07-09T11:59:00Z", { ...city, forecasts });
+
+    expect(screen.getByText("Market-implied high")).toBeInTheDocument();
+    expect(screen.getByText(/^Model 71\.4°F/)).toBeInTheDocument();
   });
 
   it("shows current open-position and exposure values while publication is fresh", async () => {

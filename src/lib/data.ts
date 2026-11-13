@@ -85,6 +85,15 @@ export interface Intraday {
   observation_count: number;
   latest_observed_at: string;
 }
+/** The flagship forecast block: the market-swap fields are typed, the rest stay
+    a tolerant bag of published numbers and tags. */
+export interface TargetForecast {
+  forecast_source?: "market" | "model";
+  model_high_f?: number | null;
+  model_sigma_f?: number | null;
+  market_implied_high_f?: number | null;
+  [key: string]: number | string | null | undefined;
+}
 export type TargetStatus = "settlement_day" | "upcoming" | "past";
 export interface Target {
   target_date: string;
@@ -94,7 +103,7 @@ export interface Target {
   market_available: boolean;
   best_decision: Decision;
   decisions: Decision[];
-  forecast?: Record<string, number | string | null>;
+  forecast?: TargetForecast;
   ensemble?: Record<string, number | null>;
   intraday?: Intraday;
   market_consensus?: MarketConsensus;
@@ -171,6 +180,14 @@ export interface CityForecast {
   model_spread_f?: number | null;
   fetched_at?: string;
   method?: string;
+  /** Which source produced `predicted_high_f`. "market" means the headline is
+      the prediction market's implied high and the model value sits beside it. */
+  forecast_source?: "market" | "model";
+  /** The model's high before the market swap. */
+  model_high_f?: number | null;
+  model_sigma_f?: number | null;
+  /** Raw market-implied high; null when `forecast_source` is "model". */
+  market_implied_high_f?: number | null;
 }
 export interface CitySettlement {
   local_date: string;

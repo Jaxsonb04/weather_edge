@@ -122,6 +122,15 @@ describe("AccountCards", () => {
     expect(screen.getByRole("button", { name: /Live Stability/ })).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("names the high-frequency research book by its published policy", () => {
+    const profiles = twoAccounts.profiles?.map((p) =>
+      p.risk_profile === "research-target"
+        ? { ...p, daily_target: { available: true, policy_version: "research-target-hf-v8" } }
+        : p);
+    render(<AccountCards s={{ ...twoAccounts, profiles } as StrategyLab} selected="live" onSelect={() => {}} />);
+    expect(screen.getByRole("button", { name: /High-frequency research v8/ })).toHaveTextContent("Policy v8");
+  });
+
   it("fails closed when active paper accounting is unavailable", () => {
     render(
       <AccountCards
