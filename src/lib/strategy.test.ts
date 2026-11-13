@@ -85,6 +85,7 @@ describe("active research books", () => {
 
   it("retains every published archive era including zero-trade and unknown profiles", () => {
     const archives = [
+      "research-target-v7",
       "research-target-v6",
       "unknown-archive",
       "research-target-v5",
@@ -109,6 +110,7 @@ describe("active research books", () => {
       "research-target-v4",
       "research-target-v5",
       "research-target-v6",
+      "research-target-v7",
       "research-motion",
       "research",
       "unknown-archive",

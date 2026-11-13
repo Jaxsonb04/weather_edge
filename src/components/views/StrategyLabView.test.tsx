@@ -276,7 +276,7 @@ describe("LabNotices", () => {
   it("shows each notice only on the tab it affects, in plain words", () => {
     const { container, rerender } = render(<LabNotices s={lab} tab="accounts" />);
     expect(screen.getByText("Settlement pending")).toBeInTheDocument();
-    expect(screen.getByText("Live and V7 only enter next-day markets, so same-day signals are research-only.")).toBeInTheDocument();
+    expect(screen.getByText("Live and V8 only enter next-day markets, so same-day signals are research-only.")).toBeInTheDocument();
     expect(container.textContent).not.toMatch(/min_lead_days|EMOS/);
 
     rerender(<LabNotices s={lab} tab="system" />);

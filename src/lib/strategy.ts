@@ -806,6 +806,7 @@ const ARCHIVED_PROFILE_ORDER = [
   "research-target-v4",
   "research-target-v5",
   "research-target-v6",
+  "research-target-v7",
   "research-motion",
   "research",
 ] as const;
@@ -844,6 +845,7 @@ const PROFILE_DISPLAY_LABELS: Record<string, string> = {
   "research-target-v4": "Research ROI v4 · adopted revision",
   "research-target-v5": "Research ROI v5 · superseded probe",
   "research-target-v6": "Research ROI v6 · archived",
+  "research-target-v7": "Research ROI v7 · archived",
   "research-motion": "Research motion · archived",
 };
 
