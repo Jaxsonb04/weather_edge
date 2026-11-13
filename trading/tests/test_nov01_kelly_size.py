@@ -101,8 +101,8 @@ def _ladder(traded: dict[str, float]) -> dict[str, float]:
     return ladder
 
 
-def _live_evaluator() -> TradeEvaluator:
-    config = strategy_config_for_profile("live")
+def _live_evaluator(**overrides) -> TradeEvaluator:
+    config = replace(strategy_config_for_profile("live"), **overrides)
     # An unproven cohort (no settled history) sits at the live trust floor, 0.4.
     floor_model = PosteriorKellyModel(
         cohort_records={},
@@ -466,8 +466,9 @@ def test_joint_kelly_does_not_undo_a_comfort_boost() -> None:
     # Two far-tail NO legs, each comfort-boosted to 12 contracts ($10.32) on a
     # $5.14 Kelly budget. They diversify (ratio 1.19), so nothing should trim
     # them. Scaling the Kelly budget alone, which the boost never touches, would
-    # cut both to 7.
-    evaluator = _live_evaluator()
+    # cut both to 7. Live dropped the comfort gate on 2026-11-12; the
+    # boost/joint-Kelly interaction it pins is unchanged.
+    evaluator = _live_evaluator(comfort_edge_enabled=True)
     markets = [
         _market("B90.5", 90, 91, yes_bid=0.15, yes_ask=0.16),
         _market("B86.5", 86, 87, yes_bid=0.15, yes_ask=0.16),

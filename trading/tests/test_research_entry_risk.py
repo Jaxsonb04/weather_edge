@@ -19,14 +19,12 @@ from sfo_kalshi_quant.research_portfolio import ResearchOpportunity, allocate_re
 from test_target_growth_v2 import _structural_target_candidate
 
 
-@pytest.mark.parametrize(
-    "cost,lcb,contracts",
-    [(0.68, 0.7636, 132), (0.94, 0.9435, 31), (0.80, 0.8207, 64)],
-)
-def test_incident_inputs_have_conservative_entry_ceilings(cost, lcb, contracts):
-    # Public September 12 incident inputs. This proves sizing, not P&L replay.
+@pytest.mark.parametrize("cost,lcb", [(0.68, 0.7636), (0.94, 0.9435), (0.80, 0.8207)])
+def test_entries_spend_a_flat_ninety_dollars_whatever_the_edge(cost, lcb):
+    # v8 (2026-11-12) dropped the quarter-Kelly term: any funded leg spends up
+    # to the $90 position cap, limited only by displayed depth and the caps.
     candidate = replace(
-        _structural_target_candidate(bid=cost - 0.01, ask=cost + 0.01, ask_size=100),
+        _structural_target_candidate(bid=cost - 0.01, ask=cost + 0.01, ask_size=1000),
         cost_per_contract=cost,
         probability_lcb=lcb,
         edge_lcb=lcb - cost,
@@ -34,9 +32,10 @@ def test_incident_inputs_have_conservative_entry_ceilings(cost, lcb, contracts):
         edge=max(lcb, 0.95) - cost,
     )
     plan = allocate_research_plans([ResearchOpportunity(candidate, "2026-07-30", 1)])
-    assert plan.target.legs[0].decision.recommended_contracts == contracts
-    assert plan.target.legs[0].spend <= 90.0
-    assert (contracts + 1) * cost > target_entry_spend_limit(cost, lcb)
+    leg = plan.target.legs[0]
+    assert leg.spend <= 90.0
+    assert leg.spend + leg.decision.cost_per_contract > 90.0
+    assert target_entry_spend_limit(cost, lcb) == 90.0
 
 
 @pytest.mark.parametrize("bad", [None, True, "0.9", float("nan"), float("inf"), -0.1, 1.1])
@@ -45,55 +44,31 @@ def test_malformed_entry_evidence_fails_closed(bad):
     assert target_entry_spend_limit(0.8, bad) == 0.0
 
 
-def test_fee_cost_reduces_conservative_size_and_no_edge_cannot_fund_risk():
-    assert target_entry_spend_limit(0.94, 0.944) > target_entry_spend_limit(0.942, 0.944)
-    assert target_entry_spend_limit(0.944, 0.944) == 0.0
+def test_spend_is_flat_once_the_lcb_covers_cost_and_zero_otherwise():
+    # The decision LCB already carries the one-cent entry edge, so LCB == cost
+    # is exactly p - cost == 0.01 and funds the full $90.
+    assert target_entry_spend_limit(0.944, 0.944) == TARGET_ENTRY_FULL_LOSS_CAP
+    assert target_entry_spend_limit(0.94, 0.9435) == TARGET_ENTRY_FULL_LOSS_CAP
     assert target_entry_spend_limit(0.945, 0.944) == 0.0
     assert target_entry_spend_limit(1.0, 1.0) == 0.0
+    assert TARGET_ENTRY_FULL_LOSS_CAP == (
+        TARGET_POLICY.reference_equity * TARGET_POLICY.max_position_risk_pct
+    ) == 90.0
 
 
-def test_strong_conservative_edge_can_scale_up_to_existing_production_ceiling():
-    assert target_entry_spend_limit(0.75, 0.90) == 90.0
-    assert target_entry_spend_limit(0.94, 0.9435) == pytest.approx(29.1666666666666)
-    assert target_entry_spend_limit(0.87, 0.8984) == pytest.approx(90.0)
-
-
-def test_daily_budget_charges_other_target_dates_and_cannot_recycle_losses():
-    # $300 budget less 60% of every open/pending cost across all target dates.
-    assert target_remaining_daily_risk(0.0, 260.0) == pytest.approx(144.0)
-    assert target_remaining_daily_risk(-100.0, 260.0) == pytest.approx(44.0)
-    assert target_remaining_daily_risk(-100.0, 180.0) == pytest.approx(92.0)
-    # Profits never expand the budget.
-    assert target_remaining_daily_risk(80.0, 260.0) == pytest.approx(144.0)
-    # The $300 realized pause is intact, and open risk alone can still
-    # exhaust the budget.
-    assert target_remaining_daily_risk(-300.0, 0.0) == 0.0
-    assert target_remaining_daily_risk(0.0, 500.0) == 0.0
+def test_daily_room_is_the_realized_pause_and_open_risk_does_not_consume_it():
+    # v8 holds to settlement, so open cost is not charged against the $500
+    # (25%) budget; only booked losses shrink it, and profits never grow it.
+    assert TARGET_OPEN_RISK_CHARGE_FRACTION == 0.0
+    assert RESEARCH_ENTRY_RISK_VERSION == "research-entry-risk-v4-market-signal-2026-11-12"
+    assert target_remaining_daily_risk(0.0, 260.0) == pytest.approx(500.0)
+    assert target_remaining_daily_risk(0.0, 1500.0) == pytest.approx(500.0)
+    assert target_remaining_daily_risk(-100.0, 260.0) == pytest.approx(400.0)
+    assert target_remaining_daily_risk(80.0, 260.0) == pytest.approx(500.0)
+    assert target_remaining_daily_risk(-500.0, 0.0) == 0.0
     assert target_remaining_daily_risk(0.0, math.inf) == 0.0
     assert target_remaining_daily_risk(float("nan"), 0.0) == 0.0
     assert target_remaining_daily_risk(0.0, -1.0) == 0.0
-
-
-def test_open_risk_is_charged_at_design_fraction():
-    # 0.60 is a DESIGN fraction near the per-position median, not a worst
-    # case. Public research ledger (strategy_research.json generated
-    # 2026-09-13T01:20Z, paper-research-roi-v6, 22 losing closes):
-    # per-position loss/cost has median 0.61 and max 0.734; 12 of 22
-    # exceed 0.60. The three 2026-09-11/12 incident exits (61.05%, 40.76%,
-    # 53.51% of cost, against a 35% trigger) are the largest DOLLAR
-    # losses, not the worst ratios. The room below is a planning figure;
-    # the hard bound is the $300 REALIZED pause, pinned by
-    # test_daily_budget_charges_other_target_dates_and_cannot_recycle_losses.
-    assert TARGET_OPEN_RISK_CHARGE_FRACTION == 0.60
-    assert RESEARCH_ENTRY_RISK_VERSION == "research-entry-risk-v3-scaling-2026-09-13"
-    assert target_remaining_daily_risk(0.0, 200.0) == pytest.approx(180.0)
-    # Owner's 2026-09-12 public snapshot: -$50 realized, $132.76 open. The
-    # capital-scaled fixture uses twice that exposure and loss. The 100%
-    # charge leaves $0; the stop-scaled charge still refuses a $90 entry.
-    room = target_remaining_daily_risk(-100.0, 265.52)
-    assert room == pytest.approx(300.0 - 100.0 - 0.6 * 265.52)
-    assert room == pytest.approx(40.688)
-    assert room < TARGET_ENTRY_FULL_LOSS_CAP
 
 
 def test_only_research_execution_fingerprint_changes_and_fixed_goal_is_preserved():
@@ -106,7 +81,7 @@ def test_only_research_execution_fingerprint_changes_and_fixed_goal_is_preserved
     # 88e417a64d8be9b1bb933b3b / 92934c133d00d85deb078b3c; under behaviour-v3
     # before the 2026-09-13 `limit_taker_cross_max_levels` field it was
     # 93326de538852004fc08aa99.
-    assert strategy_fingerprint(live, entry_mode="limit") == "24319aeda35fdd71e5c977e5"
+    assert strategy_fingerprint(live, entry_mode="limit") == "9725984064a55081065c6313"
     # Research without research_entry_risk_version hashes to
     # 4d812e63727caf1b3de6b127 under behaviour-v3; with it, the research
     # identity moves. Under research-entry-risk-v2-scaled-2026-09-12 (PR #121)
@@ -124,10 +99,10 @@ def test_only_research_execution_fingerprint_changes_and_fixed_goal_is_preserved
     # pins also include the November 7 $2,000 paper_bankroll decision:
     assert strategy_fingerprint(research, entry_mode="limit") != "40806599ad7acb21eab44c8d"
     assert strategy_fingerprint(research, entry_mode="limit") != "0db3fd6d76056f7f7b141ff2"
-    assert strategy_fingerprint(research, entry_mode="limit") == "1d8965ceeb0f5d424aa103d3"
-    assert TARGET_POLICY.policy_fingerprint == "428de2dc0b33923a909d8eb3"
+    assert strategy_fingerprint(research, entry_mode="limit") == "282324065b36575cb6232ebe"
+    assert TARGET_POLICY.policy_fingerprint == "902bcfb7b6417501f3e1df8a"
     assert TARGET_POLICY.reference_equity == 2000.0
-    assert TARGET_POLICY.target_pnl == 100.0
+    assert TARGET_POLICY.target_pnl == 2000.0
 
 
 def test_explicit_research_identity_versions_custom_and_city_configurations():

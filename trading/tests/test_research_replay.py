@@ -13,7 +13,7 @@ import itertools
 from datetime import date, datetime, timedelta, timezone
 
 from sfo_kalshi_quant.config import StrategyConfig
-from sfo_kalshi_quant.execution import initial_queue_ahead, target_research_quote
+from sfo_kalshi_quant.execution import target_research_quote
 from sfo_kalshi_quant.fees import quadratic_fee_average_per_contract
 from sfo_kalshi_quant.models import MarketBin, TradeDecision
 from sfo_kalshi_quant.probability import interval_probability_normal
@@ -324,22 +324,16 @@ def test_resting_maker_order_never_fabricates_a_fill() -> None:
     assert evidence.realized_pnl == 0.0
 
 
-def test_queue_ahead_matches_the_real_initial_queue_ahead_formula() -> None:
+def test_wide_spread_maker_case_replays_as_no_trade_under_the_taker_only_book() -> None:
+    # Before 2026-11-12 this case rested one tick above the 0.10 bid and
+    # expired unfilled. The v8 target quote is taker-only, so the replay
+    # re-quotes it as no trade rather than inventing a resting order.
     snapshot = _market_snapshot(yes_bid=0.10, yes_ask=0.90, yes_bid_size=42.0, yes_ask_size=100.0)
     case = _case(market_snapshot=snapshot, actual_high_f=75.0)
     evidence = replay_case_candidate(case, _identity(mu=70.0, sigma=3.0))
     outcome = evidence.tickers[0]
-    assert outcome.status == "unfilled_expired"
-    assert outcome.would_cross is False
-
-    # The resting order posts one tick above the visible bid (0.11), a new
-    # best price with no displayed queue known ahead of it -- calling the
-    # real formula directly with the outcome's own limit price must match
-    # exactly what the module used internally to build the ReplayOrder.
-    assert outcome.queue_ahead == initial_queue_ahead(
-        outcome.limit_price, 0.10, 42.0
-    )
-    assert outcome.queue_ahead == 0.0
+    assert outcome.status == "no_trade"
+    assert outcome.realized_pnl == 0.0
 
 
 def test_negative_edge_produces_no_trade_not_a_fabricated_skip() -> None:

@@ -6,7 +6,6 @@ from dataclasses import dataclass, replace
 from .config import StrategyConfig
 from .fees import quadratic_fee_average_per_contract
 from .models import TradeDecision
-from .research_entry_risk import target_entry_spend_limit
 
 
 @dataclass(frozen=True)
@@ -363,25 +362,17 @@ def target_research_quote(
     decision: TradeDecision,
     config: StrategyConfig,
 ) -> BuyLimitQuote | None:
-    """Canonical target-sleeve quote with a zero LCB-edge floor.
+    """Canonical target-sleeve quote: taker-only at the displayed ask.
 
-    Prefer a one-tick improving maker quote when the spread permits it.  When
-    that price would cross, take only whole contracts at the visible ask,
-    downsized to displayed depth before fees are recomputed.  Unlike the legacy
-    generic limit policy, the target research floor is exactly non-negative
-    after-fee LCB edge, not the 2-point buffer. Only when the profile ALSO
-    enables ``limit_resting_reservation_fallback`` may target execution rest
-    at the bid or one tick below it after the improving quote fails either
-    edge floor; the research profile keeps that fallback off (see
-    ``_target_reservation_resting_quote``), so such a candidate is dropped.
+    The v8 book (2026-11-12) never rests a maker quote. A candidate is taken
+    as whole contracts at the displayed ask, downsized to displayed depth
+    before fees are recomputed, when the after-fee point and LCB edges are
+    non-negative at that exact taker cost; otherwise this returns None. The
+    one-cent entry edge lives in the decision's LCB (point minus one cent),
+    so the floor here stays at zero.
 
     Because ``research_replay`` and the published backtest re-quote history
-    through this function, disabling the fallback also reclassifies the
-    research orders it once placed (resting at or below the bid) as
-    ``no_trade`` on replay; historical replay figures shift without any
-    data change. The 30-minute target day-ahead rest
-    (``research_entry_risk.resting_order_ttl_minutes``) reaches replayed
-    history the same way, through ``research_replay._case_ttl_minutes``.
+    through this function, archived maker orders replay as ``no_trade``.
     """
 
     if not decision.approved or decision.recommended_contracts <= 0:
@@ -390,6 +381,7 @@ def target_research_quote(
         contracts = float(decision.recommended_contracts)
         visible_ask = float(decision.ask)
         visible_bid = max(0.0, float(decision.bid))
+        ask_size = float(decision.ask_size)
         tick = float(config.limit_price_tick)
     except (TypeError, ValueError, OverflowError):
         return None
@@ -397,13 +389,13 @@ def target_research_quote(
         not math.isfinite(contracts)
         or not math.isfinite(visible_ask)
         or not math.isfinite(visible_bid)
+        or not math.isfinite(ask_size)
         or not math.isfinite(tick)
         or not 0.0 < visible_ask < 1.0
         or contracts <= 0
         or tick <= 0
     ):
         return None
-    requested_contracts = contracts
     point_probability = (
         float(decision.model_probability)
         if config.edge_gate_uses_model_probability
@@ -417,116 +409,33 @@ def target_research_quote(
         or not 0.0 <= float(decision.probability_lcb) <= 1.0
     ):
         return None
-    inside_price = _floor_to_tick(visible_bid + tick, tick)
-    crosses = inside_price >= visible_ask - 1e-12
-    if not crosses and config.research_target_taker_cross:
-        # The target book's documented floor is exactly non-negative after-fee
-        # point and LCB edge. When that floor holds at the displayed ask AND
-        # at least the configured executable notional is displayed, an
-        # immediate whole-contract taker fill realizes that bounded slice now
-        # instead of requiring the thin top level to absorb the ENTIRE policy
-        # request. The floor check runs against the exact taker cost of the
-        # partial quantity, so signal and risk gates remain unchanged. If the
-        # slice is too small or either edge floor fails, the full request keeps
-        # the existing maker path.
-        try:
-            displayed_ask_size = float(decision.ask_size)
-        except (TypeError, ValueError, OverflowError):
-            displayed_ask_size = 0.0
-        if math.isfinite(displayed_ask_size) and displayed_ask_size > 0.0:
-            displayed_size = float(
-                math.floor(min(contracts, displayed_ask_size) + 1e-12)
-            )
-        else:
-            displayed_size = 0.0
-        if displayed_size >= 1.0:
-            taker_price = _floor_to_tick(visible_ask, tick)
-            taker_fee = quadratic_fee_average_per_contract(
-                taker_price,
-                displayed_size,
-                maker=False,
-                fee_multiplier=config.fee_multiplier,
-                taker_rate=config.taker_fee_rate,
-                maker_rate=config.maker_fee_rate,
-                series_ticker=decision.ticker,
-            )
-            taker_cost = taker_price + taker_fee
-            if (
-                displayed_size * taker_cost + 1e-9
-                >= config.limit_taker_cross_min_notional
-                and point_probability - taker_cost >= -1e-12
-                and float(decision.probability_lcb) - taker_cost >= -1e-12
-            ):
-                crosses = True
-    if crosses:
-        try:
-            ask_size = float(decision.ask_size)
-        except (TypeError, ValueError, OverflowError):
-            return None
-        if not math.isfinite(ask_size):
-            return None
-        contracts = float(math.floor(min(contracts, ask_size)))
-        if contracts < 1.0:
-            return None
-        price = _floor_to_tick(visible_ask, tick)
-    else:
-        price = inside_price
+    natural_cross = _floor_to_tick(visible_bid + tick, tick) >= visible_ask - 1e-12
+    if not (natural_cross or config.research_target_taker_cross):
+        return None
+    contracts = float(math.floor(min(contracts, ask_size) + 1e-12))
+    if contracts < 1.0:
+        return None
+    price = _floor_to_tick(visible_ask, tick)
     fee = quadratic_fee_average_per_contract(
         price,
         contracts,
-        maker=not crosses,
+        maker=False,
         fee_multiplier=config.fee_multiplier,
         taker_rate=config.taker_fee_rate,
         maker_rate=config.maker_fee_rate,
         series_ticker=decision.ticker,
     )
     cost = price + fee
-    if (
-        crosses
-        and config.research_target_taker_cross
-        and contracts * cost + 1e-9 < config.limit_taker_cross_min_notional
-    ):
-        # A natural one-tick cross can be executable yet still fall below the
-        # profile's notional floor (for example one 90c contract). Keep the
-        # full policy request alive as a maker at the next lower tick instead
-        # of bypassing the minimum or dropping the candidate.
-        crosses = False
-        contracts = requested_contracts
-        price = _floor_to_tick(visible_ask - tick, tick)
-        if price < tick - 1e-12:
-            return None
-        fee = quadratic_fee_average_per_contract(
-            price,
-            contracts,
-            maker=True,
-            fee_multiplier=config.fee_multiplier,
-            taker_rate=config.taker_fee_rate,
-            maker_rate=config.maker_fee_rate,
-            series_ticker=decision.ticker,
-        )
-        cost = price + fee
     edge = point_probability - cost
     edge_lcb = float(decision.probability_lcb) - cost
-    cannot_fund_contract = (
-        config.research_target_taker_cross
-        and target_entry_spend_limit(cost, decision.probability_lcb) + 1e-9 < cost
-    )
-    if edge < -1e-12 or edge_lcb < -1e-12 or cannot_fund_contract:
-        # Rest behind the bid only when the profile opts in. The research
-        # profile sets limit_resting_reservation_fallback=False, so this
-        # returns None there (2026-09-13); see the fallback's docstring.
-        if (
+    if (
+        edge < -1e-12
+        or edge_lcb < -1e-12
+        or (
             config.research_target_taker_cross
-            and config.limit_resting_reservation_fallback
-        ):
-            return _target_reservation_resting_quote(
-                decision,
-                config,
-                contracts=requested_contracts,
-                point_probability=point_probability,
-                visible_bid=visible_bid,
-                visible_ask=visible_ask,
-            )
+            and contracts * cost + 1e-9 < config.limit_taker_cross_min_notional
+        )
+    ):
         return None
     return BuyLimitQuote(
         price=_round_price(price),
@@ -534,87 +443,9 @@ def target_research_quote(
         cost_per_contract=cost,
         edge=edge,
         edge_lcb=edge_lcb,
-        would_cross=crosses,
+        would_cross=True,
         contracts=contracts,
     )
-
-
-def _target_reservation_resting_quote(
-    decision: TradeDecision,
-    config: StrategyConfig,
-    *,
-    contracts: float,
-    point_probability: float,
-    visible_bid: float,
-    visible_ask: float,
-) -> BuyLimitQuote | None:
-    """Try the bid and one tick below it after the improving quote fails.
-
-    This bounded fallback preserves both target edge floors at exact maker
-    fees. It does not chase a distant reservation price or manufacture a fill;
-    the normal queue, public-tape evidence, and resting TTL still apply.
-
-    Gated on ``limit_resting_reservation_fallback`` since 2026-09-13, which
-    the research profile sets False. Between 2026-09-12 and then it ran on
-    every research quote whose bid+1 failed an edge floor, i.e. exactly the
-    thinnest edges (edge_lcb in [-0.02, 0) at bid+1). Resting at or below
-    the bid moves AWAY from the seller flow that fills a NO bid. Evidence
-    provenance: the seller-flow counts come from the owner's 2026-09-06
-    decision re-check on the production tape (33 expired research orders:
-    NO-seller prints at <= our price 7, at +1c 14, at +2c 97, 0-10
-    contracts queued ahead, so the limiter is absence of flow at our price,
-    not queue position); that tape is not in this repository and the counts
-    are not reproducible from public data. The expiry share is: the public
-    strategy_research.json (2026-09-13T01:20Z) reports 317 of 437 research
-    orders expired (72.5%), each having reserved its cost against the daily
-    budget for the 15-minute TTL. Every one of those was a TTL expiry: the
-    stale-quote guard did not exist yet. From the 2026-09-13 release the goal
-    report splits ``ttl_expired_orders`` from ``stale_cancelled_orders``, and
-    only the TTL-only count is comparable with this figure. No shipped profile
-    reaches this function
-    now (live: research_target_taker_cross=False; research: fallback off);
-    it stays for a profile that opts in and is covered by opted-in tests.
-    """
-
-    tick = float(config.limit_price_tick)
-    top_price = min(
-        _floor_to_tick(visible_bid, tick),
-        _floor_to_tick(visible_ask - tick, tick),
-    )
-    minimum_price = max(tick, _floor_to_tick(visible_bid - tick, tick))
-    for price in (top_price, _floor_to_tick(top_price - tick, tick)):
-        if price < minimum_price - 1e-12:
-            break
-        fee = quadratic_fee_average_per_contract(
-            price,
-            contracts,
-            maker=True,
-            fee_multiplier=config.fee_multiplier,
-            taker_rate=config.taker_fee_rate,
-            maker_rate=config.maker_fee_rate,
-            series_ticker=decision.ticker,
-        )
-        cost = price + fee
-        edge = point_probability - cost
-        edge_lcb = float(decision.probability_lcb) - cost
-        if (
-            edge >= -1e-12
-            and edge_lcb >= -1e-12
-            # A zero (or vanishing) LCB margin cannot fund even one contract
-            # under fractional Kelly. Try the remaining permitted tick before
-            # handing an unusable reservation quote to the allocator.
-            and target_entry_spend_limit(cost, decision.probability_lcb) + 1e-9 >= cost
-        ):
-            return BuyLimitQuote(
-                price=price,
-                fee_per_contract=fee,
-                cost_per_contract=cost,
-                edge=edge,
-                edge_lcb=edge_lcb,
-                would_cross=False,
-                contracts=contracts,
-            )
-    return None
 
 
 def with_buy_limit(

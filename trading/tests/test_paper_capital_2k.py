@@ -17,6 +17,7 @@ from sfo_kalshi_quant.research_policy import (
     ALL_RESEARCH_POLICIES,
     TARGET_POLICY,
     TARGET_POLICY_V6,
+    TARGET_POLICY_V7,
 )
 from sfo_kalshi_quant.strategy_lab.build import (
     _account_daily_balance_rows,
@@ -52,7 +53,8 @@ def _deposits(store):
 def test_active_accounts_run_on_two_thousand_and_v6_keeps_its_thousand():
     assert INITIAL_CAPITAL == TARGET_POLICY.reference_equity == M1_POLICY.reference_equity == 2000.0
     assert TARGET_POLICY_V6.reference_equity == 1000.0
-    assert TARGET_POLICY.target_pnl == pytest.approx(100.0)
+    assert TARGET_POLICY_V7.target_pnl == pytest.approx(100.0)
+    assert TARGET_POLICY.target_pnl == pytest.approx(2000.0)
 
 
 def test_v7_position_limit_stays_ninety_dollars():
@@ -64,7 +66,7 @@ def test_v7_veto_stop_stays_at_35_and_archived_policies_keep_their_own():
     for policy in ALL_RESEARCH_POLICIES:
         if policy.account_id in RESEARCH_VETO_DOLLAR_CAPS and policy is not TARGET_POLICY:
             assert RESEARCH_VETO_DOLLAR_CAPS[policy.account_id] == pytest.approx(
-                policy.target_pnl * 0.70
+                min(policy.target_pnl * 0.70, 35.0)
             )
 
 

@@ -20,7 +20,6 @@ from sfo_kalshi_quant.config import config_for_city, strategy_config_for_profile
 from sfo_kalshi_quant.db import ResearchEntryLimitError
 from sfo_kalshi_quant.execution import with_buy_limit
 from sfo_kalshi_quant.models import TradeDecision
-from sfo_kalshi_quant.research_entry_risk import TARGET_OPEN_RISK_CHARGE_FRACTION
 from sfo_kalshi_quant.research_policy import (
     MOTION_POLICY,
     TARGET_POLICY,
@@ -30,6 +29,7 @@ from sfo_kalshi_quant.research_policy import (
     TARGET_POLICY_V4,
     TARGET_POLICY_V5,
     TARGET_POLICY_V6,
+    TARGET_POLICY_V7,
     ResearchSleeve,
 )
 from sfo_kalshi_quant.research_portfolio import (
@@ -251,7 +251,9 @@ def test_research_sleeve_policies_are_immutable_and_fingerprinted() -> None:
     # so this pin also marks where scaling stops being evidence-led.
     assert TARGET_POLICY_V6.policy_fingerprint == "0fd9cc8ebf877a653806fe1a"
     # V7 preserves frozen V6; its capital decision keeps the position cap at $90.
-    assert TARGET_POLICY.policy_fingerprint == "428de2dc0b33923a909d8eb3"
+    assert TARGET_POLICY_V7.policy_fingerprint == "428de2dc0b33923a909d8eb3"
+    # 2026-11-12: v8 high-frequency market-signal book; V7 frozen above.
+    assert TARGET_POLICY.policy_fingerprint == "902bcfb7b6417501f3e1df8a"
     assert MOTION_POLICY.policy_fingerprint == "1c50d872ce278b403a6ad80e"
 
 
@@ -317,8 +319,12 @@ def test_live_account_cutover_preserves_strategy_fingerprints() -> None:
     # behavior-v6 (2026-11-09, Apple forecast nudge) moved them again; under
     # behavior-v5 they were 3125d138f5c7d8b49982c841 / e7d59c3e8d78db644a3d4c5b,
     # non-SFO 14f08838b5be66ff0ce62366, research 7e35ebf8038d643114c5e238.
-    assert strategy_fingerprint(config, entry_mode="limit") == "24319aeda35fdd71e5c977e5"
-    assert strategy_fingerprint(config, entry_mode="market") == "b3eddca68a4f4fd29d69fa7a"
+    # behavior-v7 (2026-11-12, market signal) moved them again, with Live's
+    # comfort/favorite-band flags and research's point-edge flag; under
+    # behavior-v6 they were 24319aeda35fdd71e5c977e5 / b3eddca68a4f4fd29d69fa7a,
+    # non-SFO a808d56c85fbddd5e4a094bd, research 1d8965ceeb0f5d424aa103d3.
+    assert strategy_fingerprint(config, entry_mode="limit") == "9725984064a55081065c6313"
+    assert strategy_fingerprint(config, entry_mode="market") == "3c8a1cf9355693dd9ec130c6"
     # Production stamps rows PER CITY: strategy_lab/build.py keys live readiness
     # by strategy_fingerprint(config_for_city(live_config, city)), and
     # config_for_city leaves SFO alone but changes the other cities. So the 19
@@ -330,14 +336,14 @@ def test_live_account_cutover_preserves_strategy_fingerprints() -> None:
         city.slug: strategy_fingerprint(config_for_city(config, city), entry_mode="limit")
         for city in CITIES
     }
-    assert live_by_city.pop("sfo") == "24319aeda35fdd71e5c977e5"
+    assert live_by_city.pop("sfo") == "9725984064a55081065c6313"
     assert len(live_by_city) == 19
-    assert set(live_by_city.values()) == {"a808d56c85fbddd5e4a094bd"}
+    assert set(live_by_city.values()) == {"8fbaa17e40990ad52f579c6a"}
     research = strategy_config_for_profile("research")
     assert {
         strategy_fingerprint(config_for_city(research, city), entry_mode="limit")
         for city in CITIES
-    } == {"1d8965ceeb0f5d424aa103d3"}
+    } == {"282324065b36575cb6232ebe"}
 
 
 def test_target_attainment_locks_only_target_allocation_while_motion_continues() -> None:
@@ -438,14 +444,14 @@ def test_init_bootstraps_research_accounts_without_rewriting_legacy(
             assert _RESEARCH_IDENTITY_COLUMNS <= columns
 
     assert legacy_after == legacy_before
-    assert research_accounts == [
+    assert sorted(research_accounts) == sorted([
         (MOTION_POLICY.account_id, 1000.0, 1000.0, 1000.0, "ARCHIVED"),
         (TARGET_POLICY.account_id, 2000.0, 2000.0, 2000.0, "ACTIVE"),
-    ]
-    assert openings == [
+    ])
+    assert sorted(openings) == sorted([
         (MOTION_POLICY.account_id, 1, 1000.0),
         (TARGET_POLICY.account_id, 1, 2000.0),
-    ]
+    ])
     assert goal_sql is not None
     normalized_goal_sql = " ".join(str(goal_sql[0]).split()).upper()
     assert "PRIMARY KEY(OBJECTIVE_DAY, ACCOUNT_ID, POLICY_VERSION)" in normalized_goal_sql
@@ -697,8 +703,8 @@ def test_clean_reinit_leaves_identity_trigger_schema_unchanged(
 def _atomic_decision(
     ticker: str,
     *,
-    contracts: float = 1.0,
-    resting: bool = True,
+    contracts: float = 2.0,
+    resting: bool = False,
 ) -> TradeDecision:
     decision = TradeDecision(
         ticker=ticker,
@@ -942,32 +948,34 @@ def _linked_admission(
     )
 
 
-@pytest.mark.parametrize("resting", [True, False])
-def test_target_atomic_admission_rejects_forged_size_above_conservative_lcb(
-    tmp_path, resting,
+def test_target_atomic_admission_rejects_forged_size_above_the_ninety_dollar_cap(
+    tmp_path,
 ):
     from sfo_kalshi_quant.db import PaperStore, ResearchEntryLimitError
+    from sfo_kalshi_quant.paper import with_target_research_execution
 
     store = PaperStore(tmp_path / "entry-risk.db", research_clock=_fixed_research_clock)
-    decision = _atomic_decision("KXHIGHTSFO-26JUL19-B80.5", contracts=25, resting=resting)
-    # Keep valid executable quotes but shrink the conservative margin until the
-    # scanner's structural request exceeds the independent atomic safety cap.
-    from sfo_kalshi_quant.paper import with_target_research_execution
     config = strategy_config_for_profile("research")
+    # A valid executable taker quote, then a size the flat $90 cap forbids.
     decision = with_target_research_execution(
-        replace(decision, probability_lcb=0.801 if resting else 0.831), config,
+        replace(_atomic_decision("KXHIGHTSFO-26JUL19-B80.5", contracts=25), entry_ask_size=500.0),
+        config,
     )
     assert decision is not None
-    decision = replace(decision, recommended_contracts=25, expected_profit=decision.edge * 25)
+    decision = replace(
+        decision, recommended_contracts=120, expected_profit=decision.edge * 120
+    )
     admission = _linked_admission(store, TARGET_POLICY, "forged", decision)
-    with pytest.raises(ResearchEntryLimitError, match="conservative entry-risk"):
+    with pytest.raises((ResearchEntryLimitError, ValueError)):
         store.record_research_order_atomic(
             "2026-07-19", decision, admission=admission, strategy_config=config,
         )
     assert store.research_open_risk(account_id=TARGET_POLICY.account_id) == 0.0
 
 
-def test_target_daily_full_loss_reservation_persists_after_reopen_and_loss(tmp_path, monkeypatch):
+def test_target_open_risk_leaves_daily_room_until_realized_losses_hit_the_pause(
+    tmp_path, monkeypatch
+):
     from sfo_kalshi_quant.db import PaperStore
 
     monkeypatch.setattr("sfo_kalshi_quant.db._now", lambda: _fixed_research_clock().isoformat())
@@ -975,76 +983,64 @@ def test_target_daily_full_loss_reservation_persists_after_reopen_and_loss(tmp_p
     store = PaperStore(db_path, research_clock=_fixed_research_clock)
     config = strategy_config_for_profile("research")
     order_ids = []
-    # Each crossing order costs $20.83 (fees included) and is charged at the
-    # 0.60 stop-scaled fraction ($12.50). Twenty-three fit in $300 ($287.45
-    # charged, $12.55 room < $20.83); another city or target date cannot
-    # bypass the account-wide reservation.
-    for index in range(24):
+    # v8 holds to settlement, so ~$624 of open taker cost (30 x ~$20.8) does
+    # not consume the $500 daily room; only booked losses do.
+    for index in range(30):
         target_day = date(2026, 7, 19) + timedelta(days=index)
         target = target_day.isoformat()
-        decision = _atomic_decision(f"KXHIGHDEN-{target_day:%y%b%d}-B80.5".upper(), contracts=25, resting=False)
+        decision = _atomic_decision(f"KXHIGHDEN-{target_day:%y%b%d}-B80.5".upper(), contracts=25)
         admission = _linked_admission(store, TARGET_POLICY, str(index), decision, target_date=target)
         result = store.record_research_order_atomic(
             target, decision, admission=admission, strategy_config=config,
         )
-        if index < 23:
-            assert result is not None
-            order_ids.append(result)
-        else:
-            assert result is None
+        assert result is not None
+        order_ids.append(result)
     store = PaperStore(db_path, research_clock=_fixed_research_clock)
-    before = store.account_policy_capacity(
-        target_date="2026-07-30", market_ticker="KXHIGHMIA-26JUL30-B80.5",
+    capacity = dict(
+        target_date="2026-08-30", market_ticker="KXHIGHMIA-26AUG30-B80.5",
         risk_profile="research", requested_spend=20.0, account_id=TARGET_POLICY.account_id,
     )
-    assert before["allowed_spend"] < 20.0
-    # Closing one order at a ~$20 loss frees its $12.50 charge but adds the
-    # realized loss: $300 - $20.3 - 0.6 * $458.26 = $4.7, still under $20.
-    store.close_paper_order(order_ids[0], 0.01)
-    after = store.account_policy_capacity(
-        target_date="2026-07-30", market_ticker="KXHIGHMIA-26JUL30-B80.5",
-        risk_profile="research", requested_spend=20.0, account_id=TARGET_POLICY.account_id,
-    )
-    assert after["allowed_spend"] < 20.0
-    assert "projected daily-loss" in after["reason"]
+    assert store.account_policy_capacity(**capacity)["allowed_spend"] == 20.0
+    # Twenty-five ~$20.6 losses book past the $500 (25%) realized pause.
+    for order_id in order_ids[:25]:
+        store.close_paper_order(order_id, 0.01)
+    after = store.account_policy_capacity(**capacity)
+    assert after["allowed_spend"] == 0.0
+    assert "daily loss" in after["reason"]
 
 
-def test_concurrent_research_entries_cannot_overreserve_projected_daily_budget(tmp_path):
+def test_concurrent_research_entries_cannot_overreserve_the_city_target_cap(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
     from sfo_kalshi_quant.db import PaperStore
 
-    db_path = tmp_path / "concurrent-daily-risk.db"
+    db_path = tmp_path / "concurrent-city-cap.db"
     store = PaperStore(db_path, research_clock=_fixed_research_clock)
     config = strategy_config_for_profile("research")
     attempts = []
-    # Twenty-two $20.83 orders charge 0.6 * $458.26 = $274.96, leaving
-    # $25.04: exactly one more $20.83 order fits, never two.
-    for index in range(24):
-        target_day = date(2026, 7, 19) + timedelta(days=index)
-        target = target_day.isoformat()
-        decision = _atomic_decision(f"KXHIGHDEN-{target_day:%y%b%d}-B80.5".upper(), contracts=25, resting=False)
-        admission = _linked_admission(store, TARGET_POLICY, str(index), decision, target_date=target)
-        if index < 22:
+    # Sixteen ~$20.76 legs in one city and date use ~$332 of the $360
+    # city-target cap: exactly one more fits, never two.
+    for index in range(18):
+        decision = _atomic_decision(f"KXHIGHDEN-26JUL19-B{60 + index}.5", contracts=25)
+        admission = _linked_admission(store, TARGET_POLICY, str(index), decision)
+        if index < 16:
             assert store.record_research_order_atomic(
-                target, decision, admission=admission, strategy_config=config,
+                "2026-07-19", decision, admission=admission, strategy_config=config,
             ) is not None
         else:
-            attempts.append((target, decision, admission))
+            attempts.append((decision, admission))
     stores = [PaperStore(db_path, research_clock=_fixed_research_clock) for _ in attempts]
 
     def admit(index):
-        target, decision, admission = attempts[index]
+        decision, admission = attempts[index]
         return stores[index].record_research_order_atomic(
-            target, decision, admission=admission, strategy_config=config,
+            "2026-07-19", decision, admission=admission, strategy_config=config,
         )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(admit, range(2)))
     assert sum(result is not None for result in results) == 1
     open_risk = store.research_open_risk(account_id=TARGET_POLICY.account_id)
-    # Twenty-three ~$20.8 orders are open: more than the old 100%-charge bound.
-    assert 300.0 < open_risk < 24 * 20.83
-    assert TARGET_OPEN_RISK_CHARGE_FRACTION * open_risk <= 300.0
+    assert open_risk <= TARGET_POLICY.max_city_target_risk_pct * TARGET_POLICY.reference_equity
 
 
 def test_research_admission_is_immutable() -> None:
@@ -1196,10 +1192,14 @@ def test_concurrent_atomic_admissions_cannot_overreserve_account_cash(
         results = list(pool.map(admit, range(2)))
 
     assert sum(order_id is not None for order_id in results) == 1
+    filled = setup.paper_order(next(order_id for order_id in results if order_id))
+    spend = filled["contracts"] * filled["cost_per_contract"]
     state = setup.research_account_state(account_id=TARGET_POLICY.account_id)
     assert state is not None
-    assert state["available_cash"] == pytest.approx(10.0)
-    assert state["reservations"] == pytest.approx(20.0)
+    # v8 is taker-only: the winner fills (~$20.76 with fees), nothing rests.
+    assert state["available_cash"] == pytest.approx(30.0 - spend)
+    assert state["reservations"] == 0.0
+    assert state["open_cost_basis"] == pytest.approx(spend)
     assert state["available_cash"] >= 0.0
 
 
@@ -1223,11 +1223,13 @@ def test_research_reservations_are_isolated_by_account(tmp_path: Path) -> None:
     )
 
     assert target_id is not None
+    row = store.paper_order(target_id)
+    spend = row["contracts"] * row["cost_per_contract"]
     target = store.research_account_state(account_id=TARGET_POLICY.account_id)
     motion = store.research_account_state(account_id=MOTION_POLICY.account_id)
     assert target is not None and motion is not None
-    assert target["reservations"] == pytest.approx(8.0)
-    assert target["available_cash"] == pytest.approx(TARGET_POLICY.reference_equity - 8.0)
+    assert target["open_cost_basis"] == pytest.approx(spend)
+    assert target["available_cash"] == pytest.approx(TARGET_POLICY.reference_equity - spend)
     assert motion["reservations"] == 0.0
     assert motion["available_cash"] == 1000.0
 
@@ -1394,7 +1396,7 @@ def test_live_recording_uses_fresh_account_and_preserves_fingerprints(
     # Rotated 2026-09-07 with STRATEGY_BEHAVIOR_VERSION and moved again on
     # 2026-09-13 by the `limit_taker_cross_max_levels` config field; see
     # test_live_account_cutover_preserves_strategy_fingerprints.
-    assert row["strategy_fingerprint"] == "b3eddca68a4f4fd29d69fa7a"
+    assert row["strategy_fingerprint"] == "3c8a1cf9355693dd9ec130c6"
 
 
 def test_atomic_admission_rejects_objective_day_pause_bypass(tmp_path: Path) -> None:
@@ -1497,7 +1499,7 @@ def test_atomic_admission_uses_current_pacific_day_at_dst_boundaries(
     ) is not None
 
 
-@pytest.mark.parametrize("resting", (True, False))
+@pytest.mark.parametrize("resting", (False,))  # v8 never rests a quote
 def test_atomic_admission_rolls_back_on_ledger_key_collision(
     tmp_path: Path,
     resting: bool,
@@ -1907,6 +1909,7 @@ def test_research_scan_rejects_same_day_station_target_before_admission(
         forecast=None,
         event=None,
         consensus=None,
+        quote_observed_at=now,
     )
 
     plans, execution, recorded = scan_module._execute_research_scan_context(
@@ -1924,31 +1927,25 @@ def test_research_scan_rejects_same_day_station_target_before_admission(
         scan_run_id="reg-1-station-lead",
     )
 
-    assert recorded == [decision]
-    assert plans.target.legs == []
-    assert [disposition.reason for disposition in plans.target.dispositions] == [
-        "target requires day-ahead lead"
+    # Since 2026-11-12 the v8 copy is blocked even earlier, on M1's civil lead.
+    assert [row.entry_block_reason for row in recorded] == [
+        "research v8 trades day-ahead only (civil lead 1)"
     ]
+    assert plans.target.legs == []
     assert execution.target_order_ids == ()
     assert execution.motion_order_ids == ()
 
 
-def test_research_scan_admits_day_ahead_target_on_lagging_station_clock(
+def test_research_scan_rejects_station_day_ahead_target_at_civil_lead_zero(
     tmp_path: Path,
 ) -> None:
-    """REG-1, the other direction: the station clock also ADMITS.
+    """REG-1's widening half no longer admits: v8 trades M1's civil lead 1.
 
-    Moving the scanner's lead measure onto the station clock is two-sided, and
-    this is the half that widens rather than narrows. At 07:30 UTC on a DST
-    date the Los Angeles civil day has already rolled to Sep 6 while SFO's
-    fixed-standard (PST) settlement day is still Sep 5, so a Sep 6 target is
-    lead 1 -- day-ahead -- at the station and lead 0 against the civil day.
-    Before the fix the scanner rejected it as "target requires day-ahead lead";
-    the store's atomic gate, which was already on the station clock, would not
-    have. The candidate is therefore admitted now where it previously was not,
-    and that is asserted here rather than left to a green suite: the same three
-    Pacific-standard cities (sfo, lax, sea) are the only ones this reaches, for
-    one hour a day, during DST only.
+    At 07:30 UTC on a DST date the Los Angeles civil day has rolled to Sep 6
+    while SFO's fixed-standard settlement day is still Sep 5, so a Sep 6
+    target is lead 1 at the station but lead 0 on the civil clock. The M1
+    recalibration is fitted by civil lead, so the v8 copy is blocked there
+    (2026-11-12) and the scan still completes.
     """
 
     from sfo_kalshi_quant._cli import scan as scan_module
@@ -1961,12 +1958,12 @@ def test_research_scan_admits_day_ahead_target_on_lagging_station_clock(
         research_clock=lambda: now,
     )
     city = get_city("sfo")
-    # The civil day is AHEAD of the station here -- the mirror of the Austin
-    # case above, where the station was ahead of the civil day.
     assert store.research_objective_day() == date(2026, 9, 6)
     assert store.research_station_day(city) == date(2026, 9, 5)
 
-    decision = _atomic_decision("KXHIGHTSFO-26SEP06-B80.5")
+    decision = replace(
+        _atomic_decision("KXHIGHTSFO-26SEP06-B80.5"), market_probability=0.82
+    )
     context = SimpleNamespace(
         decisions=[decision],
         city=city,
@@ -1975,6 +1972,7 @@ def test_research_scan_admits_day_ahead_target_on_lagging_station_clock(
         forecast=None,
         event=None,
         consensus=None,
+        quote_observed_at=now,
     )
 
     plans, execution, recorded = scan_module._execute_research_scan_context(
@@ -1992,18 +1990,11 @@ def test_research_scan_admits_day_ahead_target_on_lagging_station_clock(
         scan_run_id="reg-1-station-lead-admit",
     )
 
-    assert recorded == [decision]
-    assert [disposition.reason for disposition in plans.target.dispositions] == [None]
-    assert len(plans.target.legs) == 1
-    assert len(execution.target_order_ids) == 1
-
-    order = store.paper_order(execution.target_order_ids[0])
-    assert order is not None
-    # Stamped from the station clock, not the civil day: the civil-day label
-    # would have been "same-day", and the atomic gate rejects a label that
-    # disagrees with the station lead.
-    assert order["lead_bucket"] == "day-ahead"
-    assert order["objective_day"] == "2026-09-06"
+    assert [row.entry_block_reason for row in recorded] == [
+        "research v8 trades day-ahead only (civil lead 1)"
+    ]
+    assert plans.target.legs == []
+    assert execution.target_order_ids == ()
 
 
 def test_lead_bucket_clock_window_covers_every_station_disagreement() -> None:
@@ -2397,9 +2388,9 @@ def test_atomic_admission_rejects_limit_edge_lcb_changed_after_evidence(
 
 @pytest.mark.parametrize(
     ("resting", "expected_status"),
-    ((True, "PAPER_LIMIT_RESTING"), (False, "PAPER_FILLED")),
+    ((True, None), (False, "PAPER_FILLED")),
 )
-def test_atomic_admission_accepts_canonical_resting_and_crossing_quotes(
+def test_atomic_admission_accepts_canonical_crossing_and_refuses_resting_quotes(
     tmp_path: Path,
     resting: bool,
     expected_status: str,
@@ -2421,6 +2412,18 @@ def test_atomic_admission_accepts_canonical_resting_and_crossing_quotes(
         f"canonical-quote-{resting}",
         decision,
     )
+    if expected_status is None:
+        # The v8 book is taker-only (2026-11-12): a maker quote has no
+        # canonical target quote and is refused before any row is written.
+        with pytest.raises(ValueError, match="canonical research limit quote"):
+            store.record_research_order_atomic(
+                "2026-07-19",
+                decision,
+                admission=admission,
+                strategy_config=strategy_config_for_profile("research"),
+            )
+        assert store.research_open_risk(account_id=TARGET_POLICY.account_id) == 0.0
+        return
 
     order_id = store.record_research_order_atomic(
         "2026-07-19",
@@ -2617,7 +2620,7 @@ def test_research_evidence_keeps_archived_motion_readable_but_not_admissible(
     store = PaperStore(tmp_path / "research-styles.db", research_clock=_fixed_research_clock)
     config = strategy_config_for_profile("research")
 
-    target = _atomic_decision("KXHIGHTSFO-TARGET-STYLE", resting=True)
+    target = _atomic_decision("KXHIGHTSFO-TARGET-STYLE")
     target_identity = ResearchDecisionIdentity.for_policy(
         TARGET_POLICY,
         objective_day="2026-07-18",
@@ -2672,7 +2675,7 @@ def test_research_evidence_keeps_archived_motion_readable_but_not_admissible(
     target_row = store.paper_order(target_order_id)
     assert target_row is not None
     assert target_row["entry_mode"] == "limit"
-    assert target_row["fill_model"] == "maker_trade_through_required"
+    assert target_row["fill_model"] == "immediate_visible_quote"
     assert motion_order_id is None
 
     wrong_target_identity = ResearchDecisionIdentity.for_policy(
@@ -3004,7 +3007,7 @@ def test_policy_candidate_preparation_accepts_point_edge_below_legacy_minimum() 
     assert motion[0].edge == pytest.approx(0.003)
 
 
-def test_target_uses_maker_when_taker_lcb_is_negative_but_maker_lcb_is_nonnegative() -> None:
+def test_target_drops_when_taker_lcb_is_negative_even_if_maker_lcb_is_nonnegative() -> None:
     from sfo_kalshi_quant.paper import prepare_research_sleeve_decisions
 
     config = strategy_config_for_profile("research")
@@ -3028,11 +3031,9 @@ def test_target_uses_maker_when_taker_lcb_is_negative_but_maker_lcb_is_nonnegati
 
     target, _motion = prepare_research_sleeve_decisions([structural], config)
 
-    assert target[0].approved is True
-    assert target[0].limit_price == pytest.approx(0.81)
-    assert target[0].limit_price < target[0].ask
-    assert target[0].limit_edge_lcb is not None
-    assert target[0].limit_edge_lcb >= 0.0
+    # v8 is taker-only (2026-11-12): the bid+1 maker quote is never placed.
+    assert target[0].approved is False
+    assert target[0].limit_price is None
 
 
 def test_policy_candidate_preparation_does_not_revive_structural_rejection() -> None:
@@ -3092,16 +3093,18 @@ def test_target_atomic_admission_uses_zero_lcb_floor_quote(
     )
 
     config = strategy_config_for_profile("research")
+    # The LCB equals the exact two-contract taker cost at the 0.90 ask
+    # (0.90 + a 2c order fee / 2): the v8 floor is zero after fees.
     structural = replace(
         _atomic_decision("KXHIGHTSFO-TARGET-ZERO-LCB"),
         approved=True,
         probability=0.92,
-        probability_lcb=0.815,
+        probability_lcb=0.91,
         model_probability=0.92,
         entry_bid=0.80,
         entry_ask=0.90,
         spread=0.10,
-        recommended_contracts=1.0,
+        recommended_contracts=2.0,
         reasons=[],
         limit_price=None,
         limit_fee_per_contract=None,
@@ -3222,7 +3225,7 @@ def test_target_crossing_quote_rejects_nonexecutable_depth(ask_size: object) -> 
     ) is None
 
 
-def test_target_maker_quote_does_not_downsize_to_visible_ask_depth() -> None:
+def test_target_never_rests_when_visible_depth_is_below_the_taker_minimum() -> None:
     from sfo_kalshi_quant.paper import with_target_research_execution
 
     candidate = replace(
@@ -3239,9 +3242,9 @@ def test_target_maker_quote_does_not_downsize_to_visible_ask_depth() -> None:
         strategy_config_for_profile("research"),
     )
 
-    assert prepared is not None
-    assert prepared.recommended_contracts == 25.0
-    assert prepared.limit_price == pytest.approx(0.89)
+    # One displayed 90c contract is below the $1 taker minimum, and v8 has
+    # no maker path since 2026-11-12, so nothing is quoted.
+    assert prepared is None
 
 
 def test_target_depth_downsize_is_exact_in_evidence_and_order_ledger(

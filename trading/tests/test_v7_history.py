@@ -4,19 +4,19 @@ from pathlib import Path
 
 from sfo_kalshi_quant.db import PaperStore
 from sfo_kalshi_quant.profile_identity import published_profile_key
-from sfo_kalshi_quant.research_policy import TARGET_POLICY, TARGET_POLICY_V6
+from sfo_kalshi_quant.research_policy import TARGET_POLICY, TARGET_POLICY_V6, TARGET_POLICY_V7
 from sfo_kalshi_quant.store import schema
 
 
 def test_v7_changes_capital_without_increasing_position_limit_or_rewriting_v6():
-    assert TARGET_POLICY.policy_version == "research-target-roi-v7"
-    assert TARGET_POLICY.account_id != TARGET_POLICY_V6.account_id
+    assert TARGET_POLICY_V7.policy_version == "research-target-roi-v7"
+    assert TARGET_POLICY_V7.account_id != TARGET_POLICY_V6.account_id
     assert TARGET_POLICY_V6.policy_fingerprint == "0fd9cc8ebf877a653806fe1a"
-    old, new = asdict(TARGET_POLICY_V6), asdict(TARGET_POLICY)
+    old, new = asdict(TARGET_POLICY_V6), asdict(TARGET_POLICY_V7)
     assert TARGET_POLICY_V6.reference_equity == 1000.0
-    assert TARGET_POLICY.reference_equity == 2000.0
+    assert TARGET_POLICY_V7.reference_equity == 2000.0
     assert TARGET_POLICY_V6.reference_equity * TARGET_POLICY_V6.max_position_risk_pct == 90.0
-    assert TARGET_POLICY.reference_equity * TARGET_POLICY.max_position_risk_pct == 90.0
+    assert TARGET_POLICY_V7.reference_equity * TARGET_POLICY_V7.max_position_risk_pct == 90.0
     for key in ("account_id", "policy_version", "reference_equity", "max_position_risk_pct"):
         old.pop(key)
         new.pop(key)
@@ -26,6 +26,19 @@ def test_v7_changes_capital_without_increasing_position_limit_or_rewriting_v6():
         research_sleeve="target", research_policy_version=TARGET_POLICY_V6.policy_version,
         policy_fingerprint=TARGET_POLICY_V6.policy_fingerprint,
     ) == "research-target-v6"
+
+
+def test_v8_changes_only_identity_lock_and_loss_pause_from_frozen_v7():
+    v7, v8 = asdict(TARGET_POLICY_V7), asdict(TARGET_POLICY)
+    assert {key for key in v7 if v7[key] != v8[key]} == {
+        "account_id", "policy_version", "target_return", "daily_loss_pause_pct",
+    }
+    assert (TARGET_POLICY.target_return, TARGET_POLICY.daily_loss_pause_pct) == (1.0, 0.25)
+    assert published_profile_key(
+        "research", account_id=TARGET_POLICY_V7.account_id,
+        research_sleeve="target", research_policy_version=TARGET_POLICY_V7.policy_version,
+        policy_fingerprint=TARGET_POLICY_V7.policy_fingerprint,
+    ) == "research-target-v7"
 
 
 def test_v7_migration_preserves_v6_ledger_and_order_bytes(tmp_path: Path, monkeypatch):

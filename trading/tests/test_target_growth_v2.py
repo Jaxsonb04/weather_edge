@@ -17,6 +17,7 @@ from sfo_kalshi_quant.research_policy import (
     TARGET_POLICY_V4,
     TARGET_POLICY_V5,
     TARGET_POLICY_V6,
+    TARGET_POLICY_V7,
     ResearchSleeve,
 )
 from sfo_kalshi_quant.config import strategy_config_for_profile
@@ -49,17 +50,17 @@ def test_target_roi_v3_becomes_active_without_rewriting_prior_identities() -> No
     assert TARGET_POLICY_V2.daily_loss_pause_pct == 0.10
     assert TARGET_POLICY_V2.allocator_version == "policy-sized-v2"
 
-    # V7 keeps the $90 position limit and uses its own $2,000 capital.
-    assert TARGET_POLICY.account_id == "paper-research-roi-v7"
-    assert TARGET_POLICY.policy_version == "research-target-roi-v7"
+    # V8 keeps V7's $90 position limit and $2,000 capital.
+    assert TARGET_POLICY.account_id == "paper-research-hf-v8"
+    assert TARGET_POLICY.policy_version == "research-target-hf-v8"
     assert TARGET_POLICY.reference_equity == 2000.0
-    assert TARGET_POLICY.target_return == 0.05
-    assert TARGET_POLICY.target_pnl == 100.0
+    assert TARGET_POLICY.target_return == 1.0
+    assert TARGET_POLICY.target_pnl == 2000.0
     assert TARGET_POLICY.max_position_risk_pct == 0.045
     assert TARGET_POLICY.max_city_target_risk_pct == 0.18
     assert TARGET_POLICY.max_region_day_risk_pct == 0.36
     assert TARGET_POLICY.max_aggregate_risk_pct == 0.75
-    assert TARGET_POLICY.daily_loss_pause_pct == 0.15
+    assert TARGET_POLICY.daily_loss_pause_pct == 0.25
     assert TARGET_POLICY.allocator_version == "policy-sized-v3"
 
     assert ALL_RESEARCH_POLICIES == (
@@ -69,6 +70,7 @@ def test_target_roi_v3_becomes_active_without_rewriting_prior_identities() -> No
         TARGET_POLICY_V4,
         TARGET_POLICY_V5,
         TARGET_POLICY_V6,
+        TARGET_POLICY_V7,
         TARGET_POLICY,
         MOTION_POLICY,
     )
@@ -107,12 +109,14 @@ def _structural_target_candidate(*, bid: float, ask: float, ask_size: float) -> 
     )
 
 
-def test_resting_structural_target_uses_the_active_policy_position_budget() -> None:
-    prepared = with_target_research_execution(
-        _structural_target_candidate(bid=0.74, ask=0.76, ask_size=1.0),
+def test_structural_target_spends_the_flat_policy_position_budget() -> None:
+    from sfo_kalshi_quant.paper import prepare_research_target_decisions
+
+    prepared = prepare_research_target_decisions(
+        [_structural_target_candidate(bid=0.74, ask=0.76, ask_size=1000.0)],
         strategy_config_for_profile("research"),
-    )
-    assert prepared is not None
+    )[0]
+    assert prepared.approved
 
     plans = allocate_research_plans(
         [ResearchOpportunity(prepared, "2026-07-30", 1)],
@@ -120,20 +124,21 @@ def test_resting_structural_target_uses_the_active_policy_position_budget() -> N
     )
 
     assert len(plans.target.legs) == 1
-    assert plans.target.legs[0].decision.recommended_contracts == 120.0
-    assert plans.target.legs[0].spend == 90.0
+    leg = plans.target.legs[0]
+    assert leg.spend <= 90.0 < leg.spend + leg.decision.cost_per_contract
 
 
-def test_resting_growth_target_survives_atomic_admission(tmp_path) -> None:
+def test_growth_target_fills_as_a_taker_through_atomic_admission(tmp_path) -> None:
     from sfo_kalshi_quant.db import PaperStore
     from sfo_kalshi_quant.paper import PaperTrader
 
+    from sfo_kalshi_quant.paper import prepare_research_target_decisions
+
     config = strategy_config_for_profile("research")
-    prepared = with_target_research_execution(
-        _structural_target_candidate(bid=0.74, ask=0.76, ask_size=1.0),
-        config,
-    )
-    assert prepared is not None
+    prepared = prepare_research_target_decisions(
+        [_structural_target_candidate(bid=0.74, ask=0.76, ask_size=1000.0)], config
+    )[0]
+    assert prepared.approved
     plans = allocate_research_plans(
         [ResearchOpportunity(prepared, "2026-07-30", 1)],
         motion_opportunities=[],
@@ -163,30 +168,24 @@ def test_resting_growth_target_survives_atomic_admission(tmp_path) -> None:
     order = store.paper_order(result.target_order_ids[0])
     assert order is not None
     assert order["account_id"] == TARGET_POLICY.account_id
-    assert order["entry_mode"] == "limit"
-    assert order["status"] == "PAPER_LIMIT_RESTING"
-    assert order["contracts"] == 120.0
-    assert order["reserved_cost"] == 90.0
+    assert order["status"] == "PAPER_FILLED"
+    assert order["contracts"] == plans.target.legs[0].decision.recommended_contracts
+    assert order["contracts"] * order["cost_per_contract"] <= 90.0 + 1e-9
 
 
-def test_atomic_admission_cannot_max_size_a_thin_conservative_edge(tmp_path):
-    from sfo_kalshi_quant.db import PaperStore, ResearchEntryLimitError
+def test_atomic_admission_cannot_fund_an_entry_without_the_one_cent_edge(tmp_path):
+    from sfo_kalshi_quant.db import PaperStore
     from test_research_sleeves import _fixed_research_clock, _linked_admission
 
     store = PaperStore(tmp_path / "full-loss-cap.db", research_clock=_fixed_research_clock)
     config = strategy_config_for_profile("research")
-    decision = with_target_research_execution(
-        replace(
-            _structural_target_candidate(bid=0.74, ask=0.76, ask_size=1.0),
-            probability_lcb=0.78,
-        ), config,
-    )
-    assert decision is not None
-    decision = replace(decision, recommended_contracts=120, expected_profit=decision.edge * 120)
+    decision = _expanded_taker_fixture()
+    # An LCB below the taker cost (p - cost < one cent) funds nothing.
+    decision = replace(decision, probability_lcb=decision.cost_per_contract - 0.001)
     admission = _linked_admission(
-        store, TARGET_POLICY, "old-size", decision, target_date="2026-07-30",
+        store, TARGET_POLICY, "no-edge", decision, target_date="2026-07-30",
     )
-    with pytest.raises(ResearchEntryLimitError, match="conservative entry-risk"):
+    with pytest.raises(Exception, match="entry limits|canonical research limit quote"):
         store.record_research_order_atomic(
             "2026-07-30", decision, admission=admission, strategy_config=config,
         )
@@ -223,7 +222,7 @@ def test_atomic_target_taker_can_use_more_than_structural_25_with_verified_depth
     assert row["contracts"] * row["cost_per_contract"] <= 90.0
 
 
-@pytest.mark.parametrize("tamper", ["generic", "depth", "fee", "kelly", "fractional"])
+@pytest.mark.parametrize("tamper", ["generic", "depth", "fee", "fractional"])
 def test_expanded_target_taker_exception_cannot_bypass_other_limits(tmp_path, tamper):
     from sfo_kalshi_quant.db import PaperStore, ResearchEntryLimitError
     from test_research_sleeves import _fixed_research_clock, _linked_admission
@@ -233,7 +232,6 @@ def test_expanded_target_taker_exception_cannot_bypass_other_limits(tmp_path, ta
         "generic": {"binding_constraint": "visible_ask_depth"},
         "depth": {"entry_ask_size": 59.0},
         "fee": {"limit_fee_per_contract": 0.0},
-        "kelly": {"probability_lcb": 0.775},
         "fractional": {"recommended_contracts": 59.5},
     }
     decision = replace(decision, **changes[tamper])
@@ -442,6 +440,7 @@ def test_fresh_store_bootstraps_every_research_policy_account(tmp_path) -> None:
         "paper-research-roi-v5",
         "paper-research-roi-v6",
         "paper-research-roi-v7",
+        "paper-research-hf-v8",
         "paper-research-motion-v1",
     }
     assert all(state is not None for state in states.values())

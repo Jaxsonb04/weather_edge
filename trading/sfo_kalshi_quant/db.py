@@ -81,6 +81,7 @@ from .research_policy import (
     TARGET_POLICY_V4,
     TARGET_POLICY_V5,
     TARGET_POLICY_V6,
+    TARGET_POLICY_V7,
     ResearchSleeve,
     ResearchSleevePolicy,
     canonical_research_lead_bucket,
@@ -598,6 +599,7 @@ _RESEARCH_POLICIES_BY_ACCOUNT = {
     TARGET_POLICY_V4.account_id: TARGET_POLICY_V4,
     TARGET_POLICY_V5.account_id: TARGET_POLICY_V5,
     TARGET_POLICY_V6.account_id: TARGET_POLICY_V6,
+    TARGET_POLICY_V7.account_id: TARGET_POLICY_V7,
     TARGET_POLICY.account_id: TARGET_POLICY,
     MOTION_POLICY.account_id: MOTION_POLICY,
 }
@@ -2010,6 +2012,7 @@ class PaperStore:
             TARGET_POLICY_V4.account_id: "research-target-v4",
             TARGET_POLICY_V5.account_id: "research-target-v5",
             TARGET_POLICY_V6.account_id: "research-target-v6",
+            TARGET_POLICY_V7.account_id: "research-target-v7",
             TARGET_POLICY.account_id: "research-target",
             MOTION_POLICY.account_id: "research-motion",
         }[account_id]

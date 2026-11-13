@@ -115,8 +115,13 @@ def _market(bid: float, ask: float) -> MarketBin:
     )
 
 
-def test_live_favorite_band_rejects_coinflips_and_accepts_favorites():
-    live = TradeEvaluator(strategy_config_for_profile("live"))
+def test_favorite_band_rejects_coinflips_and_accepts_favorites():
+    # Live dropped the band on 2026-11-12 (it trades the M1 market signal,
+    # which buys mid-priced brackets); the band itself is unchanged.
+    assert not strategy_config_for_profile("live").favorite_band_enabled
+    live = TradeEvaluator(
+        replace(strategy_config_for_profile("live"), favorite_band_enabled=True)
+    )
 
     coinflip = live.evaluate_market(
         _market(0.53, 0.55), _bucket(_market(0.53, 0.55), 0.68, 0.63, 0.55), bankroll=1000

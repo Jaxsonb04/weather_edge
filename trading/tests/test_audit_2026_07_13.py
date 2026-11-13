@@ -32,6 +32,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import pytest
+
 from sfo_kalshi_quant.account import strategy_fingerprint
 from sfo_kalshi_quant.cli import _fill_resting_orders_against_live_book, main
 from sfo_kalshi_quant.colors import Color
@@ -46,6 +48,19 @@ from sfo_kalshi_quant.models import (
 )
 from sfo_kalshi_quant.probability import ResidualCalibrator
 from sfo_kalshi_quant.research_policy import TARGET_POLICY
+
+@pytest.fixture(autouse=True)
+def _exit_rules_manage_these_rows(monkeypatch):
+    # These tests pin the exit rules, which still manage archived books' open
+    # lots. Live and research v8 hold to settlement since 2026-11-12
+    # (test_market_signal_books.py pins that).
+    from sfo_kalshi_quant import monitor
+    from sfo_kalshi_quant.account import LIVE_STABILITY_ACCOUNT_ID
+    from sfo_kalshi_quant.research_policy import TARGET_POLICY
+
+    monkeypatch.delitem(monitor._HOLD_TO_SETTLEMENT_REASONS, LIVE_STABILITY_ACCOUNT_ID)
+    monkeypatch.delitem(monitor._HOLD_TO_SETTLEMENT_REASONS, TARGET_POLICY.account_id)
+
 
 AUDIT_HEAD = "2a1a771a749c78ef03175b79b3f75a1f5b60239b"
 
@@ -1268,6 +1283,7 @@ def test_db01_concurrent_fresh_init_bootstraps_exactly_one_account(tmp_path: Pat
         # at its separate $2,000 capital.
         assert sorted(accounts) == [
             ("paper-live-stability-v1", 1, 2000.0, 2000.0, 2000.0),
+            ("paper-research-hf-v8", 1, 2000.0, 2000.0, 2000.0),
             ("paper-research-m1-v1", 1, 2000.0, 2000.0, 2000.0),
             ("paper-research-motion-v1", 1, 1000.0, 1000.0, 1000.0),
             ("paper-research-roi-v3", 1, 1000.0, 1000.0, 1000.0),
@@ -1282,6 +1298,7 @@ def test_db01_concurrent_fresh_init_bootstraps_exactly_one_account(tmp_path: Pat
         ], f"attempt {attempt}: unexpected account rows {accounts}"
         assert sorted(openings) == [
             ("paper-live-stability-v1", 1, 2000.0),
+            ("paper-research-hf-v8", 1, 2000.0),
             ("paper-research-m1-v1", 1, 2000.0),
             ("paper-research-motion-v1", 1, 1000.0),
             ("paper-research-roi-v3", 1, 1000.0),

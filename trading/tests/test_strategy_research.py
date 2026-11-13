@@ -1439,6 +1439,7 @@ def test_strategy_research_exposes_target_goal_and_separate_motion_book(tmp_path
         "research-target-v4",
         "research-target-v5",
         "research-target-v6",
+        "research-target-v7",
         "research-motion",
     }
     assert profile_views["research-target"]["daily_target"]["target_pnl"] == TARGET_POLICY.target_pnl
@@ -2819,6 +2820,7 @@ def test_strategy_research_builds_isolated_profile_views():
             "research-target-v4",
             "research-target-v5",
         "research-target-v6",
+            "research-target-v7",
             "research-motion",
         }
 
