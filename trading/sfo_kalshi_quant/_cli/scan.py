@@ -1929,6 +1929,14 @@ def _paper_entry_gate_for_target(
                 "live paper entry requires civil lead 1; the M1 recalibration "
                 "is fitted for day-ahead (D-1) only",
             )
+        if normalize_risk_profile_name(risk_profile) == "live" and is_listing_hour(
+            target, local_now
+        ):
+            return (
+                False,
+                "live paper entry skips the listing hour (D-1 10:00-10:59 "
+                "America/New_York), where M1's test showed taker losses",
+            )
         return True, None
     if normalize_risk_profile_name(risk_profile) == "live":
         return (

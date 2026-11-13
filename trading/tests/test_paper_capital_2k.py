@@ -63,10 +63,14 @@ def test_v7_position_limit_stays_ninety_dollars():
 
 def test_v7_veto_stop_stays_at_35_and_archived_policies_keep_their_own():
     assert RESEARCH_VETO_DOLLAR_CAPS[TARGET_POLICY.account_id] == 35.0
+    assert RESEARCH_VETO_DOLLAR_CAPS[TARGET_POLICY_V7.account_id] == 35.0
     for policy in ALL_RESEARCH_POLICIES:
-        if policy.account_id in RESEARCH_VETO_DOLLAR_CAPS and policy is not TARGET_POLICY:
+        if policy.account_id in RESEARCH_VETO_DOLLAR_CAPS and policy not in (
+            TARGET_POLICY,
+            TARGET_POLICY_V7,
+        ):
             assert RESEARCH_VETO_DOLLAR_CAPS[policy.account_id] == pytest.approx(
-                min(policy.target_pnl * 0.70, 35.0)
+                policy.target_pnl * 0.70
             )
 
 

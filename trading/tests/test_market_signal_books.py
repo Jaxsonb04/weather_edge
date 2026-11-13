@@ -1,7 +1,7 @@
 """Live and research v8 trade the M1 market recalibration (2026-11-12)."""
 
 from dataclasses import replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -131,6 +131,16 @@ def test_live_entry_gate_blocks_lead_two_and_keeps_the_same_day_block():
     assert gate(date(2026, 11, 12), forecast, None, city=SFO, now=QUOTE_AT, risk_profile="live")[1] == (
         "live paper entry requires min_lead_days=1; same-day signals are research-only"
     )
+    # 10:30 EST on D-1: M1's listing-hour skip applies to Live too; 11:00 is open.
+    listing = datetime(2026, 11, 12, 15, 30, tzinfo=UTC)
+    assert gate(TARGET, forecast, None, city=SFO, now=listing, risk_profile="live") == (
+        False,
+        "live paper entry skips the listing hour (D-1 10:00-10:59 America/New_York), "
+        "where M1's test showed taker losses",
+    )
+    assert gate(
+        TARGET, forecast, None, city=SFO, now=listing + timedelta(minutes=30), risk_profile="live"
+    ) == (True, None)
     # Research keeps its own lead rules.
     assert gate(date(2026, 11, 14), forecast, None, city=SFO, now=QUOTE_AT, risk_profile="research") == (
         True,
