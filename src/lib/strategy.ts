@@ -856,7 +856,8 @@ export function profileDisplayLabel(
 ): string {
   if (profile.risk_profile === "research-target") {
     const version = policyVersion?.match(/(?:^|-)v(\d+)(?:$|-)/i)?.[1];
-    return version ? `Research ROI v${version}` : "Research ROI";
+    const name = policyVersion?.includes("-hf-") ? "High-frequency research" : "Research ROI";
+    return version ? `${name} v${version}` : name;
   }
   return PROFILE_DISPLAY_LABELS[profile.risk_profile] ?? (profile.label || profile.risk_profile);
 }

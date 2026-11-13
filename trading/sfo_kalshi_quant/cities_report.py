@@ -21,9 +21,11 @@ from ._util import _table_exists
 from .account import LIVE_STABILITY_ACCOUNT_ID
 from .cities import CITIES, CityConfig, city_for_market_ticker
 from .config import DEFAULT_DB_PATH, DEFAULT_FORECASTER_ROOT
+from .consensus import apply_market_headline, ladder_mean
+from .db import PaperStore
 from .emos_sources import forecast_source_precedence
 from .forecast import ForecastDataError, SfoForecasterAdapter
-from .models import ForecastSnapshot
+from .models import ForecastSnapshot, format_event_date_token
 from .profile_identity import published_profile_key
 from .research_policy import TARGET_POLICY
 from .settlement_day import settlement_today
@@ -61,6 +63,9 @@ _IDENTITY_COLUMNS = (
 )
 
 
+_MARKET_SNAPSHOT_MAX_AGE = timedelta(minutes=30)
+
+
 def _target_status(target: str, today: date) -> str:
     target_date = date.fromisoformat(target)
     if target_date < today:
@@ -76,6 +81,8 @@ def _city_forecasts(
     today: date,
     *,
     forecaster_root: Path,
+    store: PaperStore | None = None,
+    now: datetime | None = None,
 ) -> list[dict]:
     if not _table_exists(conn, "forecast_emos_daily_high"):
         return []
@@ -129,8 +136,37 @@ def _city_forecasts(
             # Feed the unrounded mu, exactly what the trading path blends, so
             # the two artifacts round once and land on the same cent.
             entry = _with_intraday_update(entry, adapter, city, base_high_f=float(mu))
+        entry = apply_market_headline(
+            entry,
+            _market_ladder(store, city, target, now),
+            intraday=entry["intraday_update"],
+            now=now,
+        )
         out.append(entry)
     return out
+
+
+def _market_ladder(
+    store: PaperStore | None,
+    city: CityConfig,
+    target: str,
+    now: datetime | None,
+) -> tuple[float, float] | None:
+    """The city's market-implied (mean, sd) from a snapshot at most 30 minutes old."""
+
+    if store is None:
+        return None
+    now = now or datetime.now(timezone.utc)
+    event_ticker = f"{city.series_ticker}-{format_event_date_token(date.fromisoformat(target))}"
+    try:
+        event = store.latest_market_snapshot(
+            target,
+            event_ticker=event_ticker,
+            not_before=(now - _MARKET_SNAPSHOT_MAX_AGE).isoformat(),
+        )
+        return ladder_mean(event.active_markets) if event else None
+    except Exception:  # noqa: BLE001 - a bad snapshot row must never fail the public build
+        return None
 
 
 def _with_intraday_update(
@@ -429,6 +465,8 @@ def build_cities_data(
                     city,
                     city_today,
                     forecaster_root=Path(forecaster_root),
+                    store=PaperStore(paper_db, init=False) if paper_conn is not None else None,
+                    now=generated_at,
                 )
                 entry["latest_settlement"] = _city_settlement(weather_conn, city)
             if all_books is not None:
@@ -453,11 +491,16 @@ def build_cities_data(
             slot: dict(account) for slot, account in _ACTIVE_BOOK_ACCOUNTS.items()
         },
         "note": (
-            "Paper-trading research only. Forecasts are EMOS-calibrated "
-            "multi-model NWP Gaussians per settlement station; once a "
-            "settlement day is under way its predicted_high_f also carries the "
-            "observed high-so-far update the trading path serves, with the "
-            "pre-update mean kept as predicted_high_f_pre_intraday. Every "
+            "Paper-trading research only. predicted_high_f is the "
+            "market-implied high from the Kalshi bracket ladder "
+            "(forecast_source=\"market\", market_implied_high_f, sigma_f the "
+            "ladder spread) whenever a complete ladder was seen in the last 30 "
+            "minutes, floored at the observed high on the settlement day; "
+            "otherwise it is the EMOS-calibrated multi-model NWP Gaussian "
+            "(forecast_source=\"model\"). model_high_f and model_sigma_f always "
+            "keep the model value, which once a settlement day is under way "
+            "carries the observed high-so-far update the trading path serves, "
+            "with the pre-update mean kept as predicted_high_f_pre_intraday. Every "
             "market settles on its own NWS Climatological Report. Each book is "
             "one economically separate paper account and books are never "
             "summed: books.live is only the active Live Stability account and "

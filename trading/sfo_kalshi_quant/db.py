@@ -2549,6 +2549,7 @@ class PaperStore:
         target_date: str,
         *,
         event_ticker: str | None = None,
+        not_before: str | None = None,
     ) -> EventSnapshot | None:
         """Reconstruct the most recent stored Kalshi ladder for a target date.
 
@@ -2566,6 +2567,9 @@ class PaperStore:
         if event_ticker is not None:
             filters.append("event_ticker = ?")
             params.append(event_ticker)
+        if not_before is not None:  # ISO-8601 UTC, same format as created_at
+            filters.append("created_at >= ?")
+            params.append(not_before)
         with self.connect() as conn:
             row = conn.execute(
                 f"""

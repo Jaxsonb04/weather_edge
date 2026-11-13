@@ -120,6 +120,7 @@ describe("active research books", () => {
     expect(profileDisplayLabel(target)).toBe("Research ROI");
     expect(profileDisplayLabel(target, "research-target-roi-v6")).toBe("Research ROI v6");
     expect(profileDisplayLabel(target, "research-target-roi-v7")).toBe("Research ROI v7");
+    expect(profileDisplayLabel(target, "research-target-hf-v8")).toBe("High-frequency research v8");
   });
 
   it("tolerates a missing target artifact and falls back from profile to top-level data", () => {
