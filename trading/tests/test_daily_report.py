@@ -61,7 +61,7 @@ def emos_report_inputs(monkeypatch):
     return target, adapter, calibrator
 
 
-def _build_emos_report(inputs, *, enabled: bool):
+def _build_emos_report(inputs, *, enabled: bool, offline_events=None):
     target, adapter, calibrator = inputs
     return report.build_target_report(
         target=target,
@@ -69,7 +69,7 @@ def _build_emos_report(inputs, *, enabled: bool):
         calibrator=calibrator,
         config=StrategyConfig(emos_distribution_enabled=enabled),
         side="both",
-        offline_events=None,
+        offline_events=offline_events,
         observed_high=None,
         no_ensemble=True,
         ensemble_timeout=1.0,
@@ -475,6 +475,10 @@ def test_report_publishes_market_mean_as_headline_and_keeps_model(emos_report_in
     assert forecast["forecast_source"] == "market"
     assert forecast["predicted_high_f"] == pytest.approx(65.3, abs=0.05)
     assert forecast["model_high_f"] == 72.0
+
+    # An offline (saved) ladder may be stale, so it never headlines.
+    offline = _build_emos_report(emos_report_inputs, enabled=True, offline_events=Path("old.json"))
+    assert offline["forecast"]["forecast_source"] == "model"
 
     # No live event: the fallback paper ladder has no prices, so the model stays.
     monkeypatch.setattr(report, "_event_for_report", lambda *args, **kwargs: (None, None))

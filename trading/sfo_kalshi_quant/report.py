@@ -195,7 +195,8 @@ def build_target_report(
         "market_data_at": _market_data_at(event),
         "forecast": apply_market_headline(
             forecast_to_dict(forecast),
-            ladder_mean(markets) if market_available else None,
+            # A saved events file can be arbitrarily old; only a live ladder may headline.
+            ladder_mean(markets) if market_available and not offline_events else None,
             intraday=intraday_to_dict(intraday),
         ),
         "intraday": intraday_to_dict(intraday),
