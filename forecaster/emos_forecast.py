@@ -63,6 +63,10 @@ LIVE_SOURCE = "live"
 # Total seconds one serve run may spend on WeatherKit calls (slow or failing).
 APPLE_TIME_BUDGET_SECONDS = 60
 OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+# Per-city socket wait. Normal answers take <1 s; when Open-Meteo stalls, the
+# 45 s archive default x 20 cities overran the refresh's 300 s baseline cap
+# and lost every city. 20 x 10 s + the Apple budget stays under that cap.
+LIVE_FETCH_TIMEOUT_SECONDS = 10.0
 
 # Serve-time trailing recalibration toggles (emos_recalibration.py). Bias
 # passed the rolling-origin replay acceptance gate (pooled CRPS -1.3% over the
@@ -391,7 +395,9 @@ def fetch_live_model_forecasts_multi(
         }
     )
     try:
-        payload = _http_get_json(f"{OPEN_METEO_FORECAST_URL}?{params}")
+        payload = _http_get_json(
+            f"{OPEN_METEO_FORECAST_URL}?{params}", timeout=LIVE_FETCH_TIMEOUT_SECONDS
+        )
     except NwpArchiveError:
         return {}
     retrieved_at = datetime.now(timezone.utc).isoformat(timespec="microseconds")

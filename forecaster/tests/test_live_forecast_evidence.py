@@ -92,7 +92,7 @@ def test_record_rejects_future_retrieval_clock():
 
 def test_live_fetch_retains_finite_named_members_with_actual_retrieval_clock(monkeypatch):
     import emos_forecast as ef
-    monkeypatch.setattr(ef, "_http_get_json", lambda url: {"daily": {
+    monkeypatch.setattr(ef, "_http_get_json", lambda url, **_: {"daily": {
         "time": ["2026-10-06"], "temperature_2m_max_gfs": [71.0],
         "temperature_2m_max_bad": [float("inf")], "temperature_2m_max_malformed": ["invalid"],
     }})
@@ -138,3 +138,18 @@ def test_database_enforces_append_only_evidence(table, operation):
     row = export_live_forecasts(conn, before="2026-10-07T00:00:00Z")[0]
     assert row["predicted_high_f"] == 71.0
     assert row["members"][1]["predicted_high_f"] == 71.0
+
+
+def test_live_fetch_timeout_keeps_all_city_serve_under_refresh_cap(monkeypatch):
+    # Nov 2026 outage: Open-Meteo stalls x 45 s per city overran the 300 s cap
+    # and every city's forecast went stale. A full stall must still finish.
+    import emos_forecast as ef
+    import google_multicity_refresh as gmr
+    from cities import CITIES
+
+    seen = []
+    monkeypatch.setattr(ef, "_http_get_json", lambda url, timeout: seen.append(timeout) or {})
+    ef.fetch_live_model_forecasts_multi()
+    assert seen == [ef.LIVE_FETCH_TIMEOUT_SECONDS]
+    worst_case = ef.LIVE_FETCH_TIMEOUT_SECONDS * len(CITIES) + ef.APPLE_TIME_BUDGET_SECONDS
+    assert worst_case < gmr._BASELINE_SUBPROCESS_TIMEOUT_SECONDS

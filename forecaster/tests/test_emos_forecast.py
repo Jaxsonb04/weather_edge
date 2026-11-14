@@ -548,7 +548,7 @@ def test_multi_forecast_fetch_missing_target_degrades_to_empty_helper(monkeypatc
     monkeypatch.setattr(
         ef,
         "_http_get_json",
-        lambda _url: {
+        lambda _url, **_: {
             "daily": {
                 "time": [target.isoformat()],
                 **{
@@ -574,7 +574,7 @@ def test_multi_forecast_fetch_skips_malformed_day_and_keeps_partial_target(monke
     monkeypatch.setattr(
         ef,
         "_http_get_json",
-        lambda _url: {
+        lambda _url, **_: {
             "daily": {
                 "time": [target.isoformat(), "not-a-date", next_target.isoformat()],
                 f"temperature_2m_max_{first_model}": [70.0, 999.0, 71.0],
