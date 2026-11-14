@@ -592,8 +592,9 @@ def test_forecast_regression_blocks_an_otherwise_profitable_candidate() -> None:
     # blocked by a CRPS regression beyond the declared tolerance -- and
     # the challenger's own excellent $50/day hit rate is reported but
     # never overrides it.
+    # $2,500/day clears the v8 $2,000 daily goal on every day.
     folds, replays, candidates = _experiment(
-        30, baseline_pnl=10.0, challenger_pnl=100.0, baseline_crps=1.0, challenger_crps=3.0,
+        30, baseline_pnl=10.0, challenger_pnl=2500.0, baseline_crps=1.0, challenger_crps=3.0,
     )
     decision = evaluate_promotion(
         _declaration(crps_regression_tolerance=0.5), folds=folds, replay_evidence=replays, candidate_evidence=candidates

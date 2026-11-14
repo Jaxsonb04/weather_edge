@@ -1,4 +1,4 @@
-"""Bounded target reservation quotes and pre-allocation taker capacity."""
+"""Taker-only target quotes and pre-allocation taker capacity."""
 
 from dataclasses import replace
 
@@ -6,7 +6,6 @@ import pytest
 
 from sfo_kalshi_quant.config import strategy_config_for_profile
 from sfo_kalshi_quant.execution import target_research_quote
-from sfo_kalshi_quant.fees import quadratic_fee_average_per_contract
 from sfo_kalshi_quant.models import TradeDecision
 from sfo_kalshi_quant.paper import (
     _prepare_research_disposition,
@@ -51,139 +50,48 @@ def _candidate(**changes):
     return replace(decision, **changes)
 
 
-def _fallback_config():
-    # The bounded reservation fallback stays implemented but the research
-    # profile opts out of it (2026-09-13); exercise it with the flag on.
-    return replace(
-        strategy_config_for_profile("research"),
-        limit_resting_reservation_fallback=True,
-    )
-
-
 @pytest.mark.parametrize("lcb", [0.885, 0.875])
-def test_research_profile_drops_thin_edge_instead_of_resting_behind_bid(lcb):
-    # bid+1 = 0.89 plus maker fee fails the zero LCB floor for both; the
-    # pre-2026-09-13 behaviour rested at 0.88 / 0.87. Resting behind the
-    # bid moves away from the seller flow, fires only on the thinnest edges
-    # and reserves budget for a 15-minute TTL while ~73% expire, so under
-    # the research profile the quote is now None.
+def test_research_profile_drops_thin_edge_instead_of_resting(lcb):
+    # The taker cost at the 0.90 ask fails the zero LCB floor. The v8 book
+    # (2026-11-12) never rests a maker quote, so the candidate is dropped.
     config = strategy_config_for_profile("research")
     assert config.research_target_taker_cross is True
-    assert config.limit_resting_reservation_fallback is False
     decision = _candidate(entry_bid=0.88, entry_ask=0.90, probability_lcb=lcb)
     assert target_research_quote(decision, config) is None
     assert with_target_research_execution(decision, config) is None
     prepared = prepare_research_target_decisions([decision], config)[0]
     assert not prepared.approved
-    # The fallback itself is intact for a profile that opts in.
-    assert target_research_quote(decision, _fallback_config()) is not None
 
 
 @pytest.mark.parametrize(
-    "lcb,ask_size,would_cross,price",
+    "lcb,ask_size,expected_price",
     [
-        # LCB clears the taker cost at the displayed ask: research crosses.
-        (0.93, 200.0, True, 0.90),
-        # No displayed depth to cross; bid+1 clears the maker floor: rest at 0.89.
-        (0.93, 0.0, False, 0.89),
-        # LCB clears bid+1 but not the taker cost: rest at 0.89 as before.
-        (0.90, 200.0, False, 0.89),
+        # LCB clears the taker cost at the displayed ask: cross.
+        (0.93, 200.0, 0.90),
+        # No displayed depth to cross: nothing, never a resting bid.
+        (0.93, 0.0, None),
+        # LCB clears bid+1 but not the taker cost: nothing.
+        (0.90, 200.0, None),
     ],
 )
-def test_research_profile_still_quotes_when_a_floor_clears(
-    lcb, ask_size, would_cross, price
-):
-    # Disabling the fallback only removes the behind-the-bid reservation;
-    # every quote whose floor holds at the ask or at bid+1 is unchanged.
+def test_research_profile_quotes_only_at_the_displayed_ask(lcb, ask_size, expected_price):
     config = strategy_config_for_profile("research")
     decision = _candidate(
         entry_bid=0.88, entry_ask=0.90, probability_lcb=lcb, entry_ask_size=ask_size
     )
     quote = target_research_quote(decision, config)
+    if expected_price is None:
+        assert quote is None
+        return
     assert quote is not None
-    assert quote.would_cross is would_cross
-    assert quote.price == price
-    assert quote.edge_lcb >= 0.0
-
-
-@pytest.mark.parametrize("lcb,expected_price", [(0.885, 0.88), (0.875, 0.87)])
-def test_target_rests_at_bounded_reservation_when_inside_quote_fails(lcb, expected_price):
-    decision = _candidate(entry_bid=0.88, entry_ask=0.90, probability_lcb=lcb)
-    config = _fallback_config()
-    quote = target_research_quote(decision, config)
-    assert quote is not None
-    assert not quote.would_cross
+    assert quote.would_cross is True
     assert quote.price == expected_price
-    assert quote.contracts == 25.0
-    assert quote.edge >= 0.0
     assert quote.edge_lcb >= 0.0
 
 
-def test_target_reservation_handles_failed_natural_cross_with_maker_fee():
-    decision = _candidate(entry_bid=0.89, entry_ask=0.90, probability_lcb=0.895)
-    config = replace(_fallback_config(), maker_fee_rate=0.0175)
-    quote = target_research_quote(decision, config)
-    assert quote is not None
-    assert not quote.would_cross
-    assert quote.price == 0.89
-    assert quote.fee_per_contract == quadratic_fee_average_per_contract(
-        quote.price,
-        quote.contracts,
-        maker=True,
-        fee_multiplier=config.fee_multiplier,
-        maker_rate=config.maker_fee_rate,
-        taker_rate=config.taker_fee_rate,
-        series_ticker=decision.ticker,
-    )
-
-
-def test_target_reservation_skips_zero_kelly_bid_for_executable_lower_tick():
-    decision = _candidate(
-        entry_bid=0.96,
-        entry_ask=0.98,
-        probability_lcb=0.96,
-        model_probability=0.99,
-        probability=0.99,
-    )
-    prepared = prepare_research_target_decisions([decision], _fallback_config())[0]
-    assert prepared.approved
-    assert prepared.limit_price == 0.95
-    plans = allocate_research_plans(
-        [ResearchOpportunity(prepared, "2026-09-12", 1)],
-        motion_opportunities=[],
-    )
-    assert len(plans.target.legs) == 1
-    assert plans.target.legs[0].spend > 0.0
-    assert plans.target.legs[0].decision.edge_lcb > 0.0
-
-
-@pytest.mark.parametrize("lcb", [0.96, 0.960001])
-def test_unfunded_initial_quote_tries_bounded_fallback_and_repeats_canonically(lcb):
-    decision = _candidate(entry_bid=0.95, entry_ask=0.98, probability_lcb=lcb)
-    config = _fallback_config()
-    prepared = prepare_research_target_decisions([decision], config)[0]
-    assert prepared.approved
-    assert prepared.limit_price == 0.95
-    assert prepared.limit_edge_lcb > 0.0
-    final = with_target_research_execution(
-        replace(prepared, recommended_contracts=7.0), config
-    )
-    assert final is not None
-    assert final.limit_price == 0.95
-    assert final.recommended_contracts == 7.0
-
-
-@pytest.mark.parametrize("probability_field", ["probability_lcb", "model_probability"])
-def test_target_reservation_cannot_reach_more_than_one_tick_below_bid(probability_field):
-    decision = _candidate(
-        entry_bid=0.88, entry_ask=0.90, **{probability_field: 0.865}
-    )
-    assert target_research_quote(decision, _fallback_config()) is None
-
-
-def test_target_reservation_does_not_change_disabled_or_rejected_paths():
-    config = _fallback_config()
-    decision = _candidate(entry_bid=0.88, entry_ask=0.90, probability_lcb=0.885)
+def test_target_quote_does_not_change_disabled_or_rejected_paths():
+    config = strategy_config_for_profile("research")
+    decision = _candidate(entry_bid=0.88, entry_ask=0.90, probability_lcb=0.95)
     assert target_research_quote(replace(decision, approved=False), config) is None
     assert target_research_quote(
         decision, replace(config, research_target_taker_cross=False)
@@ -252,11 +160,10 @@ def test_source_expansion_requires_fresh_approved_structural_origin(decision):
     assert prepared.recommended_contracts <= decision.recommended_contracts
 
 
-def test_resting_structural_source_retains_its_existing_allocator_path():
+def test_thin_structural_source_is_dropped_not_rested():
+    # One 76c contract is below the $1 taker minimum and there is no maker path.
     prepared = prepare_research_target_decisions(
         [_candidate(entry_ask_size=1.0)], strategy_config_for_profile("research")
     )[0]
-    assert prepared.approved
-    assert prepared.recommended_contracts == 25.0
-    assert prepared.limit_price == 0.75
-    assert prepared.binding_constraint == "research_policy_allocator"
+    assert not prepared.approved
+    assert prepared.limit_price is None

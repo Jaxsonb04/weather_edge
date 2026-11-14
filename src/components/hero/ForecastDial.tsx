@@ -73,6 +73,7 @@ function CityForecastDial({ city }: { city: City }) {
   const forecast = forecasts[activeIdx] ?? lead ?? forecasts[0];
   const temperature = useTemperature();
   const freshness = cityFreshness(city.forecasts);
+  const fromMarket = forecast?.forecast_source === "market";
   const freshnessColor = freshness.tone === "danger" ? "danger" : freshness.tone === "warning" ? "warning" : "success";
 
   return (
@@ -107,8 +108,13 @@ function CityForecastDial({ city }: { city: City }) {
         {forecast ? (
           <>
             <div>
-              <p className="text-xs text-muted">Predicted high · {shortDateUTC(forecast.target_date)}</p>
+              <p className="text-xs text-muted">
+                {fromMarket ? "Market-implied high" : "Predicted high"} · {shortDateUTC(forecast.target_date)}
+              </p>
               <Reading value={forecast.predicted_high_f} color={tempColor(forecast.predicted_high_f)} />
+              {fromMarket && typeof forecast.model_high_f === "number" && (
+                <p className="tnum text-xs text-muted">Model {temperature.temp(forecast.model_high_f, 1, true)}</p>
+              )}
             </div>
             <DialScale value={forecast.predicted_high_f} />
             <dl className="grid grid-cols-4 gap-3 border-t border-separator pt-4">
@@ -156,7 +162,10 @@ export function ForecastDial({ targets, city }: { targets: Target[]; city?: City
   const high = predictedHigh(target);
   const mc = target.market_consensus;
   const intraday = target.intraday;
-  const delta = mc?.model_minus_market_f ?? null;
+  // Once the headline is the market, the comparison is the model against it.
+  const fromMarket = target.forecast?.forecast_source === "market";
+  const modelHigh = typeof target.forecast?.model_high_f === "number" ? target.forecast.model_high_f : null;
+  const delta = fromMarket ? (modelHigh != null && high != null ? modelHigh - high : null) : mc?.model_minus_market_f ?? null;
   const forecastFields = (target.forecast ?? {}) as Record<string, unknown>;
   const sourceFields = forecastFields.sources && typeof forecastFields.sources === "object"
     ? forecastFields.sources as Record<string, unknown>
@@ -206,24 +215,32 @@ export function ForecastDial({ targets, city }: { targets: Target[]; city?: City
 
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <p className="text-xs text-muted">Predicted high · {targetLabel(target.target_date)}</p>
+            <p className="text-xs text-muted">
+              {fromMarket ? "Market-implied high" : "Predicted high"} · {targetLabel(target.target_date)}
+            </p>
             <Reading value={high} color={high == null ? undefined : tempColor(high)} />
           </div>
-          {currentStateAvailable && delta != null && mc && (
+          {currentStateAvailable && delta != null && (fromMarket || mc) && (
             <div className="mb-1 text-right">
               <TrendChip trend={delta > 0.2 ? "up" : delta < -0.2 ? "down" : "neutral"} size="sm">
                 {delta > 0 ? "+" : ""}{temperature.diff(delta)}
                 <TrendChip.Suffix>vs market</TrendChip.Suffix>
               </TrendChip>
-              <p className="mt-1.5 flex items-center justify-end gap-1.5 text-xs text-muted">
-                <span className="h-3 w-0.5 rounded-full bg-[color:var(--series-market)]" aria-hidden="true" />
-                <span>market implies <span className="tnum font-medium text-foreground">{temperature.temp(mc.implied_high_f)}</span></span>
-              </p>
+              {fromMarket && modelHigh != null ? (
+                <p className="mt-1.5 text-xs text-muted">
+                  model <span className="tnum font-medium text-foreground">{temperature.temp(modelHigh, 1, true)}</span>
+                </p>
+              ) : mc && (
+                <p className="mt-1.5 flex items-center justify-end gap-1.5 text-xs text-muted">
+                  <span className="h-3 w-0.5 rounded-full bg-[color:var(--series-market)]" aria-hidden="true" />
+                  <span>market implies <span className="tnum font-medium text-foreground">{temperature.temp(mc.implied_high_f)}</span></span>
+                </p>
+              )}
             </div>
           )}
         </div>
 
-        {high != null && <DialScale value={high} market={currentStateAvailable ? mc?.implied_high_f : null} />}
+        {high != null && <DialScale value={high} market={currentStateAvailable && !fromMarket ? mc?.implied_high_f : null} />}
 
         {currentStateAvailable && intraday && !intraday.is_complete && (
           <div className="rounded-2xl bg-surface-secondary px-4 py-3">

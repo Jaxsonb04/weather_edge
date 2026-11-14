@@ -24,6 +24,7 @@ from sfo_kalshi_quant.research_policy import (
     TARGET_POLICY_V4,
     TARGET_POLICY_V5,
     TARGET_POLICY_V6,
+    TARGET_POLICY_V7,
     ResearchSleeve,
 )
 from sfo_kalshi_quant.profile_identity import (
@@ -107,17 +108,22 @@ def test_target_v2_is_frozen_and_v7_is_the_only_active_target_policy() -> None:
     assert TARGET_POLICY_V2.target_return == 0.016
     assert TARGET_POLICY_V2.allocator_version == "policy-sized-v2"
 
-    # V7 uses $2,000 and keeps the $90 position limit at 4.5%.
-    assert TARGET_POLICY.account_id == "paper-research-roi-v7"
-    assert TARGET_POLICY.policy_version == "research-target-roi-v7"
+    # V8 keeps V7's $2,000 and $90 position limit at 4.5%; its 1.0 target
+    # return keeps the target-attained lock out of the high-frequency book.
+    assert TARGET_POLICY_V7.account_id == "paper-research-roi-v7"
+    assert TARGET_POLICY_V7.policy_version == "research-target-roi-v7"
+    assert TARGET_POLICY_V7.target_return == 0.05
+    assert TARGET_POLICY_V7.daily_loss_pause_pct == 0.15
+    assert TARGET_POLICY.account_id == "paper-research-hf-v8"
+    assert TARGET_POLICY.policy_version == "research-target-hf-v8"
     assert TARGET_POLICY.reference_equity == 2000.0
-    assert TARGET_POLICY.target_return == 0.05
-    assert TARGET_POLICY.target_pnl == 100.0
+    assert TARGET_POLICY.target_return == 1.0
+    assert TARGET_POLICY.target_pnl == 2000.0
     assert TARGET_POLICY.max_position_risk_pct == 0.045
     assert TARGET_POLICY.max_city_target_risk_pct == 0.18
     assert TARGET_POLICY.max_region_day_risk_pct == 0.36
     assert TARGET_POLICY.max_aggregate_risk_pct == 0.75
-    assert TARGET_POLICY.daily_loss_pause_pct == 0.15
+    assert TARGET_POLICY.daily_loss_pause_pct == 0.25
     assert TARGET_POLICY.min_lead_days == 1
     assert TARGET_POLICY.one_contract is False
     assert TARGET_POLICY.allocator_version == "policy-sized-v3"
@@ -129,6 +135,7 @@ def test_target_v2_is_frozen_and_v7_is_the_only_active_target_policy() -> None:
         TARGET_POLICY_V4,
         TARGET_POLICY_V5,
         TARGET_POLICY_V6,
+        TARGET_POLICY_V7,
         TARGET_POLICY,
         MOTION_POLICY,
     )
@@ -155,6 +162,7 @@ def test_published_identities_separate_fresh_live_and_every_research_era() -> No
 
     assert published(TARGET_POLICY_V1) == "research-target-v1"
     assert published(TARGET_POLICY_V2) == "research-target-v2"
+    assert published(TARGET_POLICY_V7) == "research-target-v7"
     assert published(TARGET_POLICY) == "research-target"
     assert published(MOTION_POLICY) == "research-motion"
 
@@ -175,6 +183,7 @@ def test_fresh_store_archives_every_research_policy_except_v7(tmp_path) -> None:
         TARGET_POLICY_V4.account_id: "ARCHIVED",
         TARGET_POLICY_V5.account_id: "ARCHIVED",
         TARGET_POLICY_V6.account_id: "ARCHIVED",
+        TARGET_POLICY_V7.account_id: "ARCHIVED",
         TARGET_POLICY.account_id: "ACTIVE",
         MOTION_POLICY.account_id: "ARCHIVED",
     }

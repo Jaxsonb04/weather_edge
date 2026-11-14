@@ -2,8 +2,13 @@
 coherent forecast (implied high, distribution, percentiles, confidence)."""
 
 import math
+from dataclasses import replace
 
-from sfo_kalshi_quant.consensus import build_market_consensus
+import pytest
+
+from datetime import datetime, timezone
+
+from sfo_kalshi_quant.consensus import apply_market_headline, build_market_consensus, ladder_mean
 from sfo_kalshi_quant.models import MarketBin
 from sfo_kalshi_quant.probability import (
     market_implied_probabilities,
@@ -162,3 +167,59 @@ def test_public_devig_aliases_match_private_path():
     # Single-bin alias returns a value in (0, 1) for a real two-sided quote.
     value = market_implied_yes_value(ladder[3])
     assert value is not None and 0.0 < value < 1.0
+
+
+def _three_bracket_ladder(tail_lo=(0.19, 0.21), tail_hi=(0.19, 0.21), mid=(0.59, 0.61)):
+    return [
+        _bin("T63", "less", 63, 63, *tail_lo),
+        _bin("B64", "between", 63, 64, *mid),
+        _bin("G73", "greater", 73, 73, *tail_hi),
+    ]
+
+
+def test_ladder_mean_normalises_mids_and_centres_tails_three_degrees_out():
+    mean, sd = ladder_mean(_three_bracket_ladder())
+    # Centres: 62.5 - 3, (62.5 + 64.5) / 2, 73.5 + 3 with weights .2 / .6 / .2.
+    assert mean == pytest.approx(65.3, abs=0.05)
+    assert sd == pytest.approx(math.sqrt(33.76 - 1 / 3), abs=0.05)
+
+
+def test_ladder_mean_sd_is_floored_at_half_a_degree():
+    ladder = _three_bracket_ladder(tail_lo=(0.0, 0.002), tail_hi=(0.0, 0.002), mid=(0.99, 0.995))
+    assert ladder_mean(ladder)[1] == pytest.approx(0.5)
+
+
+def test_ladder_mean_needs_both_active_tails():
+    full = _three_bracket_ladder()
+    assert ladder_mean(full[:2]) is None  # no top tail
+    assert ladder_mean(full[1:]) is None  # no bottom tail
+    inactive_tail = replace(full[2], status="finalized")
+    assert ladder_mean([*full[:2], inactive_tail]) is None
+    assert ladder_mean([]) is None
+
+
+def test_headline_is_market_with_model_kept_and_falls_back_without_ladder():
+    forecast = {"predicted_high_f": 70.0, "sigma_f": 2.0}
+    ladder = ladder_mean(_three_bracket_ladder())
+    market = apply_market_headline(forecast, ladder)
+    assert market["forecast_source"] == "market"
+    assert market["predicted_high_f"] == round(ladder[0], 2) == market["market_implied_high_f"]
+    assert market["sigma_f"] == round(ladder[1], 2)
+    assert (market["model_high_f"], market["model_sigma_f"]) == (70.0, 2.0)
+    model = apply_market_headline(forecast, None)
+    assert model["forecast_source"] == "model"
+    assert model["predicted_high_f"] == 70.0
+    assert model["market_implied_high_f"] is None
+
+
+def test_headline_floors_at_observed_high_only_from_a_fresh_observation():
+    now = datetime(2026, 7, 9, 20, 0, tzinfo=timezone.utc)
+    ladder = (65.0, 2.0)
+    fresh = {"observed_high_f": 70.0, "latest_observed_at": "2026-07-09T19:30:00+00:00"}
+    stale = {"observed_high_f": 70.0, "latest_observed_at": "2026-07-09T17:00:00+00:00"}
+    floored = apply_market_headline({"predicted_high_f": 68.0}, ladder, intraday=fresh, now=now)
+    assert floored["predicted_high_f"] == 69.5
+    assert floored["market_implied_high_f"] == 65.0  # the raw market mean stays visible
+    assert apply_market_headline({"predicted_high_f": 68.0}, ladder, intraday=stale, now=now)[
+        "predicted_high_f"
+    ] == 65.0

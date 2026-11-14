@@ -42,7 +42,7 @@ export function MoversCard({ s }: { s: StrategyLab }) {
         <div className="flex min-w-0 flex-col gap-0.5">
           <Widget.Title>Biggest single trades</Widget.Title>
           <Widget.Description>
-            {from && to ? `P&L realized ${dayRange(from, to)}` : "P&L realized in the published window"}, Live, V7 and research accounts (M1 is separate); dates are the market's target day
+            {from && to ? `P&L realized ${dayRange(from, to)}` : "P&L realized in the published window"}, Live, V8 and archived research accounts (M1 is separate); dates are the market's target day
           </Widget.Description>
         </div>
       </Widget.Header>

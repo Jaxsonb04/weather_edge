@@ -249,9 +249,18 @@ def test_arbitrage_cli_can_place_grouped_paper_orders_from_offline_event() -> No
         event_path = Path(tmp) / "event.json"
         db_path = Path(tmp) / "paper.db"
         _write_event_fixture(event_path, "KXHIGHTSFO-26JUN13")
+        # Live trades only civil lead 1 (2026-11-12): scan the day before.
+        day_before = datetime(2026, 6, 12, 20, 0, tzinfo=UTC)
+
+        def fixed_clock(now=None, selected_city=None):
+            selected = selected_city or get_city("sfo")
+            return day_before.astimezone(selected.fixed_standard_timezone())
 
         out = io.StringIO()
-        with redirect_stdout(out):
+        with (
+            patch("sfo_kalshi_quant.cli.settlement_clock", side_effect=fixed_clock),
+            redirect_stdout(out),
+        ):
             code = main(
                 [
                     "--db-path",

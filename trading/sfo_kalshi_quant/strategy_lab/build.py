@@ -47,6 +47,7 @@ from ..research_policy import (
     TARGET_POLICY_V4,
     TARGET_POLICY_V5,
     TARGET_POLICY_V6,
+    TARGET_POLICY_V7,
 )
 from ..replay import replay_from_database
 from ..research_m1 import M1_ACCOUNT_ID, M1_POLICY, M1_PUBLISHED_PROFILE
@@ -992,6 +993,14 @@ def _accounting_payload(
             "research-target-v6",
         ),
         (
+            "research_target_v7",
+            "research-target-v7",
+            "Research ROI v7 achieved performance",
+            TARGET_POLICY_V7.account_id,
+            "research_target_archived",
+            "research-target-v7",
+        ),
+        (
             "research_motion",
             "research-motion",
             "Research motion achieved performance",
@@ -1084,6 +1093,7 @@ def _accounting_payload(
             TARGET_POLICY_V4.account_id,
             TARGET_POLICY_V5.account_id,
             TARGET_POLICY_V6.account_id,
+            TARGET_POLICY_V7.account_id,
             TARGET_POLICY.account_id,
             MOTION_POLICY.account_id,
             M1_ACCOUNT_ID,
@@ -1527,8 +1537,9 @@ def _bind_accounting_to_profiles(
         "research-target-v4": 4,
         "research-target-v5": 5,
         "research-target-v6": 6,
-        "research-motion": 7,
-        "research": 8,
+        "research-target-v7": 7,
+        "research-motion": 8,
+        "research": 9,
     }
     if accounting.get("available") is False:
         archived_rows = [
@@ -1554,7 +1565,7 @@ def _bind_accounting_to_profiles(
         ("live", "Live Stability", "primary", "live_stability"),
         (
             "research-target",
-            "Research ROI v7 · fixed daily objective",
+            "Research HF v8 · market signal",
             "experimental",
             "research_roi",
         ),

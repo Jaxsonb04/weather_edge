@@ -28,7 +28,7 @@ export function HybridResearchPanel({ s }: { s: StrategyLab }) {
   const { data: snapshot } = useResource<ResearchSnapshot>("hybrid_research.json");
   const target = activeProfiles(s).find((profile) => profile.risk_profile === "research-target");
   const policy = researchDailyTarget(s, target)?.policy_version;
-  const runningV7 = typeof policy === "string" && /^research-target-roi-v7(?:$|[-.])/.test(policy);
+  const runningCurrent = typeof policy === "string" && /^research-target-(?:roi-v7|hf-v8)(?:$|[-.])/.test(policy);
   const stamp = snapshot?.captured_at ? new Date(snapshot.captured_at) : null;
   const date = stamp && Number.isFinite(stamp.getTime())
     ? new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "America/Los_Angeles" }).format(stamp)
@@ -52,17 +52,17 @@ export function HybridResearchPanel({ s }: { s: StrategyLab }) {
     <section aria-labelledby="hybrid-research-title" className="flex min-w-0 flex-col gap-4 rounded-3xl bg-surface-secondary p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 id="hybrid-research-title" className="text-sm font-semibold text-foreground">V7 research</h3>
+          <h3 id="hybrid-research-title" className="text-sm font-semibold text-foreground">Research experiments</h3>
           <p className="mt-0.5 text-xs text-muted">Offline experiments, kept apart from the running accounts</p>
         </div>
         <span className="rounded-full bg-warning-soft px-3 py-1 text-xs font-medium text-foreground">Paper only · live allocation $0</span>
       </div>
       <p className="text-sm leading-relaxed text-muted">
-        {runningV7
-          ? "The published research ledger reports V7. Its new evidence remains separate from earlier generations."
+        {runningCurrent
+          ? `The published research ledger reports the current policy, ${policy}. Its new evidence remains separate from earlier generations.`
           : policy
-            ? `The published research ledger still reports ${policy}. V7 source and offline experiments do not establish a V7 production track record.`
-            : "The research ledger has not published a policy identity. V7 activation is unverified."}
+            ? `The published research ledger still reports ${policy}. Current-policy source and offline experiments do not establish a production track record for it.`
+            : "The research ledger has not published a policy identity. Current-policy activation is unverified."}
         {" "}Real-money execution {s.live_orders_enabled === false ? "is disabled in this publication" : s.live_orders_enabled === true ? "is unexpectedly reported enabled; the paper-only policy requires investigation" : "has no published flag in this artifact"}.
       </p>
       {hasCollection && <p className="text-sm leading-relaxed text-muted">

@@ -670,7 +670,7 @@ def test_target_clips_to_correlated_region_scenario_room() -> None:
                     yes_ask=0.50,
                 ),
                 side="YES",
-                spend=30.0,
+                spend=60.0,
                 probability=0.75,
                 edge=0.25,
                 edge_lcb=0.10,
@@ -683,11 +683,13 @@ def test_target_clips_to_correlated_region_scenario_room() -> None:
 
     plans = allocate_research_plans(candidates, target_active_legs=active)
 
-    # The new projected-loss budget binds before the old region allowance.
-    assert plans.target.legs == []
-    assert all("projected daily-loss" in row.reason for row in plans.target.dispositions)
-    dispositions = {row.ticker: row for row in plans.target.dispositions}
-    assert dispositions[candidates[0].decision.ticker].status == "capacity_blocked"
+    # v8 charges no open risk to the daily room (2026-11-12), so the region
+    # cap binds: SFO gets the $40 west-coast room, Denver its full $60.
+    spends = {leg.decision.ticker: leg.spend for leg in plans.target.legs}
+    assert spends == {
+        "KXHIGHTSFO-26JUL20-B72.5": 40.0,
+        "KXHIGHDEN-26JUL20-B72.5": 60.0,
+    }
 
 
 def test_target_blocks_when_city_target_room_cannot_fund_one_contract() -> None:
@@ -769,7 +771,7 @@ def test_partial_children_are_not_counted_as_separate_exposure_legs() -> None:
     assert city_target_worst_case_loss([root, child], range(68, 74)) == 20.0
 
 
-def test_target_roi_position_risk_uses_kelly_below_the_policy_ceiling() -> None:
+def test_target_roi_position_risk_is_the_flat_policy_ceiling() -> None:
     candidate = ResearchOpportunity(
         _decision(
             _market(
@@ -780,7 +782,7 @@ def test_target_roi_position_risk_uses_kelly_below_the_policy_ceiling() -> None:
                 yes_ask=0.20,
             ),
             side="YES",
-            # Exceeds both the existing $90 ceiling and conservative Kelly.
+            # Exceeds the $90 ceiling.
             spend=200.0,
             probability=0.375,
             edge=0.175,
@@ -792,9 +794,9 @@ def test_target_roi_position_risk_uses_kelly_below_the_policy_ceiling() -> None:
 
     plans = allocate_research_plans([candidate])
 
-    # LCB .325, cost .20: quarter-Kelly budget $78.125 -> 390 contracts.
-    assert plans.target.legs[0].spend == 78.0
-    assert plans.target.legs[0].decision.recommended_contracts == 390.0
+    # v8 dropped the quarter-Kelly term: the flat $90 cap -> 450 contracts.
+    assert plans.target.legs[0].spend == 90.0
+    assert plans.target.legs[0].decision.recommended_contracts == 450.0
 
 
 def test_infeasible_growth_target_never_loosens_target_gates_or_count() -> None:
@@ -1691,7 +1693,7 @@ def test_maximum_semantic_edge_with_huge_input_quantity_reports_only_finite_metr
 def test_target_clips_to_aggregate_open_scenario_room() -> None:
     active = []
     series = ("KXHIGHTSFO", "KXHIGHDEN", "KXHIGHMIA", "KXHIGHCHI")
-    for idx in range(8):
+    for idx in range(16):
         market = _market(
             "70° to 71°",
             ticker=f"{series[idx % len(series)]}-26JUL{10 + idx}-B70.5",
@@ -1702,8 +1704,8 @@ def test_target_clips_to_aggregate_open_scenario_room() -> None:
         decision = _decision(
             market,
             side="YES",
-            # 8 x $92.50 = $740 pending leaves $10 of the v6 $750 aggregate cap.
-            spend=92.5,
+            # 16 x $93.125 = $1,490 pending leaves $10 of the v8 $1,500 aggregate cap.
+            spend=93.125,
             probability=0.70,
             edge=0.20,
             edge_lcb=0.10,
@@ -1712,7 +1714,7 @@ def test_target_clips_to_aggregate_open_scenario_room() -> None:
             PortfolioLeg(
                 "target",
                 decision,
-                92.5,
+                93.125,
                 decision.expected_profit,
                 0.0,
                 target_date=f"2026-07-{10 + idx:02d}",
@@ -1741,9 +1743,8 @@ def test_target_clips_to_aggregate_open_scenario_room() -> None:
 
     plans = allocate_research_plans([candidate], target_active_legs=active)
 
-    # Existing risk above the daily budget must drain before any new entry.
-    assert plans.target.legs == []
-    assert "projected daily-loss" in plans.target.dispositions[0].reason
+    # The aggregate cap clips the $20 request to its last $10.
+    assert [leg.spend for leg in plans.target.legs] == [10.0]
 
 
 def test_motion_has_no_count_throttle_and_stops_only_at_scenario_cap() -> None:

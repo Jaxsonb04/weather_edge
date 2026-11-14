@@ -65,6 +65,10 @@ function ForecastPanel({ city, intradayLock }: { city: City; intradayLock: Intra
   // The flagship signal republishes SFO's settlement-day high after the intraday
   // update, so this panel must show the same number the hero dial does.
   const display = lead ? lockedHigh(city.slug, lead, intradayLock) : null;
+  // The flagship number can replace the coverage one, so the label follows whichever is shown.
+  const fromMarket = display?.source === "flagship"
+    ? intradayLock?.market === true
+    : lead?.forecast_source === "market";
 
   return (
     <Card className="h-full min-w-0 rounded-3xl">
@@ -78,7 +82,7 @@ function ForecastPanel({ city, intradayLock }: { city: City; intradayLock: Intra
         <Chip size="sm" variant="soft" className="h-auto min-w-0 max-w-full">
           {/* The artifact's own tag, in plain English. It already carries the
               intraday fold-in, so appending "+ intraday" here printed it twice. */}
-          <Chip.Label className="whitespace-normal">{methodLabel(lead?.method)}</Chip.Label>
+          <Chip.Label className="whitespace-normal">{fromMarket ? "Market-implied" : methodLabel(lead?.method)}</Chip.Label>
         </Chip>
       </Card.Header>
       <Card.Content className="flex flex-col gap-4 pt-0">
@@ -86,13 +90,18 @@ function ForecastPanel({ city, intradayLock }: { city: City; intradayLock: Intra
           <>
             <div className="flex flex-wrap items-end gap-x-6 gap-y-2">
               <div>
-                <p className="text-xs text-muted">Predicted high</p>
+                <p className="text-xs text-muted">{fromMarket ? "Market-implied high" : "Predicted high"}</p>
                 <p
                   className="tnum text-5xl font-semibold leading-none tracking-tight"
                   style={{ color: tempColor(display.highF) }}
                 >
                   {temperature.temp(display.highF, 0)}
                 </p>
+                {fromMarket && typeof lead.model_high_f === "number" && (
+                  <p className="tnum mt-1 text-xs text-muted">
+                    Model {temperature.temp(lead.model_high_f, 1, true)} · {methodLabel(lead.method)}
+                  </p>
+                )}
               </div>
               <dl className="flex flex-wrap gap-x-6 gap-y-2 text-sm">
                 <div>
@@ -110,7 +119,7 @@ function ForecastPanel({ city, intradayLock }: { city: City; intradayLock: Intra
               </dl>
             </div>
 
-            {display.baselineF != null && (
+            {display.baselineF != null && !fromMarket && (
               <p className="max-w-prose rounded-2xl bg-surface-secondary px-3 py-2.5 text-xs leading-relaxed text-muted">
                 {/* Only San Francisco has a flagship market signal. The other
                     nineteen cities get their intraday fold-in from the coverage

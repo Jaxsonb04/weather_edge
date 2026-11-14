@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Initialize and validate the active paper ledgers.
 
-Live Stability and Research V7 are the two post-restart ledgers ($2,000 each);
+Live Stability and Research V8 are the two post-restart ledgers ($2,000 each);
 the M1 market-recalibration trial is a third, separately capitalized paper
 ledger ($2,000) that never pools with either.
 """
@@ -38,7 +38,7 @@ REQUIRED_ACTIVE_ACCOUNTS = EXPECTED_ACTIVE_ACCOUNTS - {M1_POLICY.account_id}
 
 
 def validate_account_cutover(db_path: Path) -> None:
-    """Run migrations and fail unless Live and V7 (and M1 if active) are valid.
+    """Run migrations and fail unless Live and V8 (and M1 if active) are valid.
 
     A rollback past M1 archives its ledger and the roll-forward leaves it
     archived on purpose. Failing the deploy here would leave the host quiesced,

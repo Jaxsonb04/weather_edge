@@ -806,6 +806,7 @@ const ARCHIVED_PROFILE_ORDER = [
   "research-target-v4",
   "research-target-v5",
   "research-target-v6",
+  "research-target-v7",
   "research-motion",
   "research",
 ] as const;
@@ -844,6 +845,7 @@ const PROFILE_DISPLAY_LABELS: Record<string, string> = {
   "research-target-v4": "Research ROI v4 · adopted revision",
   "research-target-v5": "Research ROI v5 · superseded probe",
   "research-target-v6": "Research ROI v6 · archived",
+  "research-target-v7": "Research ROI v7 · archived",
   "research-motion": "Research motion · archived",
 };
 
@@ -856,7 +858,8 @@ export function profileDisplayLabel(
 ): string {
   if (profile.risk_profile === "research-target") {
     const version = policyVersion?.match(/(?:^|-)v(\d+)(?:$|-)/i)?.[1];
-    return version ? `Research ROI v${version}` : "Research ROI";
+    const name = policyVersion?.includes("-hf-") ? "High-frequency research" : "Research ROI";
+    return version ? `${name} v${version}` : name;
   }
   return PROFILE_DISPLAY_LABELS[profile.risk_profile] ?? (profile.label || profile.risk_profile);
 }

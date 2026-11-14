@@ -16,6 +16,7 @@ from .research_policy import (
     TARGET_POLICY_V4,
     TARGET_POLICY_V5,
     TARGET_POLICY_V6,
+    TARGET_POLICY_V7,
 )
 
 
@@ -45,6 +46,7 @@ def published_profile_key(
         (TARGET_POLICY_V4, "research-target-v4"),
         (TARGET_POLICY_V5, "research-target-v5"),
         (TARGET_POLICY_V6, "research-target-v6"),
+        (TARGET_POLICY_V7, "research-target-v7"),
         (TARGET_POLICY, "research-target"),
         (MOTION_POLICY, "research-motion"),
     ):
@@ -78,6 +80,7 @@ def published_profile_key(
             "research-target-v4",
             "research-target-v5",
             "research-target-v6",
+            "research-target-v7",
             "research-target",
             "research-motion",
             M1_PUBLISHED_PROFILE,
@@ -90,6 +93,7 @@ def published_profile_key(
             TARGET_POLICY_V4.account_id,
             TARGET_POLICY_V5.account_id,
             TARGET_POLICY_V6.account_id,
+            TARGET_POLICY_V7.account_id,
             TARGET_POLICY.account_id,
             MOTION_POLICY.account_id,
             M1_POLICY.account_id,
@@ -121,6 +125,7 @@ def execution_profile_key(profile: object) -> str:
         "research-target-v4",
         "research-target-v5",
         "research-target-v6",
+        "research-target-v7",
         "research-target",
         "research-motion",
         M1_PUBLISHED_PROFILE,

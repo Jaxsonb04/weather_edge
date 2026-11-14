@@ -19,26 +19,32 @@ function publication(policy?: string, live?: boolean): StrategyLab {
 }
 
 describe("Hybrid research boundaries", () => {
-  it("does not present V7 source as a deployed V7 ledger or treat readiness as authorization", () => {
+  it("does not present new source as a deployed ledger or treat readiness as authorization", () => {
     render(<HybridResearchPanel s={publication("research-target-roi-v6", false)} />);
-    expect(screen.getByText(/still reports research-target-roi-v6/)).toHaveTextContent(/do not establish a V7 production track record/);
+    expect(screen.getByText(/still reports research-target-roi-v6/)).toHaveTextContent(/do not establish a production track record/);
     expect(screen.getByText(/Paper only · live allocation \$0/)).toBeInTheDocument();
     expect(screen.getByText(/is disabled in this publication/)).toBeInTheDocument();
   });
 
   it("keeps an absent policy and live flag explicitly unknown", () => {
     render(<HybridResearchPanel s={publication()} />);
-    expect(screen.getByText(/V7 activation is unverified/)).toHaveTextContent(/no published flag/);
-    expect(screen.queryByText(/reports V7\./)).not.toBeInTheDocument();
+    expect(screen.getByText(/Current-policy activation is unverified/)).toHaveTextContent(/no published flag/);
+    expect(screen.queryByText(/reports the current policy/)).not.toBeInTheDocument();
     expect(screen.getByText(/Research evidence has not loaded/)).toBeInTheDocument();
   });
 
   it("warns when the feed contradicts paper-only operation", () => {
     render(<HybridResearchPanel s={publication("research-target-roi-v7", true)} />);
-    expect(screen.getByText(/reports V7\./)).toHaveTextContent(/unexpectedly reported enabled/);
+    expect(screen.getByText(/reports the current policy, research-target-roi-v7/)).toHaveTextContent(/unexpectedly reported enabled/);
   });
 
-  it("does not mistake a different generation for V7", () => {
+  it("accepts the high-frequency v8 research book as the current policy", () => {
+    render(<HybridResearchPanel s={publication("research-target-hf-v8", false)} />);
+    expect(screen.getByText(/reports the current policy, research-target-hf-v8/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Research experiments" })).toBeInTheDocument();
+  });
+
+  it("does not mistake a different generation for the current policy", () => {
     render(<HybridResearchPanel s={publication("research-target-roi-v70", false)} />);
     expect(screen.getByText(/still reports research-target-roi-v70/)).toBeInTheDocument();
   });

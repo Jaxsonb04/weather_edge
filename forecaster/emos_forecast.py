@@ -436,6 +436,7 @@ def serve_live_emos(
     store_lead_days: int | None = None,
     recalibrate: bool = True,
     apple_high_f: float | None = None,
+    now: datetime | None = None,
 ) -> tuple[float, float] | None:
     """Fit EMOS on all settled history strictly before ``target_date`` and apply
     it to the current-run multi-model forecast, persisting (mu, sigma).
@@ -462,6 +463,9 @@ def serve_live_emos(
     nudges the final mean of a future-day target with the fixed rule in
     ``apple_weatherkit.apple_nudge_f``; the nudge is recorded in the live evidence so
     ``--apple-score`` can compare with/without.
+
+    After that, an evening carry-over (``_carry_adjustment``) corrects a next-day
+    mean from today's observed high-so-far; ``now`` is the injectable clock.
     """
 
     ensure_schema(conn)
@@ -537,6 +541,12 @@ def serve_live_emos(
         serve_policy["apple_adjustment_f"] = nudge or 0.0
         serve_policy["apple_action"] = "skipped_disagreement" if nudge is None else "applied"
 
+    carry, carry_policy = _carry_adjustment(
+        conn, city, target_date, stored_lead, now or datetime.now(timezone.utc), truth
+    )
+    mu += carry
+    serve_policy.update(carry_policy)
+
     stamp = fetched_at or datetime.now(timezone.utc).isoformat(timespec="microseconds")
     record_live_forecast(
         conn, city=city, target_date=target_date, recorded_at=stamp,
@@ -569,6 +579,96 @@ def serve_live_emos(
     )
     conn.commit()
     return mu, sigma
+
+
+CARRY_GAIN = 0.20
+CARRY_CLIP_F = 1.5  # guard against a bad observation; should rarely bind
+CARRY_FROM_HOUR_LST = 17
+CARRY_OFFSET_DAYS = 60
+CARRY_MIN_OFFSET_DAYS = 20
+
+
+def _carry_adjustment(
+    conn: sqlite3.Connection,
+    city: CityConfig,
+    target_date: date,
+    stored_lead: int,
+    now: datetime,
+    truth: dict[str, float],
+) -> tuple[float, dict]:
+    """Evening carry-over for a next-day mean: -0.20 * (yesterday's served mean for
+    today - (today's high so far + trailing offset)). Never raises: any data
+    problem is a recorded skip."""
+
+    def skip(reason: str) -> tuple[float, dict]:
+        return 0.0, {"carry_adjustment_f": 0.0, "carry_action": f"skipped_{reason}"}
+
+    tz = city.fixed_standard_timezone()
+    now_lst = now.astimezone(tz)
+    # Today comes from the injected clock, like the hour gate and the observation cutoff.
+    if stored_lead != 1 or target_date != now_lst.date() + timedelta(days=1):
+        return skip("not_next_day")
+    if now_lst.hour < CARRY_FROM_HOUR_LST:
+        return skip("before_17_lst")
+    today = target_date - timedelta(days=1)
+    station = city.nws_station_id
+    try:
+        row = conn.execute(
+            "SELECT predicted_high_f, serve_policy_json FROM forecast_emos_live_vintages "
+            "WHERE station_id=? AND target_date=? AND lead_days=1 "
+            "ORDER BY recorded_at DESC LIMIT 1",
+            (station, today.isoformat()),
+        ).fetchone()
+        if row is None:
+            return skip("no_yesterday_forecast")
+        # Strip yesterday's Apple nudge and own carry so the error measures the model.
+        yesterday = json.loads(row[1])
+        today_mu = row[0] - (yesterday.get("apple_adjustment_f") or 0.0) - (
+            yesterday.get("carry_adjustment_f") or 0.0
+        )
+
+        # Offset and today's high-so-far share one cutoff: reports at or before
+        # this same local standard clock time on each day.
+        temps: dict[str, list[float]] = {}
+        afternoon: dict[str, int] = {}
+        for local_date, observed_at, temp in conn.execute(
+            "SELECT local_date, observed_at, temp_f FROM nws_station_observations "
+            "WHERE station_id=? AND local_date BETWEEN ? AND ? AND temp_f IS NOT NULL",
+            (station, (today - timedelta(days=CARRY_OFFSET_DAYS)).isoformat(), today.isoformat()),
+        ):
+            seen = datetime.fromisoformat(observed_at)
+            if seen.astimezone(tz).time() <= now_lst.time() and (
+                local_date != today.isoformat() or seen <= now
+            ):
+                temps.setdefault(local_date, []).append(temp)
+                afternoon[local_date] = afternoon.get(local_date, 0) + (seen.astimezone(tz).hour >= 12)
+
+        def hsf(day: str) -> float | None:
+            ok = len(temps.get(day, ())) >= 10 and afternoon.get(day, 0) >= 3
+            return max(temps[day]) if ok else None
+
+        today_hsf = hsf(today.isoformat())
+        if today_hsf is None:
+            return skip("thin_observations")
+        gaps = [
+            truth[d] - h
+            for i in range(1, CARRY_OFFSET_DAYS + 1)
+            if (d := (today - timedelta(days=i)).isoformat()) in truth
+            and (h := hsf(d)) is not None
+        ]
+        if len(gaps) < CARRY_MIN_OFFSET_DAYS:
+            return skip("thin_offset_history")
+        offset = sum(gaps) / len(gaps)
+    except (sqlite3.Error, ValueError, TypeError, KeyError):
+        return skip("data_error")
+
+    e = today_mu - (today_hsf + offset)
+    adjustment = max(-CARRY_CLIP_F, min(CARRY_CLIP_F, -CARRY_GAIN * e))
+    return adjustment, {
+        "carry_adjustment_f": adjustment, "carry_action": "applied", "carry_e_f": e,
+        "carry_hsf_f": today_hsf, "carry_offset_f": offset, "carry_today_mu_f": today_mu,
+        "carry_hour_lst": round(now_lst.hour + now_lst.minute / 60, 2),
+    }
 
 
 def _settlement_today(city: CityConfig = DEFAULT_CITY) -> date:
@@ -637,11 +737,13 @@ def awaiting_onboarding(conn: sqlite3.Connection, city: CityConfig) -> int | Non
 ROLLING_SERVE_DAYS = 3
 
 
-def apple_score(conn: sqlite3.Connection) -> dict[int, dict[str, float]]:
-    """Settled MAE per lead of Apple-nudged live forecasts vs their own baselines.
+def apple_score(
+    conn: sqlite3.Connection, key: str = "apple_adjustment_f"
+) -> dict[int, dict[str, float]]:
+    """Settled MAE per lead of adjusted live forecasts vs their own baselines.
 
-    Every vintage served with an Apple high is paired with itself minus its
-    nudge, so both arms share issuance, target and truth. Paired errors are
+    ``key`` is the serve_policy adjustment (Apple nudge or evening carry-over).
+    Every vintage served with one is paired with itself minus its adjustment, so both arms share issuance, target and truth. Paired errors are
     averaged within each (station, target, lead) first, so a station-day counts
     once however many refreshes it had.
     """
@@ -653,9 +755,10 @@ def apple_score(conn: sqlite3.Connection) -> dict[int, dict[str, float]]:
     vintages: dict[tuple[str, str, int], list[tuple[float, float]]] = {}
     for station, target, lead, mu, policy in conn.execute(
         "SELECT station_id, target_date, lead_days, predicted_high_f, serve_policy_json "
-        "FROM forecast_emos_live_vintages WHERE serve_policy_json LIKE '%apple_adjustment_f%'"
+        "FROM forecast_emos_live_vintages WHERE serve_policy_json LIKE ?",
+        (f"%{key}%",),
     ):
-        adjustment = json.loads(policy).get("apple_adjustment_f")
+        adjustment = json.loads(policy).get(key)
         if adjustment is not None:
             vintages.setdefault((station, target, lead), []).append((mu, adjustment))
     truth_by_station: dict[str, dict[str, float]] = {}
@@ -678,13 +781,15 @@ def apple_score(conn: sqlite3.Connection) -> dict[int, dict[str, float]]:
     return out
 
 
-def print_apple_score(conn: sqlite3.Connection) -> None:
-    scores = apple_score(conn)
+def print_apple_score(
+    conn: sqlite3.Connection, key: str = "apple_adjustment_f", label: str = "apple"
+) -> None:
+    scores = apple_score(conn, key)
     if not scores:
-        print("apple score: no settled Apple-nudged forecasts yet")
+        print(f"{label} score: no settled {label}-adjusted forecasts yet")
     for lead, row in sorted(scores.items()):
         print(
-            f"apple score lead {lead}: n={row['n']} applied={row['applied']} "
+            f"{label} score lead {lead}: n={row['n']} applied={row['applied']} "
             f"MAE without={row['mae_without']:.2f}F with={row['mae_with']:.2f}F"
         )
 
@@ -706,10 +811,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print settled MAE of live forecasts with vs without the Apple nudge",
     )
+    parser.add_argument(
+        "--carry-score",
+        action="store_true",
+        help="print settled MAE of live forecasts with vs without the evening carry-over",
+    )
     args = parser.parse_args(argv)
-    if args.apple_score:
+    if args.apple_score or args.carry_score:
         with sqlite3.connect(args.db, timeout=30) as conn:
-            print_apple_score(conn)
+            if args.apple_score:
+                print_apple_score(conn)
+            if args.carry_score:
+                print_apple_score(conn, "carry_adjustment_f", "carry")
         return 0
     if not (args.backfill or args.serve or args.serve_rolling):
         parser.error("nothing to do; pass --backfill, --serve, or --serve-rolling")

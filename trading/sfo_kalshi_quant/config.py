@@ -559,14 +559,16 @@ LIVE_PROFILE_OVERRIDES = {
     # so the strict test baseline remains reproducible. Effect is ~nil today
     # (equity ~= $1000) and grows only as the book does.
     "size_against_live_equity": True,
-    # Comfortable far-tail NO entry (see StrategyConfig.comfort_edge_*). Kept ON
+    # Comfortable far-tail NO entry (see StrategyConfig.comfort_edge_*). Was ON
     # for the far-tail SIZE BOOST, but the coin-flip BLOCK band is shrunk hard
     # (block_sigma_mult 1.25 -> 0.4, i.e. ~3.8F -> ~1.2F) as part of the frequency
     # push: near-money NO bets are now allowed (162 of the 240 rescored rejections
     # were this gate) and posterior-mean Kelly sizes their thin edge small. Only
     # the tightest coin-flips within ~1F of the forecast stay blocked. The proven
     # after-fee edge_lcb >= 0 floor is still the real defense.
-    "comfort_edge_enabled": True,
+    # Off since 2026-11-12: Live trades the M1 market signal, and this gate
+    # blocks and boosts by distance from the weather model.
+    "comfort_edge_enabled": False,
     "comfort_edge_block_sigma_mult": 0.4,
     # FAVORITE-BAND REORIENTATION (2026-07-06). The live book now concentrates
     # where the transaction-level evidence says the post-fee edge lives:
@@ -575,7 +577,9 @@ LIVE_PROFILE_OVERRIDES = {
     # markets, not from coin-flip bins whose average post-fee return is
     # negative. The research collector keeps the full price curve so the band
     # itself stays measurable.
-    "favorite_band_enabled": True,
+    # Off since 2026-11-12: the M1 steady profile Live now trades buys
+    # mid-priced brackets, which the 70-97c band would exclude.
+    "favorite_band_enabled": False,
     # EXECUTION CAPTURE (2026-07-26). Maker-first placement stays, but when the
     # after-fee LCB edge at the displayed ask clears the SAME 2% buffer the
     # maker path enforces, take the fill now instead of resting into the <20%
@@ -743,7 +747,10 @@ RESEARCH_PROFILE_OVERRIDES = {
     "cheap_tail_min_edge_lcb": 0.02,
     "cheap_tail_max_model_market_gap": 0.12,
     "cheap_tail_min_ensemble_probability": 0.06,
-    "edge_gate_uses_model_probability": True,
+    # The v8 research book (2026-11-12) gates on its decisions' own
+    # probability, which the scan rewrites to the M1 market recalibration;
+    # gating the point edge on the weather model would veto that signal.
+    "edge_gate_uses_model_probability": False,
     # Research-first: build bucket probabilities from the trained EMOS Gaussian
     # (Phase 1: rolling-origin EMOS beats climatology and the blend on CRPS, with
     # a calibrated sigma) so the rescore can prove it improves trading calibration
@@ -751,10 +758,8 @@ RESEARCH_PROFILE_OVERRIDES = {
     "emos_distribution_enabled": True,
     # The collector runs the market-consensus anchor LIVE so the readiness
     # rescore can prove it helps before `live` adopts it. The heavier market
-    # weight is safe here because the edge gate already measures the POINT edge
-    # against the pure model probability (above), so a strong anchor leans
-    # sizing/LCB toward the crowd without erasing the model's measured
-    # disagreement -- exactly the validation signal we want to collect.
+    # weight no longer reaches v8 entries: the scan replaces their probability
+    # with the M1 market recalibration before execution.
     "market_consensus_anchor_enabled": True,
     # INERT on this profile: the guard only shrinks spend_budget, research scans
     # rank with candidate_only=True (which ignores spend_budget), and V7 sizes

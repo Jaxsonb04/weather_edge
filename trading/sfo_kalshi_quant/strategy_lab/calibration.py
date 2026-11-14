@@ -860,8 +860,9 @@ def _decisions_from_trading_signal(payload: dict[str, Any] | None) -> list[dict[
                     "expected_profit": row.get("expected_profit"),
                     "forecast_lead_hours": lead_hours,
                     "forecast_method": forecast_method,
+                    # The headline may be the market mean; calibration scores the model.
                     "forecast_predicted_high_f": forecast.get(
-                        "predicted_high_f"
+                        "model_high_f", forecast.get("predicted_high_f")
                     ),
                     "forecast_observed_high_mode": observed_high_mode,
                     "lead_mode": lead_mode,
