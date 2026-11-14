@@ -67,7 +67,8 @@ else
   live_age_output="$("$PYTHON_BIN" -c '
 import sqlite3, sys
 from datetime import datetime, timezone
-conn = sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True)
+from pathlib import Path
+conn = sqlite3.connect(Path(sys.argv[1]).resolve().as_uri() + "?mode=ro", uri=True)
 (newest,) = conn.execute(
     "SELECT MAX(fetched_at) FROM forecast_emos_daily_high WHERE source = ?", ("live",)
 ).fetchone()
@@ -78,7 +79,8 @@ if stamp.tzinfo is None:
     stamp = stamp.replace(tzinfo=timezone.utc)
 print(int((datetime.now(timezone.utc) - stamp).total_seconds()))
 ' "$DB" 2>&1)"
-  if [[ ! "$live_age_output" =~ ^-?[0-9]+$ ]]; then
+  # A negative age (future-stamped row) would win MAX and mask staleness: reject it.
+  if [[ ! "$live_age_output" =~ ^[0-9]+$ ]]; then
     age_h="n/a"
     failures+=("live EMOS forecast age unreadable in $DB: $live_age_output")
   else

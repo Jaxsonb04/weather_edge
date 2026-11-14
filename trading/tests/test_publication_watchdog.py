@@ -136,6 +136,16 @@ def test_watchdog_rejects_stale_live_forecast_even_when_db_file_is_fresh():
     assert "live EMOS forecast stale" in result.stderr
 
 
+def test_watchdog_rejects_future_stamped_live_forecast():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _fresh_root(Path(tmp), live_forecast_minutes=-120)
+
+        result = _run(root)
+
+    assert result.returncode == 1
+    assert "live EMOS forecast age unreadable" in result.stderr
+
+
 def test_operational_watchdog_does_not_treat_offline_analysis_age_as_repairable():
     with tempfile.TemporaryDirectory() as tmp:
         root = _fresh_root(
