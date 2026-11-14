@@ -141,7 +141,8 @@ def _default_archive_baseline() -> None:
     """Serve the live EMOS baseline for every city before any Google fetch."""
 
     subprocess.run(
-        [sys.executable, str(_BASELINE_SCRIPT), "--serve-rolling", "--cities", "all"],
+        # -u: a timeout kill must not discard the child's buffered progress lines.
+        [sys.executable, "-u", str(_BASELINE_SCRIPT), "--serve-rolling", "--cities", "all"],
         check=True,
         cwd=str(_BASELINE_SCRIPT.parent),
         timeout=_BASELINE_SUBPROCESS_TIMEOUT_SECONDS,
@@ -487,4 +488,10 @@ def run_cli(cities_arg: str) -> int:
     # Google refreshes remain per-city fail-soft, but the EMOS baseline is the
     # production forecast for all cities.  Finish the independent Google work,
     # persist its sanitized status, then report a failed baseline to systemd.
-    return 0 if report.baseline.succeeded else 1
+    if not report.baseline.succeeded:
+        print(
+            f"ERROR: live EMOS baseline serve failed ({report.baseline.error_kind})",
+            file=sys.stderr,
+        )
+        return 1
+    return 0

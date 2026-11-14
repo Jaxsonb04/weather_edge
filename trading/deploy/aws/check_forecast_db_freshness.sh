@@ -35,7 +35,6 @@ DISK_MAX_PERCENT="${SFO_DISK_USAGE_MAX_PERCENT:-85}"
 ARTIFACT_LOCK="${SFO_ARTIFACT_GENERATION_LOCK:-$BASE_DIR/.locks/artifact-generation.lock}"
 ARTIFACT_LOCK_WAIT_SECONDS="${SFO_FRESHNESS_ARTIFACT_LOCK_WAIT_SECONDS:-120}"
 
-now=$(date +%s)
 failures=()
 disk_percent="n/a"
 
@@ -63,12 +62,34 @@ if [[ ! -f "$DB" ]]; then
   age_h="n/a"
   failures+=("forecast DB missing: $DB")
 else
-  mtime=$(stat -c %Y "$DB" 2>/dev/null || stat -f %m "$DB")
-  age_s=$(( now - mtime ))
-  age_h=$(awk "BEGIN{printf \"%.1f\", $age_s/3600}")
-  max_s=$(awk "BEGIN{printf \"%d\", $MAX_AGE_HOURS*3600}")
-  if (( age_s > max_s )); then
-    failures+=("forecast DB stale: $DB is ${age_h}h old (threshold ${MAX_AGE_HOURS}h)")
+  # Age of the newest served live EMOS forecast, not the file mtime: hourly
+  # observation writes keep the file fresh while the forecast inside goes stale.
+  live_age_output="$("$PYTHON_BIN" -c '
+import sqlite3, sys
+from datetime import datetime, timezone
+from pathlib import Path
+conn = sqlite3.connect(Path(sys.argv[1]).resolve().as_uri() + "?mode=ro", uri=True)
+(newest,) = conn.execute(
+    "SELECT MAX(fetched_at) FROM forecast_emos_daily_high WHERE source = ?", ("live",)
+).fetchone()
+if newest is None:
+    sys.exit("no live EMOS forecast rows")
+stamp = datetime.fromisoformat(newest)
+if stamp.tzinfo is None:
+    stamp = stamp.replace(tzinfo=timezone.utc)
+print(int((datetime.now(timezone.utc) - stamp).total_seconds()))
+' "$DB" 2>&1)"
+  # A negative age (future-stamped row) would win MAX and mask staleness: reject it.
+  if [[ ! "$live_age_output" =~ ^[0-9]+$ ]]; then
+    age_h="n/a"
+    failures+=("live EMOS forecast age unreadable in $DB: $live_age_output")
+  else
+    age_s="$live_age_output"
+    age_h=$(awk "BEGIN{printf \"%.1f\", $age_s/3600}")
+    max_s=$(awk "BEGIN{printf \"%d\", $MAX_AGE_HOURS*3600}")
+    if (( age_s > max_s )); then
+      failures+=("live EMOS forecast stale: newest served ${age_h}h ago (threshold ${MAX_AGE_HOURS}h)")
+    fi
   fi
 fi
 
@@ -132,7 +153,7 @@ if (( ${#failures[@]} > 0 )); then
 fi
 
 rm -f "$MARKER" 2>/dev/null || true
-echo "OK: forecast DB fresh (${age_h}h old, threshold ${MAX_AGE_HOURS}h)"
+echo "OK: live EMOS forecast fresh (newest ${age_h}h old, threshold ${MAX_AGE_HOURS}h)"
 echo "OK: publication manifest valid (operational <=${OPERATIONAL_MAX_MINUTES}m, strategy <=${STRATEGY_MAX_MINUTES}m)"
 echo "OK: disk usage ${disk_percent}% at $BASE_DIR (threshold <${DISK_MAX_PERCENT}%)"
 if [[ -n "$PUBLIC_MANIFEST_URL" ]]; then

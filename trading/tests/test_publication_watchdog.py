@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -31,6 +32,7 @@ def _fresh_root(
     cities_minutes: int | None = None,
     strategy_minutes: int = 1,
     strategy_analysis_minutes: int | None = None,
+    live_forecast_minutes: int = 30,
 ) -> Path:
     now = datetime.now(timezone.utc)
     signal_age = operational_minutes if signal_minutes is None else signal_minutes
@@ -42,7 +44,19 @@ def _fresh_root(
     )
     root = parent / "forecaster"
     root.mkdir()
-    (root / "weather.db").write_bytes(b"sqlite-placeholder")
+    with sqlite3.connect(root / "weather.db") as conn:
+        conn.execute(
+            "CREATE TABLE forecast_emos_daily_high (fetched_at TEXT NOT NULL, source TEXT NOT NULL)"
+        )
+        conn.executemany(
+            "INSERT INTO forecast_emos_daily_high VALUES (?, ?)",
+            [
+                (_iso(now - timedelta(minutes=live_forecast_minutes)), "live"),
+                # A newer non-live row must not make a stale live serve look fresh.
+                (_iso(now), "rolling_origin_v2"),
+            ],
+        )
+    conn.close()
     _write_json(
         root / "trading_signal.json",
         {"generated_at": _iso(now - timedelta(minutes=signal_age))},
@@ -109,7 +123,27 @@ def test_watchdog_accepts_fresh_database_and_publication_manifest():
 
     assert result.returncode == 0, result.stderr
     assert "publication manifest valid" in result.stdout
-    assert "forecast DB fresh" in result.stdout
+    assert "live EMOS forecast fresh" in result.stdout
+
+
+def test_watchdog_rejects_stale_live_forecast_even_when_db_file_is_fresh():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _fresh_root(Path(tmp), live_forecast_minutes=7 * 60)
+
+        result = _run(root)
+
+    assert result.returncode == 1
+    assert "live EMOS forecast stale" in result.stderr
+
+
+def test_watchdog_rejects_future_stamped_live_forecast():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _fresh_root(Path(tmp), live_forecast_minutes=-120)
+
+        result = _run(root)
+
+    assert result.returncode == 1
+    assert "live EMOS forecast age unreadable" in result.stderr
 
 
 def test_operational_watchdog_does_not_treat_offline_analysis_age_as_repairable():

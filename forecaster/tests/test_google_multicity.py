@@ -1491,6 +1491,7 @@ def test_default_baseline_inherits_service_stdio_for_failure_diagnostics(monkeyp
 
     assert len(calls) == 1
     assert calls[0][1].get("capture_output") is not True
+    assert calls[0][0][0][1] == "-u"
 
 
 def test_one_city_failure_leaves_every_other_city_intact(tmp_path):
@@ -1710,7 +1711,7 @@ def test_baseline_failure_does_not_block_google_fetching(tmp_path):
     assert report.cities[0].available is True
 
 
-def test_cli_reports_baseline_failure_after_independent_google_refresh(monkeypatch):
+def test_cli_reports_baseline_failure_after_independent_google_refresh(monkeypatch, capsys):
     report = gmr.MulticityRefreshReport(
         generated_at=TEST_NOW,
         baseline=gmr.BaselineResult(
@@ -1738,6 +1739,7 @@ def test_cli_reports_baseline_failure_after_independent_google_refresh(monkeypat
     monkeypatch.setattr(gmr, "write_json", lambda *_args, **_kwargs: None)
 
     assert gmr.run_cli("sfo") == 1
+    assert "live EMOS baseline serve failed (CalledProcessError)" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("store", ["GoogleUsageLedger", "GoogleRuntimeStore"])
