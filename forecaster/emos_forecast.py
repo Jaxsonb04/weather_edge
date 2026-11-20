@@ -67,6 +67,7 @@ APPLE_TIME_BUDGET_SECONDS = 60
 # lead 2; Apple ran 1.5-1.8F cold). n_models=1 makes the scan refuse entries.
 APPLE_FALLBACK_METHOD = "apple_fallback"
 APPLE_FALLBACK_SIGMA_F = 3.0
+APPLE_FALLBACK_AFTER = timedelta(hours=1)  # two missed 30-min refreshes
 OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 # Per-city socket wait. Normal answers take <1 s; when Open-Meteo stalls, the
 # 45 s archive default x 20 cities overran the refresh's 300 s baseline cap
@@ -521,6 +522,17 @@ def serve_live_emos(
             or target_date <= _settlement_today(city)
         ):
             return None
+        prior = conn.execute(
+            "SELECT fetched_at FROM forecast_emos_daily_high WHERE station_id = ? "
+            "AND target_date = ? AND lead_days = ? AND source = ? AND method != ?",
+            (station, target_iso, stored_lead, LIVE_SOURCE, APPLE_FALLBACK_METHOD),
+        ).fetchone()
+        if prior:
+            prior_at = datetime.fromisoformat(prior[0])
+            if prior_at.tzinfo is None:
+                prior_at = prior_at.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) - prior_at < APPLE_FALLBACK_AFTER:
+                return None  # one missed refresh: the recent EMOS row beats Apple
         mu, sigma = float(apple_high_f), APPLE_FALLBACK_SIGMA_F
         conn.execute(
             _LIVE_ROW_UPSERT,

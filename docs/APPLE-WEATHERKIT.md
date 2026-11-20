@@ -28,7 +28,8 @@ How it works (`forecaster/emos_forecast.py`):
 - Fallback (owner decision, 2026-11-19, after the Nov 18 Open-Meteo outage):
   when Open-Meteo returns too few models for a city, a next-day or later target
   serves Apple's high itself (`method = apple_fallback`, sigma 3.0°F,
-  `n_models = 1`). The scan's single-source gate refuses paper entries on it,
+  `n_models = 1`), once that target's EMOS row is an hour old. The freshness
+  watchdog ignores fallback rows, so a long outage still alerts. The scan's single-source gate refuses paper entries on it,
   and it is kept out of `forecast_emos_live_vintages` and so out of scoring.
   Same-day targets keep their last EMOS row.
 

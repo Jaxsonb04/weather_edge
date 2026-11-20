@@ -48,17 +48,19 @@ def _fresh_root(
     with sqlite3.connect(root / "weather.db") as conn:
         conn.execute(
             "CREATE TABLE forecast_emos_daily_high"
-            " (station_id TEXT NOT NULL, fetched_at TEXT NOT NULL, source TEXT NOT NULL)"
+            " (station_id TEXT NOT NULL, fetched_at TEXT NOT NULL, source TEXT NOT NULL,"
+            " method TEXT NOT NULL DEFAULT 'emos_wmean')"
         )
         conn.executemany(
-            "INSERT INTO forecast_emos_daily_high VALUES (?, ?, ?)",
+            "INSERT INTO forecast_emos_daily_high VALUES (?, ?, ?, ?)",
             [
-                ("KSFO", _iso(now - timedelta(minutes=live_forecast_minutes)), "live"),
-                ("KMIA", _iso(now - timedelta(minutes=second_station_minutes)), "live"),
-                # A newer non-live row must not make a stale live serve look fresh.
-                ("KSFO", _iso(now), "rolling_origin_v2"),
+                ("KSFO", _iso(now - timedelta(minutes=live_forecast_minutes)), "live", "emos_wmean"),
+                ("KMIA", _iso(now - timedelta(minutes=second_station_minutes)), "live", "emos_wmean"),
+                # Newer non-live or Apple-fallback rows must not make stale EMOS look fresh.
+                ("KSFO", _iso(now), "rolling_origin_v2", "emos_wmean"),
+                ("KMIA", _iso(now), "live", "apple_fallback"),
                 # A station retired over a week ago must not fail the watchdog forever.
-                ("KOLD", _iso(now - timedelta(days=8)), "live"),
+                ("KOLD", _iso(now - timedelta(days=8)), "live", "emos_wmean"),
             ],
         )
     conn.close()

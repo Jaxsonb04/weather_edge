@@ -72,8 +72,8 @@ from pathlib import Path
 conn = sqlite3.connect(Path(sys.argv[1]).resolve().as_uri() + "?mode=ro", uri=True)
 rows = conn.execute(
     "SELECT station_id, MAX(fetched_at) FROM forecast_emos_daily_high"
-    " WHERE source = ? GROUP BY station_id",
-    ("live",),
+    " WHERE source = ? AND method != ? GROUP BY station_id",
+    ("live", "apple_fallback"),  # an Apple fallback must not hide stale EMOS
 ).fetchall()
 if not rows:
     sys.exit("no live EMOS forecast rows")

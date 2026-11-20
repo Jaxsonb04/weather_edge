@@ -806,6 +806,13 @@ def test_open_meteo_outage_serves_apple_fallback_for_future_targets_only(monkeyp
     # One source: the scan's single-source gate refuses paper entries on it.
     assert row == (80.0, 1, ef.APPLE_FALLBACK_METHOD)
     assert vintages() == 0  # never recorded as an EMOS issue
+    # A recent EMOS row survives one missed refresh; an hour-old one gives way.
+    live = {"gfs_seamless": 71.0, "ecmwf_ifs025": 70.0, "ncep_nbm_conus": 72.0}
+    base, _ = serve_live_emos(conn, target, live_models=live, recalibrate=False)
+    assert serve_live_emos(conn, target, live_models={}, apple_high_f=80.0) is None
+    conn.execute("UPDATE forecast_emos_daily_high SET fetched_at = '2024-05-31T00:00:00+00:00' WHERE source='live'")
+    with redirect_stdout(io.StringIO()):
+        assert serve_live_emos(conn, target, live_models={}, apple_high_f=80.0) == (80.0, ef.APPLE_FALLBACK_SIGMA_F)
     # Same-day targets never take Apple, even as a fallback.
     monkeypatch.setattr(ef, "_settlement_today", lambda city=ef.DEFAULT_CITY: target)
     assert serve_live_emos(conn, target, live_models={}, apple_high_f=80.0) is None
