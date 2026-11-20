@@ -229,11 +229,10 @@ def test_reservation_fallback_gives_up_below_one_tick():
     assert quote is None
 
 
-def test_target_research_flag_off_rests_on_wide_spread():
-    quote = target_research_quote(_decision(), _research_rest_config())
-    assert quote is not None
-    assert quote.would_cross is False
-    assert quote.price == 0.89
+# v8 (2026-11-12): the target book is taker-only. Every case that used to fall
+# back to a resting maker quote now returns None.
+def test_target_research_flag_off_never_rests_on_wide_spread():
+    assert target_research_quote(_decision(), _research_rest_config()) is None
 
 
 def test_target_research_taker_cross_crosses_wide_spread_at_zero_floor():
@@ -259,13 +258,9 @@ def test_target_research_taker_cross_takes_a_bounded_partial_visible_fill():
 
 
 def test_target_research_partial_cross_keeps_the_one_dollar_floor():
-    # One 90c contract is real displayed liquidity but remains below the
-    # replay-selected $1 minimum, so the larger request keeps its maker path.
+    # One 90c contract is real displayed liquidity but below the $1 minimum.
     decision = _decision(recommended_contracts=12.0, entry_ask_size=1.0)
-    quote = target_research_quote(decision, _research_cross_config())
-    assert quote is not None
-    assert quote.would_cross is False
-    assert quote.price == 0.89
+    assert target_research_quote(decision, _research_cross_config()) is None
 
 
 def test_target_research_natural_cross_keeps_the_one_dollar_floor():
@@ -275,35 +270,24 @@ def test_target_research_natural_cross_keeps_the_one_dollar_floor():
         entry_ask_size=1.0,
         recommended_contracts=12.0,
     )
-    quote = target_research_quote(decision, _research_cross_config())
-    assert quote is not None
-    assert quote.would_cross is False
-    assert quote.price == 0.89
-    assert quote.contracts == 12.0
+    assert target_research_quote(decision, _research_cross_config()) is None
 
 
-def test_target_research_taker_cross_falls_back_when_floor_fails():
-    # Taker cost at the ask exceeds the LCB -> zero floor fails when crossing;
-    # the maker quote at 0.89 still clears, so the book must rest as before.
+def test_target_research_taker_cross_drops_when_floor_fails():
+    # Taker cost at the ask exceeds the LCB: no maker fallback any more.
     decision = _decision(probability_lcb=0.905)
-    quote = target_research_quote(decision, _research_cross_config())
-    assert quote is not None
-    assert quote.would_cross is False
-    assert quote.price == 0.89
+    assert target_research_quote(decision, _research_cross_config()) is None
 
 
 def test_target_research_partial_cross_keeps_the_point_probability_floor():
-    decision = _decision(model_probability=0.90)
-    quote = target_research_quote(decision, _research_cross_config())
-    assert quote is not None
-    assert quote.would_cross is False
-    assert quote.price == 0.89
+    # The point gate reads the decision's own probability (the research profile
+    # stopped gating on model_probability on 2026-11-12).
+    assert target_research_quote(_decision(probability=0.90), _research_cross_config()) is None
+    assert target_research_quote(_decision(model_probability=0.10), _research_cross_config())
 
 
 def test_target_research_taker_cross_requires_displayed_depth():
-    quote = target_research_quote(_decision(entry_ask_size=0.4), _research_cross_config())
-    assert quote is not None
-    assert quote.would_cross is False
+    assert target_research_quote(_decision(entry_ask_size=0.4), _research_cross_config()) is None
 
 
 def test_target_research_partial_cross_rejects_nonfinite_negative_depth():
@@ -311,5 +295,4 @@ def test_target_research_partial_cross_rejects_nonfinite_negative_depth():
         _decision(entry_ask_size=float("-inf")),
         _research_cross_config(),
     )
-    assert quote is not None
-    assert quote.would_cross is False
+    assert quote is None

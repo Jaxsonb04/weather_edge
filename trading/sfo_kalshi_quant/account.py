@@ -71,7 +71,11 @@ ACCOUNTING_POLICY_VERSION = "acct-v4-account-scoped-2026-07-14"
 # allocator charges what placement can book.
 # Rotated to behavior-v6 for the 2026-11-09 Apple WeatherKit nudge (50%, capped
 # at 3.5F) on next-day+ live forecasts, which Live and research trade on.
-STRATEGY_BEHAVIOR_VERSION = "behavior-v6-apple-forecast-2026-11-09"
+# Rotated to behavior-v7 for the 2026-11-12 market-signal release: Live enters
+# on the M1 recalibrated market probability, holds to settlement and blocks
+# lead 2; the host also disables the Apple nudge, and the published forecast
+# gains an evening carry-over.
+STRATEGY_BEHAVIOR_VERSION = "behavior-v7-market-signal-2026-11-12"
 WEEKLY_RETURN_TARGET = 0.05
 WEEKLY_GOAL_TZ = ZoneInfo("America/Los_Angeles")
 WEEKLY_GOAL_ROLLOVER = time(0, 0)

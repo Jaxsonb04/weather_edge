@@ -71,6 +71,14 @@ from ..research_policy import (
     canonical_research_lead_bucket,
     research_scan_city_rank,
 )
+from ..research_m1 import (
+    M1_POLICY,
+    bucket_for_local_hour,
+    civil_lead_days,
+    civil_local_hour,
+    is_listing_hour,
+    recalibrated_p_yes,
+)
 from ..research_m1_store import run_m1_scan
 from ..research_portfolio import ResearchOpportunity, ResearchPlans, allocate_research_plans
 from ..research_entry_risk import target_remaining_daily_risk
@@ -88,6 +96,9 @@ from .format import (
 
 DEFAULT_SAME_DAY_ENTRY_CUTOFF_HOUR = 14
 _UNSET = object()
+# The research v8 book enters at p - ask - taker fee >= one cent. The cent
+# rides in the decision's LCB so execution keeps its zero after-fee floor.
+RESEARCH_MARKET_SIGNAL_EDGE = 0.01
 
 
 # These helpers are supplied by the CLI facade when it dispatches into this
@@ -342,6 +353,96 @@ class ScanContext:
     quote_observed_at: datetime | None = None
 
 
+def _m1_day_ahead_bucket(target: date, city: CityConfig, observed_at: datetime) -> str | None:
+    """M1's coefficient bucket for this quote, or None off M1's civil lead 1."""
+
+    tz = city.civil_tz_name
+    if civil_lead_days(target, observed_at, tz) != M1_POLICY.lead_days:
+        return None
+    return bucket_for_local_hour(civil_local_hour(observed_at, tz))
+
+
+def _m1_live_probabilities(
+    probabilities: dict[str, BucketProbability],
+    target: date,
+    city: CityConfig,
+    observed_at: datetime,
+) -> dict[str, BucketProbability]:
+    """Live prices day-ahead legs on the M1 recalibrated market (2026-11-12).
+
+    The band is M1's edge threshold, so Live's edge_lcb >= 0 gate is M1's
+    p - ask - taker fee >= 0.02. dataclasses.replace keeps the model, market
+    and residual reads as recorded for audit.
+    """
+
+    # Lead first: other leads keep the blend and the entry gate blocks them.
+    bucket = _m1_day_ahead_bucket(target, city, observed_at)
+    if bucket is None:
+        return probabilities
+    band = M1_POLICY.edge_threshold
+    rewritten = {}
+    for ticker, prob in probabilities.items():
+        if prob.market_probability is None:
+            rewritten[ticker] = prob  # no tradeable ask: the book gates reject it
+            continue
+        p = recalibrated_p_yes(prob.market_probability, bucket)
+        rewritten[ticker] = replace(
+            prob,
+            probability=p,
+            lower_confidence=max(0.0, p - band),
+            upper_confidence=min(1.0, p + band),
+        )
+    return rewritten
+
+
+def _research_market_signal_decisions(
+    decisions: list[TradeDecision],
+    *,
+    target: date,
+    city: CityConfig,
+    observed_at: datetime,
+) -> list[TradeDecision]:
+    """Copies of the research decisions priced on the M1 market signal (v8).
+
+    Copies only: the frozen M1 trial reads the scan's original decisions, and
+    model_probability keeps the weather read for audit. Day-ahead (civil lead
+    1) only, and never in the listing hour, which M1's test showed loses at
+    taker prices.
+    """
+
+    bucket = _m1_day_ahead_bucket(target, city, observed_at)
+    if bucket is None:
+        return _block_entry_decisions(
+            decisions, "research v8 trades day-ahead only (civil lead 1)"
+        )
+    if is_listing_hour(target, observed_at):
+        return _block_entry_decisions(
+            decisions,
+            "research v8 skips the listing hour (D-1 10:00-10:59 America/New_York)",
+        )
+    rewritten = []
+    for decision in decisions:
+        if decision.market_probability is None:
+            rewritten.extend(
+                _block_entry_decisions(
+                    [decision], "research v8 needs the scan's market probability"
+                )
+            )
+            continue
+        yes = str(decision.side or "YES").upper() == "YES"
+        q_yes = decision.market_probability if yes else 1.0 - decision.market_probability
+        p_yes = recalibrated_p_yes(q_yes, bucket)
+        p = p_yes if yes else 1.0 - p_yes
+        rewritten.append(
+            replace(
+                decision,
+                probability=p,
+                probability_lcb=max(0.0, p - RESEARCH_MARKET_SIGNAL_EDGE),
+            )
+        )
+    return rewritten
+
+
 def build_scan_context(
     args: argparse.Namespace,
     target: date,
@@ -446,6 +547,10 @@ def build_scan_context(
     )
     consensus = build_market_consensus(markets)
     risk_profile = _risk_profile_name(args)
+    if risk_profile == "live":
+        probabilities = _m1_live_probabilities(
+            probabilities, target, city, quote_observed_at
+        )
     paper_bankroll = _sizing_bankroll(store, config, risk_profile)
     evaluator = TradeEvaluator(
         config,
@@ -702,6 +807,12 @@ def _execute_research_scan_context(
     decisions = list(context.decisions)
     if not entry_allowed and entry_block_reason:
         decisions = _block_entry_decisions(decisions, entry_block_reason)
+    decisions = _research_market_signal_decisions(
+        decisions,
+        target=target,
+        city=context.city,
+        observed_at=getattr(context, "quote_observed_at", None) or datetime.now(UTC),
+    )
     execution_config = strategy_config_for_profile("research")
     trader = PaperTrader(
         store,
@@ -713,23 +824,6 @@ def _execute_research_scan_context(
     admit_target_orders = (
         place_paper if place_research_target is None else place_research_target
     )
-    # Stale-quote guard for the 30-minute day-ahead rest: pull any resting
-    # target quote this tick's fresh lower-bound probabilities no longer
-    # support. It writes to the target ledger, so it runs only when this scan
-    # was asked to place target orders: a dry run, `portfolio-scan` without
-    # --place-paper, or the runner's shadow mode (PAPER_PLACE_RESEARCH_TARGET=0)
-    # must never touch resting quotes. It DOES run on a placing tick whose
-    # entry is blocked (single-source forecast, closed same-day window, no
-    # listed event): pulling a quote the fresh LCB no longer supports only
-    # reduces risk, and _block_entry_decisions keeps each decision's LCB.
-    # The pull cuts the quote's expiry rather than cancelling it (see
-    # PaperStore.request_resting_order_cancel), so its reservation is released
-    # by the monitor's reconciled expiry pass, not in time for this capacity
-    # read, and the duplicate-entry guard keeps that market unquotable until
-    # then -- typically this tick and the next (see
-    # PaperTrader.cancel_stale_research_resting_orders).
-    if admit_target_orders:
-        trader.cancel_stale_research_resting_orders(target.isoformat(), decisions)
     target_state = store.research_account_state(account_id=TARGET_POLICY.account_id)
     target_realized = store.research_realized_pnl_for_day(
         account_id=TARGET_POLICY.account_id,
@@ -1282,7 +1376,12 @@ def _portfolio_scan_one_target(
             entry_block_reason = "paper portfolio disabled: market event has no active markets"
         else:
             entry_allowed, entry_block_reason = _paper_entry_gate_for_target(
-                target, forecast, intraday, city=city, risk_profile=risk_profile
+                target,
+                forecast,
+                intraday,
+                city=city,
+                now=getattr(context, "quote_observed_at", None),
+                risk_profile=risk_profile,
             )
     paper_trader = PaperTrader(
         store,
@@ -1821,6 +1920,23 @@ def _paper_entry_gate_for_target(
         )
     local_now = settlement_clock(now, city)
     if target != local_now.date():
+        if normalize_risk_profile_name(risk_profile) == "live" and (
+            civil_lead_days(target, local_now, (city or get_city("sfo")).civil_tz_name)
+            != M1_POLICY.lead_days
+        ):
+            return (
+                False,
+                "live paper entry requires civil lead 1; the M1 recalibration "
+                "is fitted for day-ahead (D-1) only",
+            )
+        if normalize_risk_profile_name(risk_profile) == "live" and is_listing_hour(
+            target, local_now
+        ):
+            return (
+                False,
+                "live paper entry skips the listing hour (D-1 10:00-10:59 "
+                "America/New_York), where M1's test showed taker losses",
+            )
         return True, None
     if normalize_risk_profile_name(risk_profile) == "live":
         return (

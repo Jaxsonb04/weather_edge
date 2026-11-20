@@ -32,6 +32,7 @@ from sfo_kalshi_quant.research_policy import (
     TARGET_POLICY_V4,
     TARGET_POLICY_V5,
     TARGET_POLICY_V6,
+    TARGET_POLICY_V7,
 )
 
 
@@ -343,13 +344,14 @@ def test_existing_policy_and_strategy_fingerprints_are_unchanged() -> None:
     assert TARGET_POLICY_V4.policy_fingerprint == "982654641249be8a63739a5c"
     assert TARGET_POLICY_V5.policy_fingerprint == "cf33c27f3f70129be1e4a9e8"
     assert TARGET_POLICY_V6.policy_fingerprint == "0fd9cc8ebf877a653806fe1a"
-    assert TARGET_POLICY.policy_fingerprint == "428de2dc0b33923a909d8eb3"
+    assert TARGET_POLICY_V7.policy_fingerprint == "428de2dc0b33923a909d8eb3"
+    assert TARGET_POLICY.policy_fingerprint == "902bcfb7b6417501f3e1df8a"
     assert MOTION_POLICY.policy_fingerprint == "1c50d872ce278b403a6ad80e"
     live = strategy_config_for_profile("live")
     research = strategy_config_for_profile("research")
-    assert strategy_fingerprint(live, entry_mode="limit") == "24319aeda35fdd71e5c977e5"
-    assert strategy_fingerprint(live, entry_mode="market") == "b3eddca68a4f4fd29d69fa7a"
-    assert strategy_fingerprint(research, entry_mode="limit") == "1d8965ceeb0f5d424aa103d3"
+    assert strategy_fingerprint(live, entry_mode="limit") == "9725984064a55081065c6313"
+    assert strategy_fingerprint(live, entry_mode="market") == "3c8a1cf9355693dd9ec130c6"
+    assert strategy_fingerprint(research, entry_mode="limit") == "282324065b36575cb6232ebe"
 
 
 def test_pinned_risk_limits_match_the_research_profile_they_were_copied_from() -> None:
@@ -367,7 +369,8 @@ def test_pinned_risk_limits_match_the_research_profile_they_were_copied_from() -
     assert research.max_source_spread_f == policy.max_source_spread_f
     assert research.max_forecast_age_hours == policy.max_forecast_age_hours
     assert research.taker_fee_rate == policy.taker_fee_rate
-    assert TARGET_POLICY.daily_loss_pause_pct == policy.daily_loss_pause_pct
+    # Copied from V7 on 2026-11-02; V8's 25% pause does not move the frozen trial.
+    assert TARGET_POLICY_V7.daily_loss_pause_pct == policy.daily_loss_pause_pct
     summary = m1.policy_summary()
     assert summary["position_cap_dollars"] == 30.0
     assert summary["event_cap_dollars"] == 60.0

@@ -17,6 +17,7 @@ ARCHIVED_PROFILES = frozenset(
         "research-target-v4",
         "research-target-v5",
         "research-target-v6",
+        "research-target-v7",
         "research-motion",
     }
 )
@@ -607,6 +608,7 @@ def _profile_sort_key(name: str) -> tuple[int, str]:
         "research-target-v4": 6,
         "research-target-v5": 7,
         "research-target-v6": 8,
+        "research-target-v7": 8,
         "research-motion": 8,
         "research": 9,
         "unknown": 9,
@@ -622,7 +624,7 @@ def _profile_label(name: str) -> str:
     if name == "research":
         return "Legacy research (archived)"
     if name == "research-target":
-        return "Research ROI v7 · fixed daily objective"
+        return "Research HF v8 · market signal"
     if name == "research-target-v1":
         return "Research target v1 (archived control)"
     if name == "research-target-v2":
@@ -635,6 +637,8 @@ def _profile_label(name: str) -> str:
         return "Research ROI v5 (archived 1.5x step)"
     if name == "research-target-v6":
         return "Research ROI v6 (archived pre-v7 record)"
+    if name == "research-target-v7":
+        return "Research ROI v7 (archived weather-model book)"
     if name == "research-motion":
         return "Research motion (archived execution learning)"
     if name == "research-m1":

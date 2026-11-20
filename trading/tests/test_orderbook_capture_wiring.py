@@ -82,7 +82,7 @@ def _plan(legs: list[PortfolioLeg]) -> PortfolioPlan:
 
 def _base_context():
     return SimpleNamespace(
-        decisions=[object()],
+        decisions=[],
         city=get_city("sfo"),
         series_ticker="KXHIGHTSFO",
         intraday=None,

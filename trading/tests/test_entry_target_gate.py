@@ -149,6 +149,11 @@ def test_research_scan_builds_only_active_target_and_keeps_motion_read_only() ->
         patch.object(scan_module, "ResearchOpportunity", side_effect=lambda d, t, l: (d, t, l)),
         patch.object(scan_module, "allocate_research_plans", return_value=plans) as allocate,
         patch.object(scan_module, "PaperTrader", return_value=trader) as trader_type,
+        patch.object(
+            scan_module,
+            "_research_market_signal_decisions",
+            side_effect=lambda found, **_: found,
+        ) as market_signal,
     ):
         actual_plans, actual_execution, recorded = scan_module._execute_research_scan_context(
             context,
@@ -168,6 +173,8 @@ def test_research_scan_builds_only_active_target_and_keeps_motion_read_only() ->
     assert actual_plans is plans
     assert actual_execution is execution
     assert recorded == decisions
+    market_signal.assert_called_once()
+    assert market_signal.call_args.args[0] == decisions
     prepare.assert_called_once()
     assert prepare.call_args.args[0] == decisions
     allocate.assert_called_once_with(

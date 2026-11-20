@@ -1493,6 +1493,7 @@ def _readiness_root_profile_class(
         "research-target-v4",
         "research-target-v5",
         "research-target-v6",
+        "research-target-v7",
         "research-target",
         "research-motion",
         # The M1 trial's paper ledger is research evidence: never part of the

@@ -91,6 +91,19 @@ describe("ForecastDial publication truthfulness", () => {
     expect(screen.getByText(/Live · 3 obs/)).toBeInTheDocument();
   });
 
+  it("labels a market headline and compares the model against it, not the market with itself", async () => {
+    const marketTarget = {
+      ...targetWithConsensus,
+      forecast: { predicted_high_f: 67, forecast_source: "market", model_high_f: 68.4, market_implied_high_f: 67 },
+    } as unknown as Target;
+    await renderDial("2026-07-09T11:59:00Z", marketTarget);
+
+    expect(screen.getByText(/Market-implied high · Today/)).toBeInTheDocument();
+    expect(screen.getByText("vs market")).toBeInTheDocument();
+    expect(screen.getByText(/^model/)).toHaveTextContent("68.4°F");
+    expect(screen.queryByText(/market implies/i)).not.toBeInTheDocument();
+  });
+
   it("selects the displayed first day when a publication removes the selected target", async () => {
     // jsdom has no Web Animations API; the real Segment moves its indicator on selection.
     Object.defineProperty(Element.prototype, "getAnimations", { configurable: true, value: () => [] });

@@ -182,7 +182,8 @@ def test_live_admits_mid_ladder_cheap_tail_that_strict_baseline_rejects():
         market_probability=0.05,
     )
     strict = TradeEvaluator(StrategyConfig())
-    live_config = strategy_config_for_profile("live")
+    # Live dropped the band on 2026-11-12; the band itself stays covered here.
+    live_config = replace(strategy_config_for_profile("live"), favorite_band_enabled=True)
     live = TradeEvaluator(live_config)
     banded = live.evaluate_market(market, probability, bankroll=350)
     assert not banded.approved

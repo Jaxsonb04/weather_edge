@@ -34,6 +34,19 @@ from sfo_kalshi_quant.settlement_day import settlement_clock
 from sfo_kalshi_quant.standard_bins import fallback_bins
 
 
+@pytest.fixture(autouse=True)
+def _exit_rules_manage_these_rows(monkeypatch):
+    # These tests pin the exit rules, which still manage archived books' open
+    # lots. Live and research v8 hold to settlement since 2026-11-12
+    # (test_market_signal_books.py pins that).
+    from sfo_kalshi_quant import monitor
+    from sfo_kalshi_quant.account import LIVE_STABILITY_ACCOUNT_ID
+    from sfo_kalshi_quant.research_policy import TARGET_POLICY
+
+    monkeypatch.delitem(monitor._HOLD_TO_SETTLEMENT_REASONS, LIVE_STABILITY_ACCOUNT_ID)
+    monkeypatch.delitem(monitor._HOLD_TO_SETTLEMENT_REASONS, TARGET_POLICY.account_id)
+
+
 def _probability(ticker: str, probability: float) -> BucketProbability:
     return BucketProbability(
         ticker=ticker,

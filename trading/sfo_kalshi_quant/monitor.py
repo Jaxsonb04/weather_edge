@@ -12,7 +12,7 @@ from decimal import Decimal
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 
-from .account import RESEARCH_ACCOUNT_ID
+from .account import LIVE_STABILITY_ACCOUNT_ID, RESEARCH_ACCOUNT_ID
 from .cities import CityConfig, city_for_market_ticker
 from .colors import Color
 from .config import (
@@ -44,7 +44,7 @@ from .maker_fills import (
 from .models import MarketBin
 from .probability import ResidualCalibrator, post_peak_cap_engaged
 from .research_m1 import M1_ACCOUNT_ID
-from .research_policy import ALL_RESEARCH_POLICIES, ResearchSleeve
+from .research_policy import ALL_RESEARCH_POLICIES, TARGET_POLICY, ResearchSleeve
 from .settlement_day import settlement_clock
 
 
@@ -191,15 +191,22 @@ def _is_guaranteed_payoff_group_row(row) -> bool:
     return bool(group_id and not str(group_id).startswith("DEGRADED-"))
 
 
-def _is_m1_hold_to_settlement_row(row) -> bool:
-    """M1 trial positions are held to settlement by pre-registered policy.
+# Market-signal books hold to settlement: the M1 trial by pre-registered
+# policy, and since 2026-11-12 Live and research v8, which enter on the same
+# market recalibration and have no exit rule fitted to it.
+_HOLD_TO_SETTLEMENT_REASONS = {
+    M1_ACCOUNT_ID: "M1 market-recalibration trial: held to settlement by policy",
+    LIVE_STABILITY_ACCOUNT_ID: "Live market-signal book: held to settlement by policy",
+    TARGET_POLICY.account_id: "research v8 market-signal book: held to settlement by policy",
+}
 
-    The monitor never stops, takes profit, holds on a model veto or
-    catastrophic-exits them; the normal account-scoped settle closes them.
-    """
+
+def _hold_to_settlement_reason(row) -> str | None:
+    """Why the monitor never stops, takes profit, vetoes or catastrophic-exits
+    this lot (the normal account-scoped settle closes it), or None."""
 
     account_id = row["account_id"] if "account_id" in row.keys() else None
-    return str(account_id or "") == M1_ACCOUNT_ID
+    return _HOLD_TO_SETTLEMENT_REASONS.get(str(account_id or ""))
 
 
 def _orders_with_snapshot_action(
@@ -478,8 +485,8 @@ def run_paper_monitor(
     if _env_enabled("PAPER_SAME_DAY_MODEL_HEARTBEAT_ENABLED"):
         refresh_model_reads(
             store,
-            # M1 lots hold to settlement; their reads would only feed Live/V7.
-            [row for row in rows if not _is_m1_hold_to_settlement_row(row)],
+            # Held lots never exit, so their model reads would feed nothing.
+            [row for row in rows if _hold_to_settlement_reason(row) is None],
             forecaster_root=args.forecaster_root,
             log=lambda message: print(color.yellow(message), file=sys.stderr),
             held=held_same_day,
@@ -488,7 +495,7 @@ def run_paper_monitor(
         row
         for row in rows
         if not _is_guaranteed_payoff_group_row(row)
-        and not _is_m1_hold_to_settlement_row(row)
+        and _hold_to_settlement_reason(row) is None
     ]
     quote_observed_at: dict[str, str] = {}
     market_lookup = _monitor_market_lookup(
@@ -514,11 +521,11 @@ def run_paper_monitor(
         print(f"HOLD order {row['id']} {row['market_ticker']} {side}: {reason}")
         unreadable_markets.setdefault(str(row["market_ticker"]), error)
 
-    # An M1 lot's hold is fixed by policy, so its snapshot is written once per
+    # A held lot's hold is fixed by policy, so its snapshot is written once per
     # lot, not on every two-minute tick.
-    m1_lots_already_held = _orders_with_snapshot_action(
+    lots_already_held = _orders_with_snapshot_action(
         store,
-        [int(row["id"]) for row in rows if _is_m1_hold_to_settlement_row(row)],
+        [int(row["id"]) for row in rows if _hold_to_settlement_reason(row) is not None],
         action="HOLD_TO_SETTLEMENT",
     )
     closed = 0
@@ -527,20 +534,15 @@ def run_paper_monitor(
         inspected += 1
         side = str(row["side"] or ("NO" if "NO" in str(row["action"]).upper() else "YES")).upper()
         group_id = row["group_id"] if "group_id" in row.keys() else None
-        if _is_m1_hold_to_settlement_row(row):
+        hold_reason = _hold_to_settlement_reason(row)
+        if hold_reason is not None:
             # Checked before every exit rule, quote fetch and model read: no
-            # exit path below can reach an M1 position.
-            if int(row["id"]) not in m1_lots_already_held:
+            # exit path below can reach a held position.
+            if int(row["id"]) not in lots_already_held:
                 store.record_monitor_snapshot(
-                    row,
-                    side=side,
-                    action="HOLD_TO_SETTLEMENT",
-                    reason="M1 market-recalibration trial: held to settlement by policy",
+                    row, side=side, action="HOLD_TO_SETTLEMENT", reason=hold_reason
                 )
-                print(
-                    f"HOLD order {row['id']} {row['market_ticker']} {side}: "
-                    "M1 trial (held to settlement)"
-                )
+                print(f"HOLD order {row['id']} {row['market_ticker']} {side}: {hold_reason}")
             continue
         if _is_guaranteed_payoff_group_row(row):
             # Legs of an arbitrage box/ladder or a tail basket form a single

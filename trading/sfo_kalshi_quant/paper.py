@@ -24,7 +24,6 @@ from .execution import buy_limit_for_decision, target_research_quote, with_buy_l
 from .models import EventSnapshot, ForecastSnapshot, IntradaySnapshot, TradeDecision
 from .research_policy import MOTION_POLICY, TARGET_POLICY, ResearchSleevePolicy
 from .research_entry_risk import (
-    STALE_RESEARCH_QUOTE_REASON_PREFIX,
     target_entry_spend_limit,
 )
 from .research_portfolio import MAX_TARGET_CONTRACTS, ResearchPlans
@@ -667,96 +666,6 @@ class PaperTrader:
             target_order_ids=tuple(target_order_ids),
             motion_order_ids=tuple(motion_order_ids),
         )
-
-    def cancel_stale_research_resting_orders(
-        self,
-        target_date: str,
-        decisions: list[TradeDecision],
-    ) -> list[int]:
-        """Pull target-sleeve quotes whose CURRENT after-fee LCB edge is negative.
-
-        The 30-minute day-ahead rest (research_entry_risk) doubles how long a
-        quote can sit under a forecast that has moved. Every placing scan
-        re-evaluates each market it can see: when the fresh lower-bound
-        probability for the same market/side no longer covers the resting
-        order's own after-fee cost (``cost_per_contract`` is the maker cost at
-        the resting price, fees included), the quote is pulled AT THIS INSTANT
-        through ``PaperStore.request_resting_order_cancel``. A market with no
-        fresh decision this tick is left alone -- missing information is not
-        evidence of a stale quote, and the TTL still bounds it.
-
-        The pull is not an immediate cancel, deliberately. Public tape that
-        already traded through the quote before this instant may not have been
-        credited yet (the monitor is a separate 2-minute timer that waits out a
-        5-minute ingestion grace), and a direct cancel would erase those fills
-        permanently -- precisely the adverse ones, since a pull fires when the
-        forecast has moved against the quote. Cutting the expiry instead keeps
-        every earlier trade creditable, rejects every later one, and leaves the
-        cancel and the reservation release to the monitor's watermark-gated
-        expiry pass. The reservation therefore stays charged until that pass,
-        roughly the grace plus one monitor tick, not for the rest of the TTL.
-
-        The market stays locked for the same span. The pulled row is still
-        ``PAPER_LIMIT_RESTING`` until that pass, and the research duplicate
-        guard (one active entry per market and side, store/schema.py) matches
-        on status, so the scan cannot re-quote the market on the pull tick or,
-        typically, the next one: the grace equals the 5-minute scan cadence,
-        and the monitor expires the quote in the same pass that first carries
-        its tape watermark past the pull instant plus the grace. That lock is
-        the price of crediting fills, not an accident: until the tape covers
-        the pull instant the quote may already have filled, and a replacement
-        would be duplicate exposure. It costs about one scan tick per pull. A
-        quote that is merely outbid, with a non-negative LCB edge, is not
-        pulled and holds its market for its whole 30-minute rest.
-
-        This is a partial mitigation, not an adverse-selection model. It runs
-        once per scan tick (5-minute cadence), so a quote can sit up to a tick
-        under a moved forecast; it sees only markets present in that tick's
-        decisions; and it re-checks the fresh LCB against the resting cost
-        only, not the spread/depth gates. Paper fills inside those gaps are
-        still credited whenever the tape trades through the price, which a
-        real-money book would mostly experience as adverse fills (see the
-        real-money divergence note in research_entry_risk).
-
-        Returns the ids pulled by this call; a quote already pulled keeps its
-        first instant and is not returned again.
-        """
-
-        if self.risk_profile != "research":
-            raise ValueError(
-                "stale research quote cancellation requires the research profile"
-            )
-        current = {_decision_key(decision): decision for decision in decisions}
-        cancelled: list[int] = []
-        for row in self.store.resting_paper_orders(account_id=TARGET_POLICY.account_id):
-            if str(row["target_date"]) != str(target_date):
-                continue
-            key = (str(row["market_ticker"]), str(row["side"] or "YES").upper())
-            decision = current.get(key)
-            if decision is None:
-                continue
-            try:
-                probability_lcb = float(decision.probability_lcb)
-                resting_cost = float(row["cost_per_contract"])
-            except (TypeError, ValueError):
-                continue
-            if not (math.isfinite(probability_lcb) and math.isfinite(resting_cost)):
-                continue
-            edge_lcb = probability_lcb - resting_cost
-            if edge_lcb >= -1e-12:
-                continue
-            reason = (
-                f"{STALE_RESEARCH_QUOTE_REASON_PREFIX}: current after-fee LCB edge "
-                f"{edge_lcb:.4f} at resting cost {resting_cost:.4f}"
-            )
-            # The store re-reads the row under BEGIN IMMEDIATE: a fill or TTL
-            # expiry can win between this read and the request.
-            updated = self.store.request_resting_order_cancel(
-                int(row["id"]), reason=reason
-            )
-            if updated is not None:
-                cancelled.append(int(row["id"]))
-        return cancelled
 
     def _prepare_research_plan(
         self,

@@ -21,6 +21,7 @@ from __future__ import annotations
 import math
 import statistics
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from .models import MarketBin
 from .probability import market_implied_yes_value
@@ -183,6 +184,104 @@ def build_market_consensus(markets: list[MarketBin]) -> MarketConsensus:
         liquid_bin_count=liquid_bin_count,
         bins=tuple(bins),
     )
+
+
+# Open-ended tail brackets are centred this far beyond their open edge when the
+# ladder is reduced to one published number (see ladder_mean).
+_TAIL_OFFSET_F = 3.0
+_BIN_VARIANCE_F2 = 1.0 / 3.0  # within-bracket variance of a 2F bin
+_MIN_LADDER_SD_F = 0.5
+_OBSERVATION_FRESH = timedelta(hours=2)
+# The settlement-day observed high is a hard floor on the day's high (half a
+# degree of rounding slack, as the intraday update uses).
+_OBSERVED_FLOOR_SLACK_F = 0.5
+
+
+def ladder_mean(markets: list[MarketBin]) -> tuple[float, float] | None:
+    """Market-implied (mean, sd) of the daily high, or None for an unusable ladder.
+
+    Prices are the two-sided mid (ask/2 ask-only, (bid+1)/2 bid-only) normalised
+    over the active ladder. Separate from ``build_market_consensus`` on purpose:
+    that feeds recorded audit fields, so its tail centres must not move.
+    Requires both open-ended tails active and at least one priced bracket, since
+    a partial ladder biases the mean toward the brackets that happen to be listed.
+    """
+
+    points: list[tuple[float, float]] = []
+    has_low = has_high = False
+    for market in markets:
+        if market.status != "active":
+            continue
+        lo_f, hi_f = market.continuous_interval()
+        lo_open, hi_open = not math.isfinite(lo_f), not math.isfinite(hi_f)
+        if lo_open and hi_open:
+            continue  # malformed bracket with no finite edge
+        has_low |= lo_open
+        has_high |= hi_open
+        price = market_implied_yes_value(market)
+        if price is None or price <= 0.0:
+            continue
+        if lo_open:
+            center = hi_f - _TAIL_OFFSET_F
+        elif hi_open:
+            center = lo_f + _TAIL_OFFSET_F
+        else:
+            center = (lo_f + hi_f) / 2.0
+        points.append((center, price))
+    total = sum(price for _, price in points)
+    if not (has_low and has_high) or total <= 0.0:
+        return None
+    mean = sum(c * p for c, p in points) / total
+    variance = sum(p * (c - mean) ** 2 for c, p in points) / total
+    return mean, math.sqrt(max(variance - _BIN_VARIANCE_F2, _MIN_LADDER_SD_F**2))
+
+
+def apply_market_headline(
+    forecast: dict,
+    ladder: tuple[float, float] | None,
+    *,
+    intraday: dict | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """Publish the market mean as the headline, keeping the model value beside it.
+
+    ``forecast`` is a published forecast dict whose ``predicted_high_f`` is the
+    model (already intraday-updated). On the settlement day the market mean is
+    floored at the observed high so far, but only from a fresh observation. The
+    observed-high fold stays on the model value alone, so nothing is applied twice.
+    """
+
+    out = {
+        **forecast,
+        "model_high_f": forecast["predicted_high_f"],
+        "model_sigma_f": forecast.get("sigma_f"),
+        "market_implied_high_f": None,
+        "forecast_source": "model",
+    }
+    if ladder is None:
+        return out
+    mean, sd = ladder
+    headline = mean
+    observed = (intraday or {}).get("observed_high_f")
+    if observed is not None and _observation_is_fresh(intraday, now):
+        headline = max(headline, float(observed) - _OBSERVED_FLOOR_SLACK_F)
+    out.update(
+        predicted_high_f=round(headline, 2),
+        sigma_f=round(sd, 2),
+        market_implied_high_f=round(mean, 2),
+        forecast_source="market",
+    )
+    return out
+
+
+def _observation_is_fresh(intraday: dict | None, now: datetime | None) -> bool:
+    try:
+        seen = datetime.fromisoformat(str(intraday["latest_observed_at"]))
+    except (KeyError, TypeError, ValueError):
+        return False
+    if seen.tzinfo is None:
+        seen = seen.replace(tzinfo=timezone.utc)
+    return (now or datetime.now(timezone.utc)) - seen <= _OBSERVATION_FRESH
 
 
 def _is_two_sided(market: MarketBin) -> bool:

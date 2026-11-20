@@ -22,6 +22,19 @@ from sfo_kalshi_quant.monitor import run_paper_monitor
 from sfo_kalshi_quant.paper import ArbitrageContainmentError, PaperTrader
 
 
+@pytest.fixture(autouse=True)
+def _exit_rules_manage_these_rows(monkeypatch):
+    # These tests pin the exit rules, which still manage archived books' open
+    # lots. Live and research v8 hold to settlement since 2026-11-12
+    # (test_market_signal_books.py pins that).
+    from sfo_kalshi_quant import monitor
+    from sfo_kalshi_quant.account import LIVE_STABILITY_ACCOUNT_ID
+    from sfo_kalshi_quant.research_policy import TARGET_POLICY
+
+    monkeypatch.delitem(monitor._HOLD_TO_SETTLEMENT_REASONS, LIVE_STABILITY_ACCOUNT_ID)
+    monkeypatch.delitem(monitor._HOLD_TO_SETTLEMENT_REASONS, TARGET_POLICY.account_id)
+
+
 def _yes_decision(ticker: str = "KXHIGHTSFO-TEST-B75.5", *, yes_ask: float = 0.08) -> TradeDecision:
     return TradeDecision(
         ticker=ticker,

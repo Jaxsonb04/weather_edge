@@ -901,7 +901,7 @@ def test_m1_identity_is_pinned_to_this_release_and_independent_of_its_versions(
     """
 
     assert EXECUTION_MODEL_VERSION == "exec-v5-2026-10-05"
-    assert STRATEGY_BEHAVIOR_VERSION == "behavior-v6-apple-forecast-2026-11-09"
+    assert STRATEGY_BEHAVIOR_VERSION == "behavior-v7-market-signal-2026-11-12"
     assert m1.M1_POLICY.policy_fingerprint == "f0258953ff7eb55a1e9318b4"
     import sfo_kalshi_quant.account as account_module
     import sfo_kalshi_quant.maker_fills as maker_fills_module

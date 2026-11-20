@@ -309,12 +309,28 @@ TARGET_POLICY_V6 = ResearchSleevePolicy(
 # Keep the v6 object byte-for-byte frozen so its fingerprints still resolve.
 # Owner decision 2026-11-07: V7 runs on $2,000, so its percentage limits, Kelly
 # term and daily goal scale with it. The per-position limit stays $90: 4.5% here.
-TARGET_POLICY = replace(
+# Archived 2026-11-12; frozen so its fingerprints still resolve.
+TARGET_POLICY_V7 = replace(
     TARGET_POLICY_V6,
     account_id="paper-research-roi-v7",
     policy_version="research-target-roi-v7",
     reference_equity=2000.0,
     max_position_risk_pct=0.045,
+)
+
+# v8 (owner decision 2026-11-12): a high-frequency book on the M1 market
+# recalibration, taker-only at a one-cent edge, flat $90 legs, held to
+# settlement. Every dollar knob keeps V7's geometry (16.67 and 4.0).
+# target_return 1.0 ($2,000/day, doubling the account in a day) keeps the
+# target-attained lock out of the way without a code path: it cannot be 0
+# (the frozen daily goal requires a positive target). The 25% realized-loss
+# pause ($500) is the book's hard daily bound.
+TARGET_POLICY = replace(
+    TARGET_POLICY_V7,
+    account_id="paper-research-hf-v8",
+    policy_version="research-target-hf-v8",
+    target_return=1.0,
+    daily_loss_pause_pct=0.25,
 )
 
 MOTION_POLICY = ResearchSleevePolicy(
@@ -343,6 +359,7 @@ ALL_RESEARCH_POLICIES = (
     TARGET_POLICY_V4,
     TARGET_POLICY_V5,
     TARGET_POLICY_V6,
+    TARGET_POLICY_V7,
     TARGET_POLICY,
     MOTION_POLICY,
 )

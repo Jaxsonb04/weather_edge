@@ -12,7 +12,7 @@ from urllib.error import URLError
 
 from .backtest import DEFAULT_CALIBRATION_CACHE_DIR, run_walk_forward_calibration_backtest
 from .config import SERIES_TICKER, StrategyConfig, intraday_timezone_for_city
-from .consensus import MarketConsensus, build_market_consensus
+from .consensus import MarketConsensus, apply_market_headline, build_market_consensus, ladder_mean
 from .ensemble import OpenMeteoEnsembleError, SfoEnsembleClient
 from .forecast import (
     ForecastDataError,
@@ -193,7 +193,12 @@ def build_target_report(
         "event_title": event_title,
         "market_available": market_available,
         "market_data_at": _market_data_at(event),
-        "forecast": forecast_to_dict(forecast),
+        "forecast": apply_market_headline(
+            forecast_to_dict(forecast),
+            # A saved events file can be arbitrarily old; only a live ladder may headline.
+            ladder_mean(markets) if market_available and not offline_events else None,
+            intraday=intraday_to_dict(intraday),
+        ),
         "intraday": intraday_to_dict(intraday),
         "ensemble": ensemble_to_dict(ensemble),
         "market_consensus": consensus_to_dict(

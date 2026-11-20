@@ -93,7 +93,7 @@ def test_fresh_restart_publishes_exactly_two_active_two_thousand_dollar_ledgers(
     assert live["status"] == research["status"] == "ACTIVE"
     assert live["days"][-1]["closing_equity"] == 2000.0
     assert research["days"][-1]["closing_equity"] == TARGET_POLICY.reference_equity
-    assert TARGET_POLICY.target_pnl == 100.0
+    assert TARGET_POLICY.target_pnl == 2000.0
 
     archived_ids = {
         row["account_id"] for row in payload["archived_accounts"]

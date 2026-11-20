@@ -1,6 +1,7 @@
-"""Scheduled planning must reserve existing filled and pending daily risk."""
+"""Scheduled planning bounds v8 entries by the realized daily-loss room."""
 
-from datetime import date
+from dataclasses import replace
+from datetime import UTC, date, datetime
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -12,16 +13,22 @@ from sfo_kalshi_quant.config import strategy_config_for_profile
 from sfo_kalshi_quant.research_entry_risk import TARGET_OPEN_RISK_CHARGE_FRACTION
 from test_target_execution_capacity import _candidate
 
+# 13:00 PDT on D-1 for the 2026-09-12 SFO target: civil lead 1, not the
+# 10:00 New York listing hour, so the v8 market-signal copy is tradeable.
+QUOTE_AT = datetime(2026, 9, 11, 20, 0, tzinfo=UTC)
+
 
 def _scan(state, *, realized=0.0):
     context = SimpleNamespace(
-        decisions=[_candidate()],
+        # A NO leg the M1 recalibration prices well above its 0.76 ask.
+        decisions=[replace(_candidate(), market_probability=0.85)],
         city=get_city("sfo"),
         series_ticker="KXHIGHTSFO",
         intraday=None,
         forecast=object(),
         event=object(),
         consensus=object(),
+        quote_observed_at=QUOTE_AT,
     )
     store = Mock()
     store.research_objective_day.return_value = date(2026, 9, 11)
@@ -47,24 +54,21 @@ def _scan(state, *, realized=0.0):
 
 
 @pytest.mark.parametrize("open_cost,reservations", [(450.0, 0.0), (0.0, 450.0), (180.0, 270.0)])
-def test_scan_shrinks_planned_entry_to_remaining_daily_risk(open_cost, reservations):
+def test_scan_open_and_pending_cost_do_not_shrink_the_flat_entry(open_cost, reservations):
     plans, store = _scan({
         "available_cash": 900.0,
         "open_cost_basis": open_cost,
         "reservations": reservations,
     })
-    # $450 of open/pending cost is charged at the 0.60 stop-scaled fraction,
-    # so a $90 desired entry must fit the remaining $300 - $270 = $30. A
-    # partially filled order's $180 filled + $270 pending risk counts once
-    # each, exactly like the existing account-state query, and a resting
-    # reservation is charged at the same rate as filled cost.
+    # v8 holds to settlement: open cost is not charged against the $500 room,
+    # so the full flat $90 leg is planned.
     assert len(plans.target.legs) == 1
-    assert 29.0 < plans.target.total_spend <= 30.0
+    assert 89.0 < plans.target.total_spend <= 90.0
     assert store.research_account_state.call_count == 1
 
 
-def test_planning_cash_charges_reservations_like_filled_cost_at_stop_fraction():
-    assert TARGET_OPEN_RISK_CHARGE_FRACTION == 0.60
+def test_planning_cash_is_the_realized_room_capped_by_cash():
+    assert TARGET_OPEN_RISK_CHARGE_FRACTION == 0.0
     filled = scan_module._target_planning_cash(
         {"available_cash": 900.0, "open_cost_basis": 200.0, "reservations": 0.0},
         0.0,
@@ -73,22 +77,25 @@ def test_planning_cash_charges_reservations_like_filled_cost_at_stop_fraction():
         {"available_cash": 900.0, "open_cost_basis": 0.0, "reservations": 200.0},
         0.0,
     )
-    assert filled == pytest.approx(180.0)
-    assert resting == filled
-    # The room never exceeds spendable cash.
+    assert filled == resting == pytest.approx(500.0)
+    # Profits never expand the room, and it never exceeds spendable cash.
+    assert scan_module._target_planning_cash(
+        {"available_cash": 900.0, "open_cost_basis": 0.0, "reservations": 0.0},
+        40.0,
+    ) == pytest.approx(500.0)
     assert scan_module._target_planning_cash(
         {"available_cash": 12.5, "open_cost_basis": 0.0, "reservations": 200.0},
         0.0,
     ) == pytest.approx(12.5)
 
 
-def test_scan_subtracts_realized_losses_from_existing_exposure_room():
+def test_scan_subtracts_realized_losses_from_the_daily_room():
     plans, _ = _scan({
         "available_cash": 900.0,
         "open_cost_basis": 180.0,
         "reservations": 270.0,
-    }, realized=-20.0)
-    # $300 - $20 realized - 0.6 * $450 = $10.
+    }, realized=-490.0)
+    # $500 - $490 realized = $10.
     assert 9.0 < plans.target.total_spend <= 10.0
 
 
@@ -106,12 +113,3 @@ def test_scan_subtracts_realized_losses_from_existing_exposure_room():
 def test_scan_fails_closed_without_complete_finite_account_risk(state):
     plans, _ = _scan(state)
     assert plans.target.legs == []
-
-
-def test_realized_profits_do_not_expand_daily_room():
-    plans, _ = _scan({
-        "available_cash": 940.0,
-        "open_cost_basis": 450.0,
-        "reservations": 0.0,
-    }, realized=40.0)
-    assert 29.0 < plans.target.total_spend <= 30.0

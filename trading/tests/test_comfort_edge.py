@@ -10,6 +10,13 @@ from sfo_kalshi_quant.risk import TradeEvaluator, _comfort_edge_assessment
 from sfo_kalshi_quant.standard_bins import standard_sfo_bins
 
 
+def _comfort_live() -> StrategyConfig:
+    # Live turned the comfort gate off on 2026-11-12 (it trades the M1 market
+    # signal); the gate itself is unchanged, so pin it on the profile it was
+    # tuned for.
+    return replace(strategy_config_for_profile("live"), comfort_edge_enabled=True)
+
+
 def _no_favorite(*, yes_prob: float = 0.05, yes_lower: float = 0.0, no_ask: float = 0.80):
     """A NO-favorite on the 66-67 bin (continuous interval 65.5..67.5)."""
 
@@ -47,7 +54,7 @@ def test_comfort_assessment_is_inert_when_disabled_or_inapplicable():
         side="NO", market=market, forecast_high_f=75.0, forecast_sigma_f=None, config=strict
     ) == (None, 1.0)
 
-    live = strategy_config_for_profile("live")
+    live = _comfort_live()
     # YES is never SIZE-boosted, and a far-from-forecast YES is not shaped at all
     # (forecast 75 sits 7.5F from the 65.5..67.5 bin -> well outside the band).
     assert _comfort_edge_assessment(
@@ -63,7 +70,7 @@ def test_comfort_blocks_near_forecast_yes_coin_flip():
     # A YES bet on the bin at the forecast is the diffuse-favorite coin-flip and
     # is blocked (mirrors the NO block); it is never size-boosted.
     market, _ = _no_favorite()  # bin interval 65.5..67.5
-    live = strategy_config_for_profile("live")
+    live = _comfort_live()
     reason, mult = _comfort_edge_assessment(
         side="YES", market=market, forecast_high_f=66.0, forecast_sigma_f=None, config=live
     )
@@ -73,7 +80,7 @@ def test_comfort_blocks_near_forecast_yes_coin_flip():
 
 def test_comfort_blocks_near_forecast_no_and_boosts_far_tails():
     market, _ = _no_favorite()  # bin interval 65.5..67.5
-    live = strategy_config_for_profile("live")
+    live = _comfort_live()
     # Default floor sigma 3.0 -> block 1.25*3.0=3.75F, full 2.5*3.0=7.5F.
 
     # Forecast sits inside the bin -> distance 0 -> blocked.
@@ -99,7 +106,7 @@ def test_comfort_blocks_near_forecast_no_and_boosts_far_tails():
 
 def test_comfort_distance_scales_with_forecast_sigma():
     market, _ = _no_favorite()
-    live = strategy_config_for_profile("live")
+    live = _comfort_live()
     # After the frequency push the block band is 0.4*sigma (was 1.25). Sigma
     # scaling is preserved, just narrower: a wide-sigma day (sigma 10F -> band 4F)
     # still pulls a near-forecast NO bin into the coin-flip band, while a
@@ -114,7 +121,7 @@ def test_comfort_distance_scales_with_forecast_sigma():
 
 def test_live_blocks_near_forecast_no_bet():
     market, probability = _no_favorite()
-    live = TradeEvaluator(strategy_config_for_profile("live"))
+    live = TradeEvaluator(_comfort_live())
     decision = live.evaluate_market(
         market, probability, bankroll=1000, side="NO", forecast_high_f=66.0
     )
@@ -139,7 +146,7 @@ def test_june_17_19_near_forecast_no_failure_mode_is_live_blocked_research_cappe
     # Live must sit those out; research may keep collecting examples, but the
     # shared allocator still caps total paper loss by profile.
     market, probability = _no_favorite()
-    live = TradeEvaluator(strategy_config_for_profile("live"))
+    live = TradeEvaluator(_comfort_live())
     research = TradeEvaluator(strategy_config_for_profile("research"))
 
     research_decisions = []
@@ -164,7 +171,7 @@ def test_far_tail_no_is_sized_up_versus_no_boost():
     # Forecast 59F (cold cohort, NOT regime-blocked) sits 6.5F below the 66-67
     # bin -> a comfortably far tail at full boost.
     market, probability = _no_favorite()
-    live_cfg = strategy_config_for_profile("live")
+    live_cfg = _comfort_live()
     boosted = TradeEvaluator(live_cfg).evaluate_market(
         market, probability, bankroll=200, side="NO", forecast_high_f=59.0
     )
@@ -180,7 +187,7 @@ def test_comfort_never_overrides_the_positive_edge_lcb_floor():
     # lower-bound edge is negative: live must still reject it -- comfort is
     # gate+sizing, never a bypass of the EV floor.
     market, probability = _no_favorite(yes_prob=0.05, yes_lower=0.0, no_ask=0.95)
-    live = TradeEvaluator(strategy_config_for_profile("live"))
+    live = TradeEvaluator(_comfort_live())
     decision = live.evaluate_market(
         market, probability, bankroll=1000, side="NO", forecast_high_f=59.0
     )

@@ -81,6 +81,7 @@ from .research_policy import (
     TARGET_POLICY_V4,
     TARGET_POLICY_V5,
     TARGET_POLICY_V6,
+    TARGET_POLICY_V7,
     ResearchSleeve,
     ResearchSleevePolicy,
     canonical_research_lead_bucket,
@@ -598,6 +599,7 @@ _RESEARCH_POLICIES_BY_ACCOUNT = {
     TARGET_POLICY_V4.account_id: TARGET_POLICY_V4,
     TARGET_POLICY_V5.account_id: TARGET_POLICY_V5,
     TARGET_POLICY_V6.account_id: TARGET_POLICY_V6,
+    TARGET_POLICY_V7.account_id: TARGET_POLICY_V7,
     TARGET_POLICY.account_id: TARGET_POLICY,
     MOTION_POLICY.account_id: MOTION_POLICY,
 }
@@ -2010,6 +2012,7 @@ class PaperStore:
             TARGET_POLICY_V4.account_id: "research-target-v4",
             TARGET_POLICY_V5.account_id: "research-target-v5",
             TARGET_POLICY_V6.account_id: "research-target-v6",
+            TARGET_POLICY_V7.account_id: "research-target-v7",
             TARGET_POLICY.account_id: "research-target",
             MOTION_POLICY.account_id: "research-motion",
         }[account_id]
@@ -2546,6 +2549,7 @@ class PaperStore:
         target_date: str,
         *,
         event_ticker: str | None = None,
+        not_before: str | None = None,
     ) -> EventSnapshot | None:
         """Reconstruct the most recent stored Kalshi ladder for a target date.
 
@@ -2563,6 +2567,9 @@ class PaperStore:
         if event_ticker is not None:
             filters.append("event_ticker = ?")
             params.append(event_ticker)
+        if not_before is not None:  # ISO-8601 UTC, same format as created_at
+            filters.append("created_at >= ?")
+            params.append(not_before)
         with self.connect() as conn:
             row = conn.execute(
                 f"""
@@ -5539,7 +5546,7 @@ class PaperStore:
                 ),
                 "filled_quantity_retained": filled,
             }
-            # A pull requested earlier (request_resting_order_cancel) lives in
+            # A pull recorded by the retired stale-quote guard lives in
             # the diagnostics this update replaces; keep its audit trail,
             # including the TTL the quote carried before the pull.
             cancel_request = _pending_cancel_request(row["outcome_diagnostics_json"])
@@ -5569,89 +5576,6 @@ class PaperStore:
                     idempotency_key=f"order:{order_id}:cancel-release",
                     details={"reason": reason},
                 )
-        return self._order(order_id)
-
-    def request_resting_order_cancel(
-        self,
-        order_id: int,
-        *,
-        reason: str,
-        requested_at: str | None = None,
-    ) -> sqlite3.Row | None:
-        """Pull a resting maker quote at ``requested_at`` without losing tape fills.
-
-        A resting quote's fills are credited only by the monitor's public-tape
-        pass (``apply_maker_trade_batch``), which runs on its own 2-minute timer
-        and treats the tape as complete only
-        ``MAKER_TAPE_RECONCILIATION_GRACE_SECONDS`` after an instant. Cancelling
-        the row directly would discard every trade that had already traded
-        through the quote but was not yet credited -- and the allocator never
-        revisits a terminal row, so those fills are gone for good. They are also
-        the adverse ones: a pull fires exactly when the forecast has moved
-        against the quote, which is when sellers hit it.
-
-        So a request cuts the quote's own expiry to the request instant instead
-        of cancelling. The allocator already treats ``expires_at`` as the
-        inclusive end of the quote (earlier trades still fill, later ones never
-        do), and ``expire_stale_resting_orders`` cancels the unfilled remainder,
-        releasing its reservation, once the tape watermark covers that instant
-        plus the grace -- the same interlock every TTL expiry passes. The
-        request's reason and the original expiry are kept in the diagnostics and
-        carried into the final cancellation record.
-
-        Returns the updated row, or ``None`` when nothing changed: the order is
-        no longer resting, a request is already recorded (the first instant
-        stands), or the instant does not fall after placement.
-        """
-
-        requested = requested_at or _now()
-        try:
-            requested_time = _aware_utc(requested)
-        except ValueError:
-            return None
-        with self.connect() as conn:
-            conn.row_factory = sqlite3.Row
-            conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                "SELECT * FROM paper_orders WHERE id=? "
-                "AND status IN ('PAPER_LIMIT_RESTING', 'PAPER_PARTIALLY_FILLED') "
-                "AND settled_at IS NULL AND closed_at IS NULL",
-                (order_id,),
-            ).fetchone()
-            if row is None:
-                return None
-            if _pending_cancel_request(row["outcome_diagnostics_json"]) is not None:
-                return None
-            try:
-                placed_time = _aware_utc(row["created_at"])
-            except ValueError:
-                return None
-            if requested_time <= placed_time:
-                return None
-            original_expires_at = row["expires_at"]
-            new_expires_at = requested
-            if original_expires_at:
-                try:
-                    if _aware_utc(original_expires_at) <= requested_time:
-                        new_expires_at = str(original_expires_at)
-                except ValueError:
-                    pass
-            try:
-                details = json.loads(row["outcome_diagnostics_json"] or "{}")
-            except (TypeError, ValueError, json.JSONDecodeError):
-                details = {}
-            if not isinstance(details, dict):
-                details = {}
-            details["cancel_request"] = {
-                "reason": reason,
-                "requested_at": requested,
-                "original_expires_at": original_expires_at,
-            }
-            conn.execute(
-                "UPDATE paper_orders SET expires_at=?, outcome_diagnostics_json=? "
-                "WHERE id=?",
-                (new_expires_at, json.dumps(details, sort_keys=True), order_id),
-            )
         return self._order(order_id)
 
     def promote_arbitrage_group(self, order_ids: list[int], *, group_id: str) -> None:
@@ -5782,7 +5706,7 @@ class PaperStore:
             rows = eligible_rows
         expired = 0
         for order_id, ticker, _expires_at, diagnostics_json in rows:
-            # A quote pulled by request_resting_order_cancel reaches this
+            # A quote pulled by the retired stale-quote guard reaches this
             # watermark-gated path through its shortened expiry; record why it
             # ended rather than calling it a TTL expiry.
             cancel_request = _pending_cancel_request(diagnostics_json)
@@ -7977,7 +7901,7 @@ def _aware_utc(value: object) -> datetime:
 
 
 def _pending_cancel_request(raw: object) -> dict[str, object] | None:
-    """The pull recorded by ``request_resting_order_cancel``, if any."""
+    """The pull recorded by the retired stale-quote guard, if any."""
 
     if isinstance(raw, dict):
         details = raw

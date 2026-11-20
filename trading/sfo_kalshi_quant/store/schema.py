@@ -1241,7 +1241,7 @@ def _ensure_research_sleeve_accounts(conn: sqlite3.Connection) -> None:
 def _enforce_active_account_set(conn: sqlite3.Connection) -> None:
     """Archive every account outside the deliberate post-cutover ledgers.
 
-    Live Stability and Research V7 are the post-cutover ledgers; the M1
+    Live Stability and Research V8 are the post-cutover ledgers; the M1
     market-recalibration trial is a third, separately capitalized paper
     ledger that never pools with either.
     """

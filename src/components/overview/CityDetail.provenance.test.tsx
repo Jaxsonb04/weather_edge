@@ -90,6 +90,13 @@ describe("CityDetail intraday provenance", () => {
     );
   });
 
+  it("labels the high by the publisher that supplied it", async () => {
+    const lock: IntradayLock = { slug: "sfo", targetDate: "2026-07-09", highF: 72.4, market: true };
+    const { container } = await renderDetail(cityWithIntraday("sfo", "San Francisco"), lock);
+
+    expect(container.textContent).toContain("Market-implied high");
+  });
+
   it("renders the runtime method tag in plain English without doubling the intraday clause", async () => {
     const { container } = await renderDetail(cityWithIntraday("sea", "Seattle"), null);
 

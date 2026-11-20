@@ -123,7 +123,7 @@ def test_kelly_zero_gives_an_honest_reason_not_a_generic_sizing_error():
         yes_ask_size=200.0,
     )
     # Point/LCB both just below cost (~0.51) -> Kelly zero; but the model gate
-    # (edge_gate_uses_model_probability on fast-feedback) sees a strong 0.80.
+    # (edge_gate_uses_model_probability, research until 2026-11-12) sees 0.80.
     probability = BucketProbability(
         ticker=market.ticker,
         label=market.yes_sub_title,
@@ -135,7 +135,10 @@ def test_kelly_zero_gives_an_honest_reason_not_a_generic_sizing_error():
         model_probability=0.80,
         market_probability=0.78,
     )
-    decision = TradeEvaluator(strategy_config_for_profile("fast-feedback")).evaluate_market(
+    config = replace(
+        strategy_config_for_profile("fast-feedback"), edge_gate_uses_model_probability=True
+    )
+    decision = TradeEvaluator(config).evaluate_market(
         market, probability, bankroll=1000, side="YES"
     )
     assert not decision.approved
