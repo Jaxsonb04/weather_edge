@@ -23,7 +23,15 @@ How it works (`forecaster/emos_forecast.py`):
   `forecast_emos_live_vintages.serve_policy_json` records `apple_adjustment_f`
   and `apple_action`, so the baseline is always `predicted_high_f - apple_adjustment_f`.
 - `python emos_forecast.py --apple-score` prints, per lead, settled MAE with
-  and without Apple on the same vintages. Raw Apple highs are never stored.
+  and without Apple on the same vintages. Raw Apple highs are never stored,
+  except as the fallback below.
+- Fallback (owner decision, 2026-11-19, after the Nov 18 Open-Meteo outage):
+  when Open-Meteo returns too few models for a city, a next-day or later target
+  serves Apple's high itself (`method = apple_fallback`, sigma 3.0°F,
+  `n_models = 1`), once that target's EMOS row is an hour old. The freshness
+  watchdog ignores fallback rows, so a long outage still alerts. The scan's single-source gate refuses paper entries on it,
+  and it is kept out of `forecast_emos_live_vintages` and so out of scoring.
+  Same-day targets keep their last EMOS row.
 
 The weight is a guess, not a fit. Read `--apple-score` after a few weeks of
 settled days; if "with" is not clearly below "without", set

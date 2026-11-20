@@ -33,6 +33,7 @@ def _fresh_root(
     strategy_minutes: int = 1,
     strategy_analysis_minutes: int | None = None,
     live_forecast_minutes: int = 30,
+    second_station_minutes: int = 30,
 ) -> Path:
     now = datetime.now(timezone.utc)
     signal_age = operational_minutes if signal_minutes is None else signal_minutes
@@ -46,14 +47,20 @@ def _fresh_root(
     root.mkdir()
     with sqlite3.connect(root / "weather.db") as conn:
         conn.execute(
-            "CREATE TABLE forecast_emos_daily_high (fetched_at TEXT NOT NULL, source TEXT NOT NULL)"
+            "CREATE TABLE forecast_emos_daily_high"
+            " (station_id TEXT NOT NULL, fetched_at TEXT NOT NULL, source TEXT NOT NULL,"
+            " method TEXT NOT NULL DEFAULT 'emos_wmean')"
         )
         conn.executemany(
-            "INSERT INTO forecast_emos_daily_high VALUES (?, ?)",
+            "INSERT INTO forecast_emos_daily_high VALUES (?, ?, ?, ?)",
             [
-                (_iso(now - timedelta(minutes=live_forecast_minutes)), "live"),
-                # A newer non-live row must not make a stale live serve look fresh.
-                (_iso(now), "rolling_origin_v2"),
+                ("KSFO", _iso(now - timedelta(minutes=live_forecast_minutes)), "live", "emos_wmean"),
+                ("KMIA", _iso(now - timedelta(minutes=second_station_minutes)), "live", "emos_wmean"),
+                # Newer non-live or Apple-fallback rows must not make stale EMOS look fresh.
+                ("KSFO", _iso(now), "rolling_origin_v2", "emos_wmean"),
+                ("KMIA", _iso(now), "live", "apple_fallback"),
+                # A station retired over a week ago must not fail the watchdog forever.
+                ("KOLD", _iso(now - timedelta(days=8)), "live", "emos_wmean"),
             ],
         )
     conn.close()
@@ -134,6 +141,16 @@ def test_watchdog_rejects_stale_live_forecast_even_when_db_file_is_fresh():
 
     assert result.returncode == 1
     assert "live EMOS forecast stale" in result.stderr
+
+
+def test_watchdog_rejects_one_stale_station_while_others_serve_fresh():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _fresh_root(Path(tmp), second_station_minutes=5 * 60 + 61)
+
+        result = _run(root)
+
+    assert result.returncode == 1
+    assert "live EMOS forecast stale: KMIA last served" in result.stderr
 
 
 def test_watchdog_rejects_future_stamped_live_forecast():

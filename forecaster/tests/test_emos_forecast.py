@@ -784,6 +784,40 @@ def test_apple_nudge_is_fixed_capped_recorded_and_scored(monkeypatch):
     assert abs(row["mae_with"] - (abs(base - truth) + abs(base + 2.0 - truth)) / 2) < 1e-9
 
 
+def test_open_meteo_outage_serves_apple_fallback_for_future_targets_only(monkeypatch):
+    import emos_forecast as ef
+
+    conn = sqlite3.connect(":memory:")
+    _seed(conn)
+    target = date(2024, 6, 1)
+    monkeypatch.setattr(ef, "_settlement_today", lambda city=ef.DEFAULT_CITY: target - timedelta(days=1))
+    vintages = lambda: conn.execute(  # fresh DB: the table only exists once evidence is written
+        "SELECT COUNT(*) FROM sqlite_master WHERE name='forecast_emos_live_vintages'"
+    ).fetchone()[0]
+
+    assert serve_live_emos(conn, target, live_models={}, apple_high_f=None) is None
+    assert serve_live_emos(conn, target, live_models={}, apple_high_f=float("nan")) is None
+    with redirect_stdout(io.StringIO()):
+        assert serve_live_emos(conn, target, live_models={}, apple_high_f=80.0) == (80.0, ef.APPLE_FALLBACK_SIGMA_F)
+    row = conn.execute(
+        "SELECT predicted_high_f, n_models, method FROM forecast_emos_daily_high "
+        "WHERE source='live' AND target_date=?", (target.isoformat(),)
+    ).fetchone()
+    # One source: the scan's single-source gate refuses paper entries on it.
+    assert row == (80.0, 1, ef.APPLE_FALLBACK_METHOD)
+    assert vintages() == 0  # never recorded as an EMOS issue
+    # A recent EMOS row survives one missed refresh; an hour-old one gives way.
+    live = {"gfs_seamless": 71.0, "ecmwf_ifs025": 70.0, "ncep_nbm_conus": 72.0}
+    base, _ = serve_live_emos(conn, target, live_models=live, recalibrate=False)
+    assert serve_live_emos(conn, target, live_models={}, apple_high_f=80.0) is None
+    conn.execute("UPDATE forecast_emos_daily_high SET fetched_at = '2024-05-31T00:00:00+00:00' WHERE source='live'")
+    with redirect_stdout(io.StringIO()):
+        assert serve_live_emos(conn, target, live_models={}, apple_high_f=80.0) == (80.0, ef.APPLE_FALLBACK_SIGMA_F)
+    # Same-day targets never take Apple, even as a fallback.
+    monkeypatch.setattr(ef, "_settlement_today", lambda city=ef.DEFAULT_CITY: target)
+    assert serve_live_emos(conn, target, live_models={}, apple_high_f=80.0) is None
+
+
 def test_serve_rolling_passes_apple_highs_and_survives_failure(tmp_path, monkeypatch):
     import apple_weatherkit
     import emos_forecast as ef

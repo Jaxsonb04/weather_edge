@@ -216,8 +216,8 @@ def _freshness_result(
     manifest = tmp_path / "publication_manifest.json"
     manifest.write_text("{}")
     python = fake_bin / "python"
-    # Answers the live-forecast age query with "0 seconds" and passes validation.
-    _write_executable(python, "#!/bin/sh\necho 0\n")
+    # Answers the live-forecast age query with "0 seconds, KSFO" and passes validation.
+    _write_executable(python, "#!/bin/sh\necho 0 KSFO\n")
     _write_executable(
         fake_bin / "df",
         f"#!{sys.executable}\nprint({df_output!r}.replace('\\\\n', '\\n'))\n",

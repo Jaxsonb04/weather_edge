@@ -62,6 +62,12 @@ def _method_tag(weight_mode: str) -> str:
 LIVE_SOURCE = "live"
 # Total seconds one serve run may spend on WeatherKit calls (slow or failing).
 APPLE_TIME_BUDGET_SECONDS = 60
+# When Open-Meteo is unreachable a future target serves Apple's own high instead.
+# Sigma is Apple-alone RMSE on settled days Nov 9-18 2026 (2.80F lead 1, 3.05F
+# lead 2; Apple ran 1.5-1.8F cold). n_models=1 makes the scan refuse entries.
+APPLE_FALLBACK_METHOD = "apple_fallback"
+APPLE_FALLBACK_SIGMA_F = 3.0
+APPLE_FALLBACK_AFTER = timedelta(hours=1)  # two missed 30-min refreshes
 OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 # Per-city socket wait. Normal answers take <1 s; when Open-Meteo stalls, the
 # 45 s archive default x 20 cities overran the refresh's 300 s baseline cap
@@ -424,6 +430,14 @@ def fetch_live_model_forecasts_multi(
     return out
 
 
+_LIVE_ROW_UPSERT = """
+    INSERT OR REPLACE INTO forecast_emos_daily_high
+        (station_id, target_date, lead_days, predicted_high_f, sigma_f, n_models,
+         model_spread_f, fetched_at, method, source, actual_high_f)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+
 def serve_live_emos(
     conn: sqlite3.Connection,
     target_date: date,
@@ -499,7 +513,38 @@ def serve_live_emos(
     forecasts = {model: value for model, value in forecasts.items()
                  if model in params.biases and type(value) in (int, float) and math.isfinite(value)}
     if len(forecasts) < MIN_MODELS:
-        return None
+        # Open-Meteo down (Nov 18 outage): keep future targets fresh with Apple's
+        # high. Same-day targets never take Apple; the row stays out of the
+        # immutable EMOS evidence so it cannot be scored as an EMOS issue.
+        if (
+            apple_high_f is None
+            or not math.isfinite(apple_high_f)
+            or target_date <= _settlement_today(city)
+        ):
+            return None
+        prior = conn.execute(
+            "SELECT fetched_at FROM forecast_emos_daily_high WHERE station_id = ? "
+            "AND target_date = ? AND lead_days = ? AND source = ? AND method != ?",
+            (station, target_iso, stored_lead, LIVE_SOURCE, APPLE_FALLBACK_METHOD),
+        ).fetchone()
+        if prior:
+            prior_at = datetime.fromisoformat(prior[0])
+            if prior_at.tzinfo is None:
+                prior_at = prior_at.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) - prior_at < APPLE_FALLBACK_AFTER:
+                return None  # one missed refresh: the recent EMOS row beats Apple
+        mu, sigma = float(apple_high_f), APPLE_FALLBACK_SIGMA_F
+        conn.execute(
+            _LIVE_ROW_UPSERT,
+            (
+                station, target_iso, stored_lead, mu, sigma, 1, None,
+                fetched_at or datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+                APPLE_FALLBACK_METHOD, LIVE_SOURCE, truth.get(target_iso),
+            ),
+        )
+        conn.commit()
+        print(f"live EMOS [{city.slug}] {target_iso}: Open-Meteo unavailable, serving Apple fallback")
+        return mu, sigma
     mu, sigma = apply_emos(params, forecasts)
     # A serve that borrows a longer lead's fit also borrows its dispersion; give
     # the same-day horizon its own (FC-2). The floor apply_emos imposed has to be
@@ -547,12 +592,7 @@ def serve_live_emos(
         serve_policy=serve_policy,
     )
     conn.execute(
-        """
-        INSERT OR REPLACE INTO forecast_emos_daily_high
-            (station_id, target_date, lead_days, predicted_high_f, sigma_f, n_models,
-             model_spread_f, fetched_at, method, source, actual_high_f)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
+        _LIVE_ROW_UPSERT,
         (
             station,
             target_iso,

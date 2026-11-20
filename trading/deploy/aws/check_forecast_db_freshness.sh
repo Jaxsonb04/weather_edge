@@ -62,33 +62,45 @@ if [[ ! -f "$DB" ]]; then
   age_h="n/a"
   failures+=("forecast DB missing: $DB")
 else
-  # Age of the newest served live EMOS forecast, not the file mtime: hourly
-  # observation writes keep the file fresh while the forecast inside goes stale.
+  # Age of the stalest station's newest live EMOS forecast, not the file mtime
+  # (hourly observation writes keep it fresh) and not the newest row overall
+  # (on Nov 18 half the cities served fresh while five sat 5 h stale).
   live_age_output="$("$PYTHON_BIN" -c '
 import sqlite3, sys
 from datetime import datetime, timezone
 from pathlib import Path
 conn = sqlite3.connect(Path(sys.argv[1]).resolve().as_uri() + "?mode=ro", uri=True)
-(newest,) = conn.execute(
-    "SELECT MAX(fetched_at) FROM forecast_emos_daily_high WHERE source = ?", ("live",)
-).fetchone()
-if newest is None:
+rows = conn.execute(
+    "SELECT station_id, MAX(fetched_at) FROM forecast_emos_daily_high"
+    " WHERE source = ? AND method != ? GROUP BY station_id",
+    ("live", "apple_fallback"),  # an Apple fallback must not hide stale EMOS
+).fetchall()
+if not rows:
     sys.exit("no live EMOS forecast rows")
-stamp = datetime.fromisoformat(newest)
-if stamp.tzinfo is None:
-    stamp = stamp.replace(tzinfo=timezone.utc)
-print(int((datetime.now(timezone.utc) - stamp).total_seconds()))
+now = datetime.now(timezone.utc)
+ages = []
+for station, newest in rows:
+    stamp = datetime.fromisoformat(newest)
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    ages.append((int((now - stamp).total_seconds()), station))
+# A station silent for 7 days is retired, not stale; it has alerted all week.
+active = [age for age in ages if age[0] < 7 * 86400] or ages
+age, station = min(ages) if min(ages)[0] < 0 else max(active)
+print(age, station)
 ' "$DB" 2>&1)"
-  # A negative age (future-stamped row) would win MAX and mask staleness: reject it.
-  if [[ ! "$live_age_output" =~ ^[0-9]+$ ]]; then
+  # A negative age (future-stamped row) would mask staleness: reject it.
+  live_age_re='^([0-9]+) ([A-Za-z0-9_]+)$'
+  if [[ ! "$live_age_output" =~ $live_age_re ]]; then
     age_h="n/a"
     failures+=("live EMOS forecast age unreadable in $DB: $live_age_output")
   else
-    age_s="$live_age_output"
+    age_s="${BASH_REMATCH[1]}"
+    stalest_station="${BASH_REMATCH[2]}"
     age_h=$(awk "BEGIN{printf \"%.1f\", $age_s/3600}")
     max_s=$(awk "BEGIN{printf \"%d\", $MAX_AGE_HOURS*3600}")
     if (( age_s > max_s )); then
-      failures+=("live EMOS forecast stale: newest served ${age_h}h ago (threshold ${MAX_AGE_HOURS}h)")
+      failures+=("live EMOS forecast stale: $stalest_station last served ${age_h}h ago (threshold ${MAX_AGE_HOURS}h)")
     fi
   fi
 fi
@@ -153,7 +165,7 @@ if (( ${#failures[@]} > 0 )); then
 fi
 
 rm -f "$MARKER" 2>/dev/null || true
-echo "OK: live EMOS forecast fresh (newest ${age_h}h old, threshold ${MAX_AGE_HOURS}h)"
+echo "OK: live EMOS forecast fresh (stalest station $stalest_station ${age_h}h old, threshold ${MAX_AGE_HOURS}h)"
 echo "OK: publication manifest valid (operational <=${OPERATIONAL_MAX_MINUTES}m, strategy <=${STRATEGY_MAX_MINUTES}m)"
 echo "OK: disk usage ${disk_percent}% at $BASE_DIR (threshold <${DISK_MAX_PERCENT}%)"
 if [[ -n "$PUBLIC_MANIFEST_URL" ]]; then
