@@ -1,0 +1,1 @@
+async function e(e){let t=navigator.clipboard?.writeText;if(!t)return!1;try{return await t.call(navigator.clipboard,e),!0}catch{return!1}}export{e as t};

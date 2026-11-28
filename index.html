@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- Both schemes, so an address bar / PWA chrome never contradicts the page.
+         The boot script below collapses the pair when a stored theme wins. -->
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f3f7f1" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0c1310" />
+    <script>
+      (() => {
+        const systemDark = () => {
+          try {
+            return matchMedia("(prefers-color-scheme: dark)").matches;
+          } catch {
+            return false;
+          }
+        };
+        let stored = null;
+        try {
+          stored = localStorage.getItem("weatheredge-theme");
+        } catch {
+          stored = null;
+        }
+        const followsSystem = stored !== "light" && stored !== "dark";
+        const dark = followsSystem ? systemDark() : stored === "dark";
+        document.documentElement.classList.toggle("dark", dark);
+        document.documentElement.style.colorScheme = dark ? "dark" : "light";
+        // The theme-color tags above are keyed to the OS preference, so a stored
+        // override has to reduce them to the single unconditional tag that
+        // matches the theme we just applied.
+        if (!followsSystem) {
+          const active = "(prefers-color-scheme: " + (dark ? "dark" : "light") + ")";
+          document.querySelectorAll('meta[name="theme-color"][media]').forEach((meta) => {
+            if (meta.getAttribute("media") === active) meta.removeAttribute("media");
+            else meta.remove();
+          });
+        }
+      })();
+    </script>
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" sizes="any" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WeatherEdge — Probabilistic Weather &amp; Decision Systems</title>
+    <meta
+      name="description"
+      content="An end-to-end probabilistic weather system forecasting daily highs across 20 U.S. cities, with paper prediction-market research and a live evidence dashboard."
+    />
+    <meta property="og:title" content="WeatherEdge — Probabilistic Weather &amp; Decision Systems" />
+    <meta property="og:description" content="End-to-end forecasting, paper decision research, and unattended cloud operations across 20 U.S. city markets." />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://jaxsonb04.github.io/weather_edge/" />
+    <meta property="og:image" content="https://jaxsonb04.github.io/weather_edge/og-weatheredge-v2.png" />
+    <meta property="og:image:alt" content="WeatherEdge — Twenty-city temperature forecasting. Forecast verification and paper research." />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="WeatherEdge — Probabilistic Weather &amp; Decision Systems" />
+    <meta name="twitter:description" content="End-to-end forecasting, paper decision research, and unattended cloud operations across 20 U.S. city markets." />
+    <meta name="twitter:image" content="https://jaxsonb04.github.io/weather_edge/og-weatheredge-v2.png" />
+    <meta name="twitter:image:alt" content="WeatherEdge — Twenty-city temperature forecasting. Forecast verification and paper research." />
+    <link rel="stylesheet" crossorigin href="./assets/index-CKL_kiuf.css">
+    <script type="module" crossorigin src="./assets/index-XFvsppka.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/units-kxyhj8-5.js">
+
+    <link rel="preload" href="./assets/inter-latin-wght-normal-Dx4kXJAl.woff2" as="font" type="font/woff2" crossorigin />
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
